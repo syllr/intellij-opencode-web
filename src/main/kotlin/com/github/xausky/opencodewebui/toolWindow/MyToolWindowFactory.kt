@@ -10,12 +10,9 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.content.ContentFactory
-import java.awt.AWTEvent
 import java.awt.Component
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
-import java.awt.Toolkit
-import java.awt.event.AWTEventListener
 import java.awt.event.KeyEvent
 import java.nio.charset.StandardCharsets
 import java.util.Base64
@@ -24,7 +21,6 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
 import javax.swing.KeyStroke
-import javax.swing.SwingUtilities
 
 class MyToolWindowFactory : ToolWindowFactory {
 
@@ -139,9 +135,16 @@ class MyToolWindowFactory : ToolWindowFactory {
          *    - 原因：CEF 是独立于 Swing 的渲染系统，它在更底层处理输入事件
          *    - 这是完美的解决方案！既阻止了 IDEA 处理快捷键，又让 JCEF 能正常接收按键
          * 
+         * 5. 特殊情况：某些全局快捷键无法被 InputMap 拦截（如 Cmd+,）
+         *    - 某些 IDEA 全局快捷键使用 IntelliJ Platform 的 Action 系统，优先级比 InputMap 更高
+         *    - 解决方案：在 KeyEventDispatcher 中消费这些特定的按键组合
+         *    - 注意：必须同时使用 InputMap 和 KeyEventDispatcher 两种方法
+         *    - InputMap 用于大部分按键（ESC、DELETE等），KeyEventDispatcher 用于特殊的全局快捷键
+         * 
          * 重要提示：
-         * - KeyEventDispatcher 目前只用于日志调试，不影响功能
-         * - 如需添加新的需要拦截的快捷键，在 setupComponent 方法中添加即可
+         * - KeyEventDispatcher 目前只用于日志调试和处理特殊全局快捷键
+         * - 如需添加新的需要拦截的快捷键，在 setupComponent 方法中添加（对于普通按键）
+         *   或在 KeyEventDispatcher 中添加（对于全局快捷键，如 Cmd+xx）
          * - focusTraversalKeysEnabled = false 用于禁用 Tab 键的焦点遍历，让 Tab 键传递给 JCEF
          */
         private var keyEventDispatcher: KeyEventDispatcher? = null
@@ -161,6 +164,10 @@ class MyToolWindowFactory : ToolWindowFactory {
             setupComponentHierarchy(osrComponent)
             setupComponentHierarchy(browserComponent)
             
+            setupKeyEventDispatcher(osrComponent, browserComponent)
+        }
+        
+        private fun setupKeyEventDispatcher(osrComponent: Component?, browserComponent: Component?) {
             keyEventDispatcher = KeyEventDispatcher { e ->
                 val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
                 val sourceComponent = e.source as? Component
@@ -185,6 +192,15 @@ class MyToolWindowFactory : ToolWindowFactory {
                     
                     if (isToggleShortcut) {
                         println("[KEY] Allowing toggle shortcut to IDEA: keyCode=$keyCode")
+                        return@KeyEventDispatcher false
+                    }
+                    
+                    val isCmdComma = (keyCode == KeyEvent.VK_COMMA) && 
+                        ((modifiers and KeyEvent.META_DOWN_MASK) != 0)
+                    
+                    if (isCmdComma) {
+                        println("[KEY] Blocking Cmd+, in JCEF and letting it propagate to JCEF")
+                        e.consume()
                         return@KeyEventDispatcher false
                     }
                     
@@ -246,11 +262,15 @@ class MyToolWindowFactory : ToolWindowFactory {
                     }
                 }
                 
+                // 拦截 ESC 键，防止 IDEA 处理导致失焦
                 inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "doNothing")
-                inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "doNothing")
+
+                // 拦截 Cmd+, (macOS 设置快捷键)
+                inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_COMMA, java.awt.event.InputEvent.META_DOWN_MASK), "doNothing")
+                
                 actionMap.put("doNothing", emptyAction)
                 
-                println("[SETUP] Registered empty actions for ESC and DELETE on ${component.javaClass.simpleName}")
+                println("[SETUP] Registered empty actions for ESC, DELETE, Cmd+, on ${component.javaClass.simpleName}")
             }
         }
         
