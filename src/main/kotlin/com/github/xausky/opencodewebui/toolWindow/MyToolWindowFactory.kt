@@ -19,6 +19,9 @@ import java.util.concurrent.TimeUnit
 class MyToolWindowFactory : ToolWindowFactory {
 
     companion object {
+        private const val PORT = 10086
+        private const val HOST = "127.0.0.1"
+        
         private var browserInstance: JBCefBrowser? = null
         private var serverRunning = false
         private var serverProcess: Process? = null
@@ -92,12 +95,12 @@ class MyToolWindowFactory : ToolWindowFactory {
         fun getContent() = browser.component
 
         fun checkAndLoadContent() {
-            if (checkPortOpen("127.0.0.1", 4096)) {
-                thisLogger().info("Port 4096 is already open")
+            if (checkPortOpen(HOST, PORT)) {
+                thisLogger().info("Port $PORT is already open")
                 setServerRunning(true)
                 loadProjectPage()
             } else {
-                thisLogger().info("Port 4096 is not open, starting opencode serve...")
+                thisLogger().info("Port $PORT is not open, starting opencode serve...")
                 startOpenCodeServer()
             }
         }
@@ -136,7 +139,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         private fun checkServerHealth() {
-            if (!checkPortOpen("127.0.0.1", 4096)) {
+            if (!checkPortOpen(HOST, PORT)) {
                 thisLogger().warn("Server is not responding, attempting to restart...")
                 if (getServerProcess()?.isAlive == true) {
                     getServerProcess()?.destroy()
@@ -150,7 +153,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                 override fun run(indicator: ProgressIndicator) {
                     try {
                         val process = ProcessBuilder()
-                            .command("opencode", "serve", "--hostname", "127.0.0.1", "--port", "4096")
+                            .command("opencode", "serve", "--hostname", HOST, "--port", PORT.toString())
                             .redirectErrorStream(true)
                             .start()
                         
@@ -161,13 +164,13 @@ class MyToolWindowFactory : ToolWindowFactory {
                         val timeout = 60000L
 
                         while (maxAttempts-- > 0 && (System.currentTimeMillis() - startTime) < timeout) {
-                            if (process.isAlive && checkPortOpen("127.0.0.1", 4096)) {
+                            if (process.isAlive && checkPortOpen(HOST, PORT)) {
                                 break
                             }
                             Thread.sleep(1000)
                         }
 
-                        if (checkPortOpen("127.0.0.1", 4096)) {
+                        if (checkPortOpen(HOST, PORT)) {
                             thisLogger().info("OpenCode server started successfully")
                             setServerRunning(true)
                             ApplicationManager.getApplication().invokeLater {
@@ -195,7 +198,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         private fun loadProjectPage() {
             val projectPath = project.basePath ?: return
             val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-            val url = "http://127.0.0.1:4096/$encodedPath"
+            val url = "http://$HOST:$PORT/$encodedPath"
             thisLogger().info("Loading page: $url")
             browser.loadURL(url)
         }
@@ -207,7 +210,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                     <h2>Failed to start OpenCode server</h2>
                     <p>Please make sure 'opencode' is installed and available in your PATH.</p>
                     <p>Run the following command to start the server manually:</p>
-                    <pre style="background: #3C3F41; padding: 10px; border-radius: 4px;">opencode serve --hostname 127.0.0.1 --port 4096</pre>
+                    <pre style="background: #3C3F41; padding: 10px; border-radius: 4px;">opencode serve --hostname $HOST --port $PORT</pre>
                 </body>
                 </html>
             """.trimIndent()
