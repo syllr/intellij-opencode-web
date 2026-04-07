@@ -8,6 +8,13 @@
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
+    <actions>
+        <action id="ToggleOpenCode" class="com.github.xausky.opencodewebui.actions.ToggleOpenCodeAction" text="Toggle OpenCode" description="Toggle OpenCode tool window">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl BACK_SLASH"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta BACK_SLASH"/>
+        </action>
+    </actions>
+
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow factoryClass="com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
         <postStartupActivity implementation="com.github.xausky.opencodewebui.startup.MyStartupActivity"/>
