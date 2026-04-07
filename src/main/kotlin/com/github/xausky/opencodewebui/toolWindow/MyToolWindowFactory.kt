@@ -105,6 +105,45 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         fun getContent() = browser.component
 
+        /**
+         * 设置 JCEF 浏览器的键盘事件处理
+         * 
+         * 背景：当焦点在 JCEF 浏览器中时，我们需要：
+         * 1. 让 toggleOpenCode 快捷键（Ctrl+\ 或 Cmd+\）被 IDEA 处理
+         * 2. 其他所有键盘事件都应该被 JCEF 网页处理，而不是被 IDEA 的 Action 系统拦截
+         * 
+         * 踩过的坑：
+         * 
+         * 1. 尝试使用客户端属性（不生效）：
+         *    - component.putClientProperty("ide.shortcut.disabled", true)
+         *    - component.putClientProperty("JComponent.isEmbeddedBrowser", true)
+         *    - component.putClientProperty("preventShortcutProcessing", true)
+         *    这些属性都没有实际效果，IDEA 的 Action 系统仍然会处理快捷键
+         * 
+         * 2. 尝试使用 AWTEventListener 重新分派事件（导致无限循环或重复处理）：
+         *    - 在 AWTEventListener 中拦截键盘事件，然后手动重新分派给 JCEF 组件
+         *    - 这会导致：重新分派的事件又被 AWTEventListener 捕获 -> 无限循环
+         *    - 添加 isDispatching 标志可以防止循环，但事件会被处理两次
+         *    - 最终放弃这个方案
+         * 
+         * 3. 尝试使用 KeyEventDispatcher 消费事件（JCEF 收不到事件）：
+         *    - 在 KeyEventDispatcher 中调用 e.consume() 消费事件
+         *    - 这确实阻止了 IDEA 的 Action 系统处理事件
+         *    - 但是：消费事件会导致 JCEF 也收不到这个事件！
+         *    - 结果：普通字符键（a-z）正常，但 ESC、DELETE、快捷键等特殊按键 JCEF 收不到
+         * 
+         * 4. 最终解决方案：使用 InputMap/ActionMap 注册空 Action（成功）
+         *    - 在 JCEF 组件的 InputMap 中注册空的 Action 来拦截特定按键
+         *    - 工作原理：Swing 的 ActionMap 系统会先处理这些按键，阻止 IDEA 的 Action 系统接收到它们
+         *    - 但是：JCEF 的 OSR（Off-Screen Rendering）机制仍然能接收这些按键
+         *    - 原因：CEF 是独立于 Swing 的渲染系统，它在更底层处理输入事件
+         *    - 这是完美的解决方案！既阻止了 IDEA 处理快捷键，又让 JCEF 能正常接收按键
+         * 
+         * 重要提示：
+         * - KeyEventDispatcher 目前只用于日志调试，不影响功能
+         * - 如需添加新的需要拦截的快捷键，在 setupComponent 方法中添加即可
+         * - focusTraversalKeysEnabled = false 用于禁用 Tab 键的焦点遍历，让 Tab 键传递给 JCEF
+         */
         private var keyEventDispatcher: KeyEventDispatcher? = null
         
         fun setupBrowserKeyboardHandling() {
@@ -176,6 +215,24 @@ class MyToolWindowFactory : ToolWindowFactory {
             return false
         }
         
+        /**
+         * 设置组件的键盘处理属性
+         * 
+         * 这是解决问题的核心方法！
+         * 
+         * 工作原理：
+         * 1. focusTraversalKeysEnabled = false：禁用 Tab 键等焦点遍历键，让它们传递给 JCEF
+         * 2. 在 InputMap 中注册空 Action：拦截特定按键，阻止 IDEA 的 Action 系统处理它们
+         * 
+         * 为什么这能工作：
+         * - Swing 的 ActionMap 机制会先检查 InputMap 中是否有注册的 Action
+         * - 如果有，就会执行该 Action，而不会触发 IDEA 的全局快捷键处理
+         * - 但 JCEF 使用 OSR（Off-Screen Rendering），它直接从操作系统层面接收输入事件
+         * - 所以 JCEF 仍然能收到这些按键事件，不会被 InputMap 的拦截影响
+         * 
+         * 如果需要拦截其他按键，在这里添加：
+         * inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0), "doNothing")
+         */
         private fun setupComponent(component: Component) {
             if (component is JComponent) {
                 component.focusTraversalKeysEnabled = false
