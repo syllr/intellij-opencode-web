@@ -10,13 +10,20 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.content.ContentFactory
+import java.awt.AWTEvent
 import java.awt.Component
+import java.awt.KeyEventDispatcher
+import java.awt.KeyboardFocusManager
+import java.awt.Toolkit
+import java.awt.event.AWTEventListener
+import java.awt.event.KeyEvent
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
+import javax.swing.SwingUtilities
 
 class MyToolWindowFactory : ToolWindowFactory {
 
@@ -97,19 +104,109 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         fun getContent() = browser.component
 
+        private var keyEventDispatcher: KeyEventDispatcher? = null
+        
         fun setupBrowserKeyboardHandling() {
             val browserComponent = browser.component
             val osrComponent = browser.cefBrowser.uiComponent
             
             osrComponent?.let { comp ->
-                if (comp is JComponent) {
-                    comp.focusTraversalKeysEnabled = false
-                }
+                setupComponent(comp)
             }
             
             browserComponent?.let { comp ->
-                if (comp is JComponent) {
-                    comp.focusTraversalKeysEnabled = false
+                setupComponent(comp)
+            }
+            
+            setupComponentHierarchy(osrComponent)
+            setupComponentHierarchy(browserComponent)
+            
+            keyEventDispatcher = object : KeyEventDispatcher {
+                private var isDispatching = false
+                
+                override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+                    if (isDispatching) {
+                        return false
+                    }
+                    
+                    val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                    val isInBrowser = isDescendantOfBrowser(focusOwner) || 
+                                      isDescendantOfBrowser(e.source as? Component)
+                    
+                    if (isInBrowser) {
+                        val keyCode = e.keyCode
+                        val modifiers = e.modifiersEx
+                        
+                        val isToggleShortcut = (keyCode == KeyEvent.VK_BACK_SLASH) && 
+                            ((modifiers and KeyEvent.CTRL_DOWN_MASK) != 0 || 
+                             (modifiers and KeyEvent.META_DOWN_MASK) != 0)
+                        
+                        if (isToggleShortcut) {
+                            thisLogger().info("Allowing toggle shortcut to IDEA: keyCode=$keyCode")
+                            return false
+                        }
+                        
+                        thisLogger().info("Key in browser: keyCode=$keyCode, modifiers=$modifiers, id=${e.id}")
+                        
+                        val target = focusOwner ?: osrComponent ?: browserComponent
+                        target?.let { targetComp ->
+                            isDispatching = true
+                            try {
+                                val newEvent = KeyEvent(
+                                    targetComp,
+                                    e.id,
+                                    e.`when`,
+                                    e.modifiers,
+                                    e.keyCode,
+                                    e.keyChar,
+                                    e.keyLocation
+                                )
+                                targetComp.dispatchEvent(newEvent)
+                            } finally {
+                                isDispatching = false
+                            }
+                        }
+                        
+                        return true
+                    }
+                    
+                    return false
+                }
+            }
+            
+            KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(keyEventDispatcher)
+        }
+        
+        private fun isDescendantOfBrowser(component: Component?): Boolean {
+            if (component == null) return false
+            
+            val browserComponent = browser.component
+            val osrComponent = browser.cefBrowser.uiComponent
+            
+            var current: Component? = component
+            while (current != null) {
+                if (current == browserComponent || current == osrComponent) {
+                    return true
+                }
+                current = current.parent
+            }
+            return false
+        }
+        
+        private fun setupComponent(component: Component) {
+            if (component is JComponent) {
+                component.focusTraversalKeysEnabled = false
+            }
+        }
+        
+        private fun setupComponentHierarchy(component: Component?) {
+            if (component == null) return
+            
+            setupComponent(component)
+            
+            if (component is java.awt.Container) {
+                for (i in 0 until component.componentCount) {
+                    setupComponentHierarchy(component.getComponent(i))
                 }
             }
         }
