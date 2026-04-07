@@ -148,6 +148,7 @@ class MyToolWindowFactory : ToolWindowFactory {
          * - focusTraversalKeysEnabled = false 用于禁用 Tab 键的焦点遍历，让 Tab 键传递给 JCEF
          */
         private var keyEventDispatcher: KeyEventDispatcher? = null
+        private var lastKeyWasPassedToJcef = false
         
         fun setupBrowserKeyboardHandling() {
             val browserComponent = browser.component
@@ -155,6 +156,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             
             osrComponent?.let { comp ->
                 setupComponent(comp)
+                addKeyListenerToConsumeShortcuts(comp)
             }
             
             browserComponent?.let { comp ->
@@ -165,6 +167,95 @@ class MyToolWindowFactory : ToolWindowFactory {
             setupComponentHierarchy(browserComponent)
             
             setupKeyEventDispatcher(osrComponent, browserComponent)
+        }
+        
+        private fun addKeyListenerToConsumeShortcuts(component: Component) {
+            component.addKeyListener(object : java.awt.event.KeyAdapter() {
+                override fun keyPressed(e: KeyEvent) {
+                    val keyCode = e.keyCode
+                    val modifiers = e.modifiersEx
+                    
+                    val isCmdComma = (keyCode == KeyEvent.VK_COMMA) && (modifiers and KeyEvent.META_DOWN_MASK) != 0
+                    val isCmdK = (keyCode == KeyEvent.VK_K) && (modifiers and KeyEvent.META_DOWN_MASK) != 0
+                    
+                    if (isCmdComma || isCmdK) {
+                        println("[KEYLISTENER] Consuming $keyCode to block IDEA action, JCEF will still receive via processKeyEvent")
+                        e.consume()
+                    }
+                    
+                    // Emacs style key mappings
+                    val isCtrlN = (keyCode == KeyEvent.VK_N) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlP = (keyCode == KeyEvent.VK_P) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlE = (keyCode == KeyEvent.VK_E) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlA = (keyCode == KeyEvent.VK_A) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlB = (keyCode == KeyEvent.VK_B) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlF = (keyCode == KeyEvent.VK_F) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    
+                    val mappedKeyCode = when {
+                        isCtrlN -> KeyEvent.VK_DOWN
+                        isCtrlP -> KeyEvent.VK_UP
+                        isCtrlE -> KeyEvent.VK_END
+                        isCtrlA -> KeyEvent.VK_HOME
+                        isCtrlB -> KeyEvent.VK_LEFT
+                        isCtrlF -> KeyEvent.VK_RIGHT
+                        else -> null
+                    }
+                    
+                    if (mappedKeyCode != null) {
+                        println("[KEYLISTENER] Mapping Ctrl+${KeyEvent.getKeyText(keyCode)} to ${KeyEvent.getKeyText(mappedKeyCode)}")
+                        sendMappedKeyEvent(component, mappedKeyCode, e.id)
+                        e.consume()
+                    }
+                }
+                
+                override fun keyReleased(e: KeyEvent) {
+                    val keyCode = e.keyCode
+                    val modifiers = e.modifiersEx
+                    
+                    val isCmdComma = (keyCode == KeyEvent.VK_COMMA) && (modifiers and KeyEvent.META_DOWN_MASK) != 0
+                    val isCmdK = (keyCode == KeyEvent.VK_K) && (modifiers and KeyEvent.META_DOWN_MASK) != 0
+                    
+                    if (isCmdComma || isCmdK) {
+                        println("[KEYLISTENER] Releasing $keyCode")
+                        e.consume()
+                    }
+                    
+                    // Emacs style key mappings
+                    val isCtrlN = (keyCode == KeyEvent.VK_N) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlP = (keyCode == KeyEvent.VK_P) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlE = (keyCode == KeyEvent.VK_E) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlA = (keyCode == KeyEvent.VK_A) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlB = (keyCode == KeyEvent.VK_B) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    val isCtrlF = (keyCode == KeyEvent.VK_F) && (modifiers and KeyEvent.CTRL_DOWN_MASK) != 0
+                    
+                    val mappedKeyCode = when {
+                        isCtrlN -> KeyEvent.VK_DOWN
+                        isCtrlP -> KeyEvent.VK_UP
+                        isCtrlE -> KeyEvent.VK_END
+                        isCtrlA -> KeyEvent.VK_HOME
+                        isCtrlB -> KeyEvent.VK_LEFT
+                        isCtrlF -> KeyEvent.VK_RIGHT
+                        else -> null
+                    }
+                    
+                    if (mappedKeyCode != null) {
+                        sendMappedKeyEvent(component, mappedKeyCode, e.id)
+                        e.consume()
+                    }
+                }
+            })
+        }
+        
+        private fun sendMappedKeyEvent(target: Component, keyCode: Int, originalEventId: Int) {
+            val mappedEvent = KeyEvent(
+                target,
+                originalEventId,
+                System.currentTimeMillis(),
+                0,
+                keyCode,
+                KeyEvent.CHAR_UNDEFINED
+            )
+            target.dispatchEvent(mappedEvent)
         }
         
         private fun setupKeyEventDispatcher(osrComponent: Component?, browserComponent: Component?) {
@@ -182,7 +273,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                     println("[KEY] isInBrowserByFocus=$isInBrowserByFocus, isInBrowserBySource=$isInBrowserBySource, isInBrowser=$isInBrowser")
                 }
                 
-                if (isInBrowser && e.id == KeyEvent.KEY_PRESSED) {
+                if (isInBrowser && (e.id == KeyEvent.KEY_PRESSED || e.id == KeyEvent.KEY_RELEASED)) {
                     val keyCode = e.keyCode
                     val modifiers = e.modifiersEx
                     
@@ -191,20 +282,22 @@ class MyToolWindowFactory : ToolWindowFactory {
                          (modifiers and KeyEvent.META_DOWN_MASK) != 0)
                     
                     if (isToggleShortcut) {
-                        println("[KEY] Allowing toggle shortcut to IDEA: keyCode=$keyCode")
+                        if (e.id == KeyEvent.KEY_PRESSED) {
+                            println("[KEY] Allowing toggle shortcut to IDEA: keyCode=$keyCode")
+                        }
                         return@KeyEventDispatcher false
                     }
                     
-                    val isCmdComma = (keyCode == KeyEvent.VK_COMMA) && 
-                        ((modifiers and KeyEvent.META_DOWN_MASK) != 0)
+                    // Cmd+, 和 Cmd+K 由 InputMap 处理，这里不拦截
+                    // 只是打印日志观察
+                    val isCmdComma = (keyCode == KeyEvent.VK_COMMA) && (modifiers and KeyEvent.META_DOWN_MASK) != 0
+                    val isCmdK = (keyCode == KeyEvent.VK_K) && (modifiers and KeyEvent.META_DOWN_MASK) != 0
                     
-                    if (isCmdComma) {
-                        println("[KEY] Blocking Cmd+, in JCEF and letting it propagate to JCEF")
-                        e.consume()
-                        return@KeyEventDispatcher false
+                    if (isCmdComma || isCmdK) {
+                        println("[KEY] Cmd shortcut detected (keyCode=$keyCode), not consuming, letting InputMap handle it")
                     }
                     
-                    if (keyCode == KeyEvent.VK_ESCAPE || keyCode == KeyEvent.VK_DELETE || modifiers != 0) {
+                    if (e.id == KeyEvent.KEY_PRESSED && (keyCode == KeyEvent.VK_ESCAPE || keyCode == KeyEvent.VK_DELETE || modifiers != 0)) {
                         println("[KEY] Special key or shortcut in browser, not consuming: keyCode=$keyCode, modifiers=$modifiers")
                     }
                 }
@@ -253,24 +346,26 @@ class MyToolWindowFactory : ToolWindowFactory {
             if (component is JComponent) {
                 component.focusTraversalKeysEnabled = false
                 
-                val inputMap = component.getInputMap(JComponent.WHEN_FOCUSED)
+                // 使用 WHEN_IN_FOCUSED_WINDOW，这会在更早的阶段拦截事件
+                val inputMap = component.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
                 val actionMap = component.actionMap
                 
                 val emptyAction = object : javax.swing.AbstractAction() {
                     override fun actionPerformed(e: java.awt.event.ActionEvent?) {
-                        println("[ACTION] Empty action triggered for: ${e?.actionCommand}")
+                        println("[INPUTMAP] Empty action triggered")
                     }
                 }
                 
-                // 拦截 ESC 键，防止 IDEA 处理导致失焦
+                // 拦截 ESC 键
                 inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "doNothing")
-
-                // 拦截 Cmd+, (macOS 设置快捷键)
+                
+                // 拦截 Cmd+, 和 Cmd+K (macOS)
                 inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_COMMA, java.awt.event.InputEvent.META_DOWN_MASK), "doNothing")
+                inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_K, java.awt.event.InputEvent.META_DOWN_MASK), "doNothing")
                 
                 actionMap.put("doNothing", emptyAction)
                 
-                println("[SETUP] Registered empty actions for ESC, DELETE, Cmd+, on ${component.javaClass.simpleName}")
+                println("[SETUP] Registered shortcuts in WHEN_IN_FOCUSED_WINDOW InputMap on ${component.javaClass.simpleName}")
             }
         }
         

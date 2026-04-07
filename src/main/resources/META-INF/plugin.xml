@@ -13,6 +13,22 @@
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl BACK_SLASH"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta BACK_SLASH"/>
         </action>
+        
+        <!-- 覆盖 Cmd+, (设置快捷键)，在 JCEF 有焦点时传递给 JCEF -->
+        <action id="com.github.xausky.opencodewebui.PassToJcefSettings" 
+                class="com.github.xausky.opencodewebui.actions.PassToJcefAction" 
+                text="Pass Settings to JCEF">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta COMMA" replace-all="true"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl COMMA" replace-all="true"/>
+        </action>
+        
+        <!-- 覆盖 Cmd+K，在 JCEF 有焦点时传递给 JCEF -->
+        <action id="com.github.xausky.opencodewebui.PassToJcefCmdK" 
+                class="com.github.xausky.opencodewebui.actions.PassToJcefAction" 
+                text="Pass Cmd+K to JCEF">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta K" replace-all="true"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl K" replace-all="true"/>
+        </action>
     </actions>
 
     <extensions defaultExtensionNs="com.intellij">
