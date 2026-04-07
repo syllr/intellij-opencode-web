@@ -23,6 +23,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
+import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 
 class MyToolWindowFactory : ToolWindowFactory {
@@ -121,57 +122,39 @@ class MyToolWindowFactory : ToolWindowFactory {
             setupComponentHierarchy(osrComponent)
             setupComponentHierarchy(browserComponent)
             
-            keyEventDispatcher = object : KeyEventDispatcher {
-                private var isDispatching = false
+            keyEventDispatcher = KeyEventDispatcher { e ->
+                val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                val sourceComponent = e.source as? Component
+                val isInBrowserByFocus = isDescendantOfBrowser(focusOwner)
+                val isInBrowserBySource = isDescendantOfBrowser(sourceComponent)
+                val isInBrowser = isInBrowserByFocus || isInBrowserBySource
                 
-                override fun dispatchKeyEvent(e: KeyEvent): Boolean {
-                    if (isDispatching) {
-                        return false
-                    }
-                    
-                    val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
-                    val isInBrowser = isDescendantOfBrowser(focusOwner) || 
-                                      isDescendantOfBrowser(e.source as? Component)
-                    
-                    if (isInBrowser) {
-                        val keyCode = e.keyCode
-                        val modifiers = e.modifiersEx
-                        
-                        val isToggleShortcut = (keyCode == KeyEvent.VK_BACK_SLASH) && 
-                            ((modifiers and KeyEvent.CTRL_DOWN_MASK) != 0 || 
-                             (modifiers and KeyEvent.META_DOWN_MASK) != 0)
-                        
-                        if (isToggleShortcut) {
-                            thisLogger().info("Allowing toggle shortcut to IDEA: keyCode=$keyCode")
-                            return false
-                        }
-                        
-                        thisLogger().info("Key in browser: keyCode=$keyCode, modifiers=$modifiers, id=${e.id}")
-                        
-                        val target = focusOwner ?: osrComponent ?: browserComponent
-                        target?.let { targetComp ->
-                            isDispatching = true
-                            try {
-                                val newEvent = KeyEvent(
-                                    targetComp,
-                                    e.id,
-                                    e.`when`,
-                                    e.modifiers,
-                                    e.keyCode,
-                                    e.keyChar,
-                                    e.keyLocation
-                                )
-                                targetComp.dispatchEvent(newEvent)
-                            } finally {
-                                isDispatching = false
-                            }
-                        }
-                        
-                        return true
-                    }
-                    
-                    return false
+                if (e.id == KeyEvent.KEY_PRESSED || e.id == KeyEvent.KEY_RELEASED) {
+                    println("[KEY] KeyEvent: id=${e.id}, keyCode=${e.keyCode}, keyChar='${e.keyChar}', modifiers=${e.modifiersEx}")
+                    println("[KEY] Focus owner: $focusOwner (class: ${focusOwner?.javaClass?.simpleName})")
+                    println("[KEY] Source component: $sourceComponent (class: ${sourceComponent?.javaClass?.simpleName})")
+                    println("[KEY] isInBrowserByFocus=$isInBrowserByFocus, isInBrowserBySource=$isInBrowserBySource, isInBrowser=$isInBrowser")
                 }
+                
+                if (isInBrowser && e.id == KeyEvent.KEY_PRESSED) {
+                    val keyCode = e.keyCode
+                    val modifiers = e.modifiersEx
+                    
+                    val isToggleShortcut = (keyCode == KeyEvent.VK_BACK_SLASH) && 
+                        ((modifiers and KeyEvent.CTRL_DOWN_MASK) != 0 || 
+                         (modifiers and KeyEvent.META_DOWN_MASK) != 0)
+                    
+                    if (isToggleShortcut) {
+                        println("[KEY] Allowing toggle shortcut to IDEA: keyCode=$keyCode")
+                        return@KeyEventDispatcher false
+                    }
+                    
+                    if (keyCode == KeyEvent.VK_ESCAPE || keyCode == KeyEvent.VK_DELETE || modifiers != 0) {
+                        println("[KEY] Special key or shortcut in browser, not consuming: keyCode=$keyCode, modifiers=$modifiers")
+                    }
+                }
+                
+                false
             }
             
             KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(keyEventDispatcher)
@@ -196,6 +179,21 @@ class MyToolWindowFactory : ToolWindowFactory {
         private fun setupComponent(component: Component) {
             if (component is JComponent) {
                 component.focusTraversalKeysEnabled = false
+                
+                val inputMap = component.getInputMap(JComponent.WHEN_FOCUSED)
+                val actionMap = component.actionMap
+                
+                val emptyAction = object : javax.swing.AbstractAction() {
+                    override fun actionPerformed(e: java.awt.event.ActionEvent?) {
+                        println("[ACTION] Empty action triggered for: ${e?.actionCommand}")
+                    }
+                }
+                
+                inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "doNothing")
+                inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "doNothing")
+                actionMap.put("doNothing", emptyAction)
+                
+                println("[SETUP] Registered empty actions for ESC and DELETE on ${component.javaClass.simpleName}")
             }
         }
         
