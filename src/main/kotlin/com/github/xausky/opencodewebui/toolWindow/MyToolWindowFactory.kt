@@ -10,17 +10,13 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.content.ContentFactory
-import java.awt.AWTEvent
 import java.awt.Component
-import java.awt.KeyboardFocusManager
-import java.awt.Toolkit
-import java.awt.event.AWTEventListener
-import java.awt.event.KeyEvent
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import javax.swing.JComponent
 
 class MyToolWindowFactory : ToolWindowFactory {
 
@@ -36,8 +32,6 @@ class MyToolWindowFactory : ToolWindowFactory {
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "OpenCode-Server-Checker")
         }
-        
-        private var awtEventListener: AWTEventListener? = null
 
         fun getBrowser(): JBCefBrowser? = browserInstance
         fun setBrowser(browser: JBCefBrowser) {
@@ -66,11 +60,6 @@ class MyToolWindowFactory : ToolWindowFactory {
                 getCheckScheduledFuture()?.cancel(true)
                 setCheckScheduledFuture(null)
                 
-                awtEventListener?.let {
-                    Toolkit.getDefaultToolkit().removeAWTEventListener(it)
-                    awtEventListener = null
-                }
-                
                 val process = getServerProcess()
                 if (process?.isAlive == true) {
                     process.destroy()
@@ -89,7 +78,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         ApplicationManager.getApplication().invokeLater {
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
             toolWindow.contentManager.addContent(content)
-            myToolWindow.setupAWTEventListener()
+            myToolWindow.setupBrowserKeyboardHandling()
             myToolWindow.checkAndLoadContent()
             myToolWindow.startPeriodicCheck()
         }
@@ -108,56 +97,21 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         fun getContent() = browser.component
 
-        private fun isFocusInBrowser(browserComponent: Component): Boolean {
-            val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
-            val permanentFocusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().permanentFocusOwner
+        fun setupBrowserKeyboardHandling() {
+            val browserComponent = browser.component
+            val osrComponent = browser.cefBrowser.uiComponent
             
-            if (focusOwner == null && permanentFocusOwner == null) {
-                return false
-            }
-            
-            var component: Component? = focusOwner ?: permanentFocusOwner
-            var depth = 0
-            while (component != null && depth < 50) {
-                if (component == browserComponent) {
-                    return true
-                }
-                
-                var parent: Component? = component.parent
-                while (parent != null) {
-                    if (parent == browserComponent) {
-                        return true
-                    }
-                    parent = parent.parent
-                }
-                
-                component = component.parent
-                depth++
-            }
-            
-            return false
-        }
-
-        fun setupAWTEventListener() {
-            if (awtEventListener != null) return
-            
-            val listener = AWTEventListener { event ->
-                if (event !is KeyEvent) return@AWTEventListener
-                
-                val browserComponent = browser.component
-                val isBrowserFocused = isFocusInBrowser(browserComponent)
-                
-                val isEscape = event.keyCode == KeyEvent.VK_ESCAPE
-                
-                if (isBrowserFocused && isEscape) {
-                    println("[ESC] Intercepted ESC, consuming to prevent IDEA focus loss - JCEF should still receive it!")
-                    event.consume()
+            osrComponent?.let { comp ->
+                if (comp is JComponent) {
+                    comp.focusTraversalKeysEnabled = false
                 }
             }
             
-            awtEventListener = listener
-            Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.KEY_EVENT_MASK)
-            println("[SETUP] AWT event listener added for ESC key")
+            browserComponent?.let { comp ->
+                if (comp is JComponent) {
+                    comp.focusTraversalKeysEnabled = false
+                }
+            }
         }
 
         fun checkAndLoadContent() {
