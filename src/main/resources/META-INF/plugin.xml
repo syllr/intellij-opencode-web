@@ -1,8 +1,8 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.github.xausky.opencodewebui</id>
+    <id>com.shenyuanlaolarou.opencodewebui</id>
     <name>opencode-web-ui</name>
-    <vendor>xausky</vendor>
+    <vendor email="" url="https://github.com/syllr/intellij-opencode-web">shenyuanlaolarou (forked from xausky)</vendor>
 
     <depends>com.intellij.modules.platform</depends>
 
@@ -10,14 +10,14 @@
 
     <actions>
         <!-- 重启 OpenCode Server -->
-        <action id="com.github.xausky.opencodewebui.RestartServer" 
+        <action id="com.shenyuanlaolarou.opencodewebui.RestartServer" 
                 class="com.github.xausky.opencodewebui.actions.RestartServerAction" 
                 text="Restart OpenCode Server"
                 description="Kill and restart the OpenCode server">
         </action>
         
         <!-- 覆盖 Cmd+, (设置快捷键)，在 JCEF 有焦点时传递给 JCEF -->
-        <action id="com.github.xausky.opencodewebui.PassToJcefSettings" 
+        <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefSettings" 
                 class="com.github.xausky.opencodewebui.actions.PassToJcefAction" 
                 text="Pass Settings to JCEF">
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta COMMA" replace-all="true"/>
@@ -25,7 +25,7 @@
         </action>
         
         <!-- 覆盖 Cmd+K，在 JCEF 有焦点时传递给 JCEF -->
-        <action id="com.github.xausky.opencodewebui.PassToJcefCmdK" 
+        <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefCmdK" 
                 class="com.github.xausky.opencodewebui.actions.PassToJcefAction" 
                 text="Pass Cmd+K to JCEF">
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta K" replace-all="true"/>

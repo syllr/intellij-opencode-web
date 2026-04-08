@@ -35,9 +35,53 @@ class MyToolWindowFactory : ToolWindowFactory {
         private var checkScheduledFuture: ScheduledFuture<*>? = null
         private var currentProject: Project? = null
         private var hasInitializedOnStartup = false  // 标记 IDE 启动后是否已初始化过
+        private var openCodePathCache: String? = null  // 缓存 opencode 路径
 
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "OpenCode-Server-Checker")
+        }
+        
+        /**
+         * 获取 opencode 命令
+         * 使用 npx opencode-ai@latest 确保使用最新版本
+         */
+        private fun getOpenCodeCommand(): List<String> {
+            // 使用 npx opencode-ai@latest，不需要本地安装
+            // 完整命令：npx -y opencode-ai@latest serve --hostname 127.0.0.1 --port 10086
+            val isMac = System.getProperty("os.name").lowercase().contains("mac")
+            
+            return if (isMac) {
+                // macOS 需要使用完整的 node 路径或者通过 shell 运行
+                // 添加 -y 自动确认安装
+                listOf("/bin/zsh", "-l", "-c", "npx -y opencode-ai@latest serve --hostname $HOST --port $PORT")
+            } else {
+                listOf("npx", "-y", "opencode-ai@latest", "serve", "--hostname", HOST, "--port", PORT.toString())
+            }
+        }
+        
+        /**
+         * 获取完整的环境变量，确保包含 shell 的 PATH
+         */
+        private fun getEnvironment(): Map<String, String> {
+            val env = mutableMapOf<String, String>()
+            env.putAll(System.getenv())
+            
+            // 添加常见的 PATH 路径
+            val originalPath = env["PATH"] ?: ""
+            val additionalPaths = listOf(
+                "/usr/local/bin",
+                "/opt/homebrew/bin",
+                "${System.getenv("HOME")}/.npm-global/bin",
+                "${System.getenv("HOME")}/.local/bin"
+            ).filterNot { originalPath.contains(it) }
+            
+            val newPath = (additionalPaths + originalPath).joinToString(":")
+            env["PATH"] = newPath
+            
+            println("[ENV] Original PATH: $originalPath")
+            println("[ENV] New PATH: $newPath")
+            
+            return env
         }
 
         fun getBrowser(): JBCefBrowser? = browserInstance
@@ -128,36 +172,63 @@ class MyToolWindowFactory : ToolWindowFactory {
             val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
                 override fun run(indicator: ProgressIndicator) {
                     try {
-                        val process = ProcessBuilder()
-                            .command("opencode", "serve", "--hostname", HOST, "--port", PORT.toString())
+                        val openCodeCmd = getOpenCodeCommand()
+                        println("[SERVER] Starting server with command: ${openCodeCmd.joinToString(" ")}")
+                        
+                        val processBuilder = ProcessBuilder()
+                            .command(openCodeCmd)
                             .redirectErrorStream(true)
-                            .start()
-
+                        
+                        // 设置正确的环境变量
+                        processBuilder.environment().putAll(getEnvironment())
+                        
+                        val process = processBuilder.start()
+                        println("[SERVER] Process started, PID: ${process.pid()}, isAlive: ${process.isAlive}")
+                        
                         setServerProcess(process)
+
+                        // 启动一个线程读取进程输出
+                        Thread {
+                            try {
+                                val reader = process.inputStream.bufferedReader()
+                                var line: String?
+                                while (reader.readLine().also { line = it } != null) {
+                                    println("[SERVER OUTPUT] $line")
+                                }
+                            } catch (e: Exception) {
+                                println("[SERVER OUTPUT ERROR] ${e.message}")
+                            }
+                        }.start()
 
                         var maxAttempts = 30
                         val startTime = System.currentTimeMillis()
                         val timeout = 60000L
 
                         while (maxAttempts-- > 0 && (System.currentTimeMillis() - startTime) < timeout) {
-                            if (process.isAlive && checkPortOpenInternal()) {
+                            val portOpen = checkPortOpenInternal()
+                            val alive = process.isAlive
+                            println("[SERVER] Attempt ${30 - maxAttempts}: isAlive=$alive, portOpen=$portOpen")
+                            
+                            if (alive && portOpen) {
                                 break
                             }
                             Thread.sleep(1000)
                         }
 
                         if (checkPortOpenInternal()) {
-                            thisLogger().info("OpenCode server started successfully")
+                            println("[SERVER] OpenCode server started successfully")
                             setServerRunning(true)
                             ApplicationManager.getApplication().invokeLater {
                                 onSuccess()
                             }
                         } else {
-                            thisLogger().error("Failed to start OpenCode server")
+                            val exitCode = if (process.isAlive) "still running" else "exited with code ${process.exitValue()}"
+                            println("[SERVER] Failed to start OpenCode server, process $exitCode")
                             setServerRunning(false)
                         }
                     } catch (e: Exception) {
-                        thisLogger().error("Error starting OpenCode server: ${e.message}")
+                        println("[SERVER] Error starting OpenCode server: ${e.message}")
+                        e.printStackTrace()
                         setServerRunning(false)
                     }
                 }
@@ -447,10 +518,17 @@ class MyToolWindowFactory : ToolWindowFactory {
             val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
                 override fun run(indicator: ProgressIndicator) {
                     try {
-                        val process = ProcessBuilder()
-                            .command("opencode", "serve", "--hostname", HOST, "--port", PORT.toString())
+                        val openCodeCmd = getOpenCodeCommand()
+                        println("[SERVER] Starting server with command: ${openCodeCmd.joinToString(" ")}")
+                        
+                        val processBuilder = ProcessBuilder()
+                            .command(openCodeCmd)
                             .redirectErrorStream(true)
-                            .start()
+                        
+                        // 设置正确的环境变量
+                        processBuilder.environment().putAll(getEnvironment())
+                        
+                        val process = processBuilder.start()
 
                         setServerProcess(process)
 
