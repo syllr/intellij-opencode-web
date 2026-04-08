@@ -35,10 +35,18 @@ class MyToolWindowFactory : ToolWindowFactory {
         private var checkScheduledFuture: ScheduledFuture<*>? = null
         private var currentProject: Project? = null
         private var hasInitializedOnStartup = false  // 标记 IDE 启动后是否已初始化过
-        private var openCodePathCache: String? = null  // 缓存 opencode 路径
-
-        private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "OpenCode-Server-Checker")
+        /**
+         * 获取 opencode 命令
+         */
+        private fun getOpenCodeCommand(): List<String> {
+            val isMac = System.getProperty("os.name").lowercase().contains("mac")
+            
+            return if (isMac) {
+                // macOS 使用 zsh
+                listOf("/bin/zsh", "-l", "-c", "opencode serve --hostname $HOST --port $PORT")
+            } else {
+                listOf("opencode", "serve", "--hostname", HOST, "--port", PORT.toString())
+            }
         }
         
         /**
