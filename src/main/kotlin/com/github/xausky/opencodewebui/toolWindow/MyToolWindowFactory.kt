@@ -34,6 +34,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         private var serverProcess: Process? = null
         private var checkScheduledFuture: ScheduledFuture<*>? = null
         private var currentProject: Project? = null
+        private var hasInitializedOnStartup = false  // 标记 IDE 启动后是否已初始化过
 
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "OpenCode-Server-Checker")
@@ -54,7 +55,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             serverProcess = process
         }
 
-        fun getProject(): Project? = currentProject
         fun setProject(project: Project) {
             currentProject = project
         }
@@ -69,14 +69,46 @@ class MyToolWindowFactory : ToolWindowFactory {
                 getCheckScheduledFuture()?.cancel(true)
                 setCheckScheduledFuture(null)
 
+                // 先尝试 kill 保存的进程引用
                 val process = getServerProcess()
                 if (process?.isAlive == true) {
                     process.destroy()
-                    thisLogger().info("OpenCode server stopped")
+                    thisLogger().info("OpenCode server stopped (via process reference)")
                 }
+
+                // 再尝试通过端口 kill（确保彻底清理）
+                killProcessByPort(PORT)
+
                 setServerRunning(false)
+                setServerProcess(null)
             } catch (e: Exception) {
                 thisLogger().error("Error stopping OpenCode server: ${e.message}")
+            }
+        }
+
+        /**
+         * 通过端口号 kill 占用该端口的进程
+         * 支持 macOS/Linux 和 Windows
+         */
+        private fun killProcessByPort(port: Int) {
+            try {
+                val os = System.getProperty("os.name").lowercase()
+                val command = when {
+                    os.contains("mac") || os.contains("nix") || os.contains("nux") ->
+                        listOf("sh", "-c", "lsof -i :$port -t | xargs kill -9 2>/dev/null || true")
+                    os.contains("win") ->
+                        listOf("cmd", "/c", "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :$port ^| findstr LISTENING') do taskkill /F /PID %a")
+                    else -> {
+                        thisLogger().warn("Unsupported OS for killProcessByPort: $os")
+                        return
+                    }
+                }
+
+                val process = ProcessBuilder(command).start()
+                process.waitFor(5, TimeUnit.SECONDS)
+                thisLogger().info("Attempted to kill process on port $port")
+            } catch (e: Exception) {
+                thisLogger().error("Error killing process by port: ${e.message}")
             }
         }
     }
@@ -241,14 +273,27 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         /**
          * 检查端口并加载内容
+         *
+         * 核心逻辑：
+         * - IDE 启动后第一次打开工具窗口：kill 旧 server，启动新版本
+         * - 后续打开：直接使用现有 server
          */
         fun checkAndLoadContent() {
-            if (checkPortOpen(HOST, PORT)) {
-                thisLogger().info("Port $PORT is already open")
-                setServerRunning(true)
-                loadProjectPage()
+            if (hasInitializedOnStartup) {
+                // 已经初始化过了，直接检查并使用现有 server
+                if (checkPortOpen(HOST, PORT)) {
+                    thisLogger().info("Port $PORT is already open, reusing existing server")
+                    setServerRunning(true)
+                    loadProjectPage()
+                } else {
+                    thisLogger().info("Port $PORT is not open, starting opencode serve...")
+                    startOpenCodeServer()
+                }
             } else {
-                thisLogger().info("Port $PORT is not open, starting opencode serve...")
+                // IDE 启动后第一次打开：强制重启 server 以使用最新版本
+                hasInitializedOnStartup = true
+                thisLogger().info("First initialization on IDE startup, ensuring latest opencode version")
+                stopServer()
                 startOpenCodeServer()
             }
         }
