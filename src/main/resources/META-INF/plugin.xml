@@ -9,11 +9,6 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <actions>
-        <action id="ToggleOpenCode" class="com.github.xausky.opencodewebui.actions.ToggleOpenCodeAction" text="Toggle OpenCode" description="Toggle OpenCode tool window">
-            <keyboard-shortcut keymap="$default" first-keystroke="ctrl BACK_SLASH"/>
-            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta BACK_SLASH"/>
-        </action>
-        
         <!-- 重启 OpenCode Server -->
         <action id="com.github.xausky.opencodewebui.RestartServer" 
                 class="com.github.xausky.opencodewebui.actions.RestartServerAction" 
