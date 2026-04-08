@@ -87,6 +87,96 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         /**
+         * 重启 OpenCode Server
+         * 用于手动刷新，会 kill 旧进程并启动新进程
+         */
+        fun restartServer(project: Project?) {
+            println("[RESTART] Manual restart requested")
+            stopServer()
+            
+            if (project == null) {
+                println("[RESTART] Project is null, cannot restart server")
+                return
+            }
+            
+            if (browserInstance == null) {
+                println("[RESTART] Browser instance is null, cannot reload page")
+            }
+            
+            val projectPath = project.basePath
+            if (projectPath == null) {
+                println("[RESTART] Project path is null, cannot restart server")
+                return
+            }
+            
+            val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+            val url = "http://$HOST:$PORT/$encodedPath"
+            
+            println("[RESTART] Will load URL after restart: $url")
+            
+            startServerInternal(project) {
+                println("[RESTART] Server started, reloading page, browserInstance: ${browserInstance != null}")
+                // 使用 cefBrowser.reload() 强制刷新
+                browserInstance?.cefBrowser?.reload()
+            }
+        }
+
+        /**
+         * 内部启动服务器方法
+         */
+        private fun startServerInternal(project: Project, onSuccess: () -> Unit) {
+            val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
+                override fun run(indicator: ProgressIndicator) {
+                    try {
+                        val process = ProcessBuilder()
+                            .command("opencode", "serve", "--hostname", HOST, "--port", PORT.toString())
+                            .redirectErrorStream(true)
+                            .start()
+
+                        setServerProcess(process)
+
+                        var maxAttempts = 30
+                        val startTime = System.currentTimeMillis()
+                        val timeout = 60000L
+
+                        while (maxAttempts-- > 0 && (System.currentTimeMillis() - startTime) < timeout) {
+                            if (process.isAlive && checkPortOpenInternal()) {
+                                break
+                            }
+                            Thread.sleep(1000)
+                        }
+
+                        if (checkPortOpenInternal()) {
+                            thisLogger().info("OpenCode server started successfully")
+                            setServerRunning(true)
+                            ApplicationManager.getApplication().invokeLater {
+                                onSuccess()
+                            }
+                        } else {
+                            thisLogger().error("Failed to start OpenCode server")
+                            setServerRunning(false)
+                        }
+                    } catch (e: Exception) {
+                        thisLogger().error("Error starting OpenCode server: ${e.message}")
+                        setServerRunning(false)
+                    }
+                }
+            }
+            ProgressManager.getInstance().run(task)
+        }
+
+        private fun checkPortOpenInternal(): Boolean {
+            return try {
+                val socket = java.net.Socket(HOST, PORT)
+                socket.soTimeout = 2000
+                socket.close()
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        /**
          * 通过端口号 kill 占用该端口的进程
          * 支持 macOS/Linux 和 Windows
          */

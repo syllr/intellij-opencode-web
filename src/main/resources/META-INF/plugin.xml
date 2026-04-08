@@ -14,6 +14,13 @@
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta BACK_SLASH"/>
         </action>
         
+        <!-- 重启 OpenCode Server -->
+        <action id="com.github.xausky.opencodewebui.RestartServer" 
+                class="com.github.xausky.opencodewebui.actions.RestartServerAction" 
+                text="Restart OpenCode Server"
+                description="Kill and restart the OpenCode server">
+        </action>
+        
         <!-- 覆盖 Cmd+, (设置快捷键)，在 JCEF 有焦点时传递给 JCEF -->
         <action id="com.github.xausky.opencodewebui.PassToJcefSettings" 
                 class="com.github.xausky.opencodewebui.actions.PassToJcefAction" 
