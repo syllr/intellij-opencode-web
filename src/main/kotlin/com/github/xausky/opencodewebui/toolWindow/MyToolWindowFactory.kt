@@ -26,7 +26,7 @@ import javax.swing.KeyStroke
 class MyToolWindowFactory : ToolWindowFactory {
 
     companion object {
-        private const val PORT = 10086
+        private const val PORT = 12396
         private const val HOST = "127.0.0.1"
 
         private var browserInstance: JBCefBrowser? = null
