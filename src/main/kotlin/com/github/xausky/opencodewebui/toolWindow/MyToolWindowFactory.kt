@@ -12,6 +12,8 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.content.ContentFactory
 import java.awt.Component
 import java.awt.event.KeyEvent
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.Executors
@@ -19,6 +21,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
 import javax.swing.KeyStroke
+import javax.swing.SwingUtilities
 
 /**
  * OpenCode Web UI 工具窗口工厂类
@@ -183,6 +186,15 @@ class MyToolWindowFactory : ToolWindowFactory {
         ApplicationManager.getApplication().invokeLater {
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
             toolWindow.contentManager.addContent(content)
+            
+            toolWindow.contentManager.addContentManagerListener(object : com.intellij.ui.content.ContentManagerListener {
+                override fun selectionChanged(event: com.intellij.ui.content.ContentManagerEvent) {
+                    if (event.content === content) {
+                        myToolWindow.requestBrowserFocus()
+                    }
+                }
+            })
+            
             myToolWindow.setupBrowserKeyboardHandling()
             myToolWindow.checkAndLoadContent()
             myToolWindow.startPeriodicCheck()
@@ -198,6 +210,21 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         init {
             browserInstance = browser
+            setupWindowFocusListener(toolWindow)
+        }
+
+        private fun setupWindowFocusListener(toolWindow: ToolWindow) {
+            browser.component.addHierarchyListener {
+                SwingUtilities.getWindowAncestor(browser.component)?.let { window ->
+                    window.addWindowFocusListener(object : WindowAdapter() {
+                        override fun windowGainedFocus(e: WindowEvent?) {
+                            if (toolWindow.isVisible) {
+                                requestBrowserFocus()
+                            }
+                        }
+                    })
+                }
+            }
         }
 
         fun getContent() = browser.component
@@ -284,6 +311,27 @@ class MyToolWindowFactory : ToolWindowFactory {
             if (component is java.awt.Container) {
                 for (i in 0 until component.componentCount) {
                     setupComponentHierarchy(component.getComponent(i))
+                }
+            }
+        }
+
+        fun requestBrowserFocus() {
+            ApplicationManager.getApplication().invokeLater {
+                try {
+                    val osrComponent = browser.cefBrowser.uiComponent
+                    val browserComponent = browser.component
+                    
+                    osrComponent?.let { comp ->
+                        if (comp.isFocusable) {
+                            comp.requestFocus()
+                        }
+                    }
+                    
+                    if (browserComponent.isFocusable) {
+                        browserComponent.requestFocus()
+                    }
+                } catch (e: Exception) {
+                    thisLogger().warn("Failed to request browser focus: ${e.message}")
                 }
             }
         }
