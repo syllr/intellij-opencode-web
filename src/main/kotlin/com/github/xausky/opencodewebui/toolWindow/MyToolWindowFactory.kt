@@ -1,5 +1,6 @@
 package com.github.xausky.opencodewebui.toolWindow
 
+import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
@@ -71,7 +72,12 @@ class MyToolWindowFactory : ToolWindowFactory {
 
             val projectPath = project.basePath ?: return
             val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-            val url = "http://$HOST:$PORT/$encodedPath"
+            val sessionId = SessionHelper.getLatestSessionId(projectPath)
+            val url = if (sessionId != null) {
+                "http://$HOST:$PORT/$encodedPath?session=$sessionId"
+            } else {
+                "http://$HOST:$PORT/$encodedPath"
+            }
 
             startServerInternal(project) {
                 browserInstance?.cefBrowser?.reload()
@@ -449,7 +455,12 @@ class MyToolWindowFactory : ToolWindowFactory {
         private fun loadProjectPage() {
             val projectPath = project.basePath ?: return
             val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-            val url = "http://$HOST:$PORT/$encodedPath"
+            val sessionId = SessionHelper.getLatestSessionId(projectPath)
+            val url = if (sessionId != null) {
+                "http://$HOST:$PORT/$encodedPath?session=$sessionId"
+            } else {
+                "http://$HOST:$PORT/$encodedPath"
+            }
             thisLogger().info("Loading page: $url")
             browser.loadURL(url)
         }
