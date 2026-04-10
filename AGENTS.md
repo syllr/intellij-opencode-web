@@ -39,7 +39,7 @@ src/main/kotlin/com/github/xausky/opencodewebui/
 
 ## 关键实现说明
 - 使用 JBCefBrowser 进行 Web UI 集成
-- 管理 `opencode serve` 进程（127.0.0.1:4096）
+- 管理 `opencode serve` 进程（127.0.0.1:12396）
 - 自动启动服务器，每 30 秒进行健康检查
 - 通过 MyApplicationDisposable 在 IDE 关闭时清理资源
 - 项目路径以 Base64 编码在 URL 中
