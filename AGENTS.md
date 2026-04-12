@@ -38,6 +38,7 @@ intellij-opencode-web/
 - Qodana + Kover 代码质量
 - 插件描述从 `README.md` 的 `<!-- Plugin description -->` 提取
 - SemVer 版本格式，支持预发布标签
+- **Git 提交规则**: Agent 禁止自动提交 git，必须等待用户显式调用才能提交
 
 ## 反模式（此项目问题）
 - 包名不匹配：`com.github.xausky.opencodewebui` 源码 vs `com.shenyuanlaolarou` pluginGroup

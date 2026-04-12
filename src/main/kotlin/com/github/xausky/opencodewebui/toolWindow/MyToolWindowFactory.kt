@@ -2,6 +2,7 @@ package com.github.xausky.opencodewebui.toolWindow
 
 import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -10,6 +11,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.ui.jcef.JBCefBrowser
+import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.content.ContentFactory
 import java.awt.Component
 import java.awt.event.KeyEvent
@@ -19,6 +21,8 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
 import javax.swing.KeyStroke
@@ -33,11 +37,11 @@ class MyToolWindowFactory : ToolWindowFactory {
         private const val PORT = 12396
         private const val HOST = "127.0.0.1"
 
-        private var browserInstance: JBCefBrowser? = null
-        private var serverRunning = false
-        private var serverProcess: Process? = null
+        private val browserInstance = AtomicReference<JBCefBrowser?>(null)
+        private val serverRunning = AtomicBoolean(false)
+        private val serverProcess = AtomicReference<Process?>(null)
         private var checkScheduledFuture: ScheduledFuture<*>? = null
-        private var hasInitializedOnStartup = false
+        private val hasInitializedOnStartup = AtomicBoolean(false)
 
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "OpenCode-Server-Checker")
@@ -48,7 +52,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                 checkScheduledFuture?.cancel(true)
                 checkScheduledFuture = null
 
-                val process = serverProcess
+                val process = serverProcess.get()
                 if (process?.isAlive == true) {
                     process.destroy()
                     thisLogger().info("OpenCode server stopped (via process reference)")
@@ -56,8 +60,8 @@ class MyToolWindowFactory : ToolWindowFactory {
 
                 killProcessByPort(PORT)
 
-                serverRunning = false
-                serverProcess = null
+                serverRunning.set(false)
+                serverProcess.set(null)
             } catch (e: Exception) {
                 thisLogger().error("Error stopping OpenCode server: ${e.message}")
             }
@@ -66,7 +70,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         fun restartServer(project: Project?) {
             stopServer()
 
-            if (project == null || browserInstance == null) {
+            if (project == null || browserInstance.get() == null) {
                 return
             }
 
@@ -80,7 +84,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
 
             startServerInternal(project) {
-                browserInstance?.cefBrowser?.reload()
+                browserInstance.get()?.cefBrowser?.reload()
             }
         }
 
@@ -95,7 +99,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                         processBuilder.environment().putAll(getEnvironment())
 
                         val process = processBuilder.start()
-                        serverProcess = process
+                        serverProcess.set(process)
 
                         var maxAttempts = 30
                         val startTime = System.currentTimeMillis()
@@ -110,18 +114,18 @@ class MyToolWindowFactory : ToolWindowFactory {
 
                         if (checkPortOpenInternal()) {
                             thisLogger().info("OpenCode server started successfully")
-                            serverRunning = true
+                            serverRunning.set(true)
                             ApplicationManager.getApplication().invokeLater {
                                 onSuccess()
                             }
                         } else {
                             val exitCode = if (process.isAlive) "still running" else "exited with code ${process.exitValue()}"
                             thisLogger().warn("Failed to start OpenCode server, process $exitCode")
-                            serverRunning = false
+                            serverRunning.set(false)
                         }
                     } catch (e: Exception) {
                         thisLogger().error("Error starting OpenCode server: ${e.message}")
-                        serverRunning = false
+                        serverRunning.set(false)
                     }
                 }
             }
@@ -188,6 +192,24 @@ class MyToolWindowFactory : ToolWindowFactory {
     }
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        if (!JBCefApp.isSupported()) {
+            thisLogger().warn("JCEF is not supported in this environment, browser functionality disabled")
+            val errorHtml = """
+                <html>
+                <body style="background-color: #2B2B2B; color: #A9B7C6; font-family: sans-serif; padding: 20px;">
+                    <h2>JCEF is not supported in this environment</h2>
+                    <p>Please use a supported IntelliJ-based IDE with JCEF enabled.</p>
+                </body>
+                </html>
+            """.trimIndent()
+            ApplicationManager.getApplication().invokeLater {
+                val content = ContentFactory.getInstance().createContent(
+                    JBCefBrowser().apply { loadHTML(errorHtml) }.component, null, false
+                )
+                toolWindow.contentManager.addContent(content)
+            }
+            return
+        }
         val myToolWindow = MyToolWindow(toolWindow)
         ApplicationManager.getApplication().invokeLater {
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
@@ -215,7 +237,8 @@ class MyToolWindowFactory : ToolWindowFactory {
         private val browser = JBCefBrowser()
 
         init {
-            browserInstance = browser
+            Disposer.register(toolWindow.project, browser)
+            browserInstance.set(browser)
             setupWindowFocusListener(toolWindow)
         }
 
@@ -343,17 +366,17 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun checkAndLoadContent() {
-            if (hasInitializedOnStartup) {
+            if (hasInitializedOnStartup.get()) {
                 if (checkPortOpen(HOST, PORT)) {
                     thisLogger().info("Port $PORT is already open, reusing existing server")
-                    serverRunning = true
+                    serverRunning.set(true)
                     loadProjectPage()
                 } else {
                     thisLogger().info("Port $PORT is not open, starting opencode serve...")
                     startOpenCodeServer()
                 }
             } else {
-                hasInitializedOnStartup = true
+                hasInitializedOnStartup.set(true)
                 thisLogger().info("First initialization on IDE startup, ensuring latest opencode version")
                 stopServer()
                 startOpenCodeServer()
@@ -378,7 +401,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             val future = scheduler.scheduleAtFixedRate(
                 {
                     try {
-                        ApplicationManager.getApplication().invokeAndWait {
+                        ApplicationManager.getApplication().invokeLater {
                             checkServerHealth()
                         }
                     } catch (e: Exception) {
@@ -396,8 +419,10 @@ class MyToolWindowFactory : ToolWindowFactory {
         private fun checkServerHealth() {
             if (!checkPortOpen(HOST, PORT)) {
                 thisLogger().warn("Server is not responding, attempting to restart...")
-                if (serverProcess?.isAlive == true) {
-                    serverProcess?.destroy()
+                serverProcess.get()?.let { process ->
+                    if (process.isAlive) {
+                        process.destroy()
+                    }
                 }
                 startOpenCodeServer()
             }
@@ -414,7 +439,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                         processBuilder.environment().putAll(getEnvironment())
 
                         val process = processBuilder.start()
-                        serverProcess = process
+                        serverProcess.set(process)
 
                         var maxAttempts = 30
                         val startTime = System.currentTimeMillis()
@@ -429,7 +454,7 @@ class MyToolWindowFactory : ToolWindowFactory {
 
                         if (checkPortOpen(HOST, PORT)) {
                             thisLogger().info("OpenCode server started successfully")
-                            serverRunning = true
+                            serverRunning.set(true)
                             ApplicationManager.getApplication().invokeLater {
                                 loadProjectPage()
                             }
@@ -438,14 +463,14 @@ class MyToolWindowFactory : ToolWindowFactory {
                             ApplicationManager.getApplication().invokeLater {
                                 showErrorInBrowser()
                             }
-                            serverRunning = false
+                            serverRunning.set(false)
                         }
                     } catch (e: Exception) {
                         thisLogger().error("Error starting OpenCode server: ${e.message}")
                         ApplicationManager.getApplication().invokeLater {
                             showErrorInBrowser()
                         }
-                        serverRunning = false
+                        serverRunning.set(false)
                     }
                 }
             }
