@@ -109,3 +109,21 @@ intellij-opencode-web/
 |------|-----|
 | **sample-intellij-idea-plugin** | https://github.com/ilkeratik/sample-intellij-idea-plugin |
 | **intellij-ui-dataviz** | https://github.com/JetBrains/intellij-ui-dataviz |
+
+### OpenCode 项目（本地源码）
+| 资源 | 位置 |
+|------|------|
+| **OpenCode 源码** | `/Users/yutao/GolandProjects/opencode` |
+| **核心引擎** | `packages/opencode/src/` |
+| **Web 前端** | `packages/web/src/` |
+| **IDE 集成** | `packages/opencode/src/ide/` |
+| **Agent 配置** | `.opencode/agent/` |
+| **命令定义** | `.opencode/command/` |
+
+### OpenCode 官方资源
+| 资源 | URL |
+|------|-----|
+| **官网** | https://opencode.ai |
+| **官方文档** | https://opencode.ai/docs |
+| **GitHub** | https://github.com/anomalyco/opencode |
+| **Discord** | https://discord.gg/opencode |
