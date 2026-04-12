@@ -25,11 +25,12 @@ intellij-opencode-web/
 ## 关键位置
 | 任务 | 位置 | 备注 |
 |------|------|------|
-| 核心逻辑 | toolWindow/MyToolWindowFactory.kt | 630行，JCEF + 服务器管理 |
-| IDE actions | actions/ | 重启、切换、快捷键转发 |
+| 核心逻辑 | toolWindow/MyToolWindowFactory.kt | JCEF + 服务器管理 |
+| IDE actions | actions/ | RestartServer、PassToJcef、CopyAsPrompt |
 | CI/CD | .github/workflows/ | 构建、发布、UI测试 |
 | 构建配置 | build.gradle.kts, gradle.properties | 依赖、版本 |
 | 测试 | src/test/ | 单元测试 |
+| Action 注册 | plugin.xml | Action 的 add-to-group 配置 |
 
 ## 代码规范
 - Gradle 版本目录 (`gradle/libs.versions.toml`)
@@ -70,6 +71,7 @@ println("=== DEBUG: variable = $variable")
 - **外部链接处理**：点击外部链接（GitHub、文档等）在系统浏览器打开，而非 JCEF 内部
 - **右键菜单**：支持"在浏览器中打开"选项
 - **会话恢复**：自动恢复上次会话（从 SQLite 数据库读取 session ID）
+- **Copy as Prompt**：编辑器右键菜单复制选中文本为 Prompt 格式（输出格式：`location:/path/file:10-20\ncontent:\n```\n选中文本\n```）
 
 ## 常用命令
 ```bash
