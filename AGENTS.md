@@ -25,7 +25,7 @@ intellij-opencode-web/
 ## 关键位置
 | 任务 | 位置 | 备注 |
 |------|------|------|
-| 核心逻辑 | toolWindow/MyToolWindowFactory.kt | 482行，JCEF + 服务器管理 |
+| 核心逻辑 | toolWindow/MyToolWindowFactory.kt | 507行，JCEF + 服务器管理 |
 | IDE actions | actions/ | 重启、切换、快捷键转发 |
 | CI/CD | .github/workflows/ | 构建、发布、UI测试 |
 | 构建配置 | build.gradle.kts, gradle.properties | 依赖、版本 |
@@ -42,8 +42,8 @@ intellij-opencode-web/
 
 ## 反模式（此项目问题）
 - 包名不匹配：`com.github.xausky.opencodewebui` 源码 vs `com.shenyuanlaolarou` pluginGroup
-- 单个 482 行核心文件（MyToolWindowFactory.kt）
-- 静态全局服务器状态
+- 单个 507 行核心文件（MyToolWindowFactory.kt，可拆分）
+- ~~静态全局服务器状态~~ → 已修复：使用 AtomicReference/AtomicBoolean
 - 使用 SQLite JDBC 进行会话管理（对插件来说不常见）
 
 ## 特色功能

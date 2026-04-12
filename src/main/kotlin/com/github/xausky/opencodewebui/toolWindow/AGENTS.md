@@ -3,7 +3,7 @@
 **Parent:** ../../AGENTS.md
 
 ## 概述
-核心 JCEF 浏览器 + OpenCode 服务器管理（482行，单文件）。
+核心 JCEF 浏览器 + OpenCode 服务器管理（507行，单文件）。
 
 ## 结构
 ```
@@ -18,16 +18,17 @@ toolWindow/
 | 健康检查 | MyToolWindowFactory.kt | 30秒间隔，自动重启 |
 | JCEF 设置 | MyToolWindowFactory.kt | JBCefBrowser 初始化 |
 | 键盘处理 | MyToolWindowFactory.kt | Emacs 快捷键 + ESC 修复 |
-| 状态 | companion object | 静态全局状态（反模式） |
+| 状态 | companion object | AtomicReference/AtomicBoolean 线程安全 |
 
 ## 关键常量
 - `PORT = 12396`
 - `HOST = "127.0.0.1"`
 
-## 反模式
-- 静态全局状态（browserInstance, serverRunning, serverProcess）
-- 单个 482 行文件处理所有逻辑
-- 端口硬编码（不可配置）
+## 已修复的反模式
+- ✅ 静态变量改为 AtomicReference/AtomicBoolean（线程安全）
+- ✅ JBCefBrowser 通过 Disposer 管理生命周期
+- ⚠️ 单个 507 行文件处理所有逻辑（仍可拆分）
+- ⚠️ 端口硬编码（不可配置）
 
 ## JCEF 参考资料
 | 主题 | URL |
