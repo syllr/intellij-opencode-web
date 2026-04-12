@@ -6,15 +6,20 @@ import java.sql.DriverManager
 
 object SessionHelper {
     fun getLatestSessionId(projectPath: String): String? {
-        val homeDir = System.getenv("HOME") ?: return null
+        println("=== SessionHelper.getLatestSessionId called with: $projectPath")
+        val homeDir = System.getenv("HOME") ?: run {
+            println("HOME env not set")
+            return null
+        }
         val dbPath = File(homeDir, ".local/share/opencode/opencode.db")
         
         if (!dbPath.exists()) {
-            thisLogger().info("OpenCode database not found at ${dbPath.absolutePath}")
+            println("OpenCode database not found at ${dbPath.absolutePath}")
             return null
         }
         
         try {
+            Class.forName("org.sqlite.JDBC")
             DriverManager.getConnection("jdbc:sqlite:${dbPath.absolutePath}").use { conn ->
                 val sql = """
                     SELECT id FROM session 
@@ -29,15 +34,16 @@ object SessionHelper {
                     
                     if (rs.next()) {
                         val sessionId = rs.getString("id")
-                        thisLogger().info("Found session for project $projectPath: $sessionId")
+                        println("Found session for project $projectPath: $sessionId")
                         return sessionId
                     }
                 }
             }
         } catch (e: Exception) {
-            thisLogger().warn("Failed to query OpenCode session: ${e.message}")
+            println("Failed to query OpenCode session: ${e.message}")
         }
         
+        println("No session found for project: $projectPath")
         return null
     }
 }

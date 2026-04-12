@@ -40,6 +40,19 @@ intellij-opencode-web/
 - SemVer 版本格式，支持预发布标签
 - **Git 提交规则**: Agent 禁止自动提交 git，必须等待用户显式调用才能提交
 
+## 调试日志
+IntelliJ 插件日志通过 `thisLogger().info/warn/error()` 输出到 IDE 日志窗口。
+
+**控制台打印（推荐用于快速调试）**:
+```kotlin
+println("=== DEBUG: variable = $variable")
+```
+
+**查看日志**:
+- 日志文件位置: `build/idea-sandbox/IU-2025.3.4/log/`
+
+**注意**: 调试完成后应移除临时日志语句。
+
 ## 反模式（此项目问题）
 - 包名不匹配：`com.github.xausky.opencodewebui` 源码 vs `com.shenyuanlaolarou` pluginGroup
 - 单个 587 行核心文件（MyToolWindowFactory.kt，可拆分）

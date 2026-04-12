@@ -85,7 +85,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
             val sessionId = SessionHelper.getLatestSessionId(projectPath)
             val url = if (sessionId != null) {
-                "http://$HOST:$PORT/$encodedPath?session=$sessionId"
+                "http://$HOST:$PORT/$encodedPath/session/$sessionId"
             } else {
                 "http://$HOST:$PORT/$encodedPath"
             }
@@ -337,13 +337,16 @@ class MyToolWindowFactory : ToolWindowFactory {
         fun checkAndLoadContent() {
             if (mainBrowser == null) {
                 val projectPath = project.basePath ?: return
+                println("=== SESSION DEBUG checkAndLoadContent: projectPath = $projectPath")
                 val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
                 val sessionId = SessionHelper.getLatestSessionId(projectPath)
+                println("=== SESSION DEBUG checkAndLoadContent: sessionId = $sessionId")
                 val url = if (sessionId != null) {
-                    "http://$HOST:$PORT/$encodedPath?session=$sessionId"
+                    "http://$HOST:$PORT/$encodedPath/session/$sessionId"
                 } else {
                     "http://$HOST:$PORT/$encodedPath"
                 }
+                println("=== SESSION DEBUG checkAndLoadContent: final URL = $url")
                 mainBrowser = browserPanel.createMainTab(url)
                 browserInstance.set(mainBrowser)
                 setupBrowserComponent(mainBrowser!!)
@@ -463,13 +466,16 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun loadProjectPage() {
             val projectPath = project.basePath ?: return
+            thisLogger().info("=== SESSION DEBUG loadProjectPage: projectPath = $projectPath")
             val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
             val sessionId = SessionHelper.getLatestSessionId(projectPath)
+            println("=== SESSION DEBUG loadProjectPage: sessionId = $sessionId")
             val url = if (sessionId != null) {
-                "http://$HOST:$PORT/$encodedPath?session=$sessionId"
+                "http://$HOST:$PORT/$encodedPath/session/$sessionId"
             } else {
                 "http://$HOST:$PORT/$encodedPath"
             }
+            println("=== SESSION DEBUG loadProjectPage: final URL = $url")
             thisLogger().info("Loading page: $url")
             mainBrowser?.loadURL(url)
         }
