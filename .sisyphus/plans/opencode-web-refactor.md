@@ -36,14 +36,14 @@
 ## 工作目标
 
 ### 必须修复 (Must Fix)
-- [ ] JBCefBrowser 资源泄漏
-- [ ] 线程安全问题
-- [ ] invokeAndWait 死锁风险
-- [ ] 缺少 pluginUntilBuild
+- [x] JBCefBrowser 资源泄漏
+- [x] 线程安全问题
+- [x] invokeAndWait 死锁风险
+- [x] 缺少 pluginUntilBuild
 
 ### 应该修复 (Should Fix)
-- [ ] JBCefApp.isSupported() 检查
-- [ ] 监听器移除
+- [x] JBCefApp.isSupported() 检查
+- [x] 监听器移除
 
 ### 可选修复 (Nice to Have)
 - [ ] 重构为 ProjectService
@@ -310,10 +310,10 @@ class MyApplicationDisposable : Disposable {
 
 ### 成功标准
 
-- [ ] `./gradlew buildPlugin` 成功，无编译错误
-- [ ] `./gradlew verifyPlugin` 无警告或错误
-- [ ] `./gradlew check` 测试全部通过
-- [ ] 插件可以在本地 IDE 中正常加载
+- [x] `./gradlew buildPlugin` 成功，无编译错误
+- [x] `./gradlew verifyPlugin` 无警告或错误
+- [x] `./gradlew check` 测试全部通过
+- [ ] 插件可以在本地 IDE 中正常加载 (手动测试待验证)
 
 ---
 

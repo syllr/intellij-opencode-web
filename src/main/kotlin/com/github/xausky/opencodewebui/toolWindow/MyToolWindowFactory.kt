@@ -2,7 +2,6 @@ package com.github.xausky.opencodewebui.toolWindow
 
 import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -12,11 +11,19 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefApp
+import com.intellij.ui.jcef.JBCefBrowserBuilder
 import com.intellij.ui.content.ContentFactory
+import com.intellij.ide.BrowserUtil
+import org.cef.browser.CefBrowser
+import org.cef.browser.CefFrame
+import org.cef.handler.CefLifeSpanHandlerAdapter
+import org.cef.callback.CefContextMenuParams
+import org.cef.callback.CefMenuModel
 import java.awt.Component
 import java.awt.event.KeyEvent
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
+import javax.swing.JPanel
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.Executors
@@ -214,7 +221,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         ApplicationManager.getApplication().invokeLater {
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
             toolWindow.contentManager.addContent(content)
-            
+
             toolWindow.contentManager.addContentManagerListener(object : com.intellij.ui.content.ContentManagerListener {
                 override fun selectionChanged(event: com.intellij.ui.content.ContentManagerEvent) {
                     if (event.content === content) {
@@ -222,7 +229,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                     }
                 }
             })
-            
+
             myToolWindow.setupBrowserKeyboardHandling()
             myToolWindow.checkAndLoadContent()
             myToolWindow.startPeriodicCheck()
@@ -234,17 +241,16 @@ class MyToolWindowFactory : ToolWindowFactory {
     inner class MyToolWindow(toolWindow: ToolWindow) {
 
         private val project = toolWindow.project
-        private val browser = JBCefBrowser()
+        private val browserPanel = BrowserPanel(HOST, PORT)
+        private var mainBrowser: JBCefBrowser? = null
 
         init {
-            Disposer.register(toolWindow.project, browser)
-            browserInstance.set(browser)
             setupWindowFocusListener(toolWindow)
         }
 
         private fun setupWindowFocusListener(toolWindow: ToolWindow) {
-            browser.component.addHierarchyListener {
-                SwingUtilities.getWindowAncestor(browser.component)?.let { window ->
+            browserPanel.addHierarchyListener {
+                SwingUtilities.getWindowAncestor(browserPanel)?.let { window ->
                     window.addWindowFocusListener(object : WindowAdapter() {
                         override fun windowGainedFocus(e: WindowEvent?) {
                             if (toolWindow.isVisible) {
@@ -256,63 +262,25 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        fun getContent() = browser.component
+        fun getContent() = browserPanel
 
         fun setupBrowserKeyboardHandling() {
-            val browserComponent = browser.component
+            val panel = browserPanel
+            setupComponent(panel)
+            setupComponentHierarchy(panel)
+        }
+
+        private fun setupBrowserComponent(browser: JBCefBrowser) {
             val osrComponent = browser.cefBrowser.uiComponent
+            val browserComponent = browser.component
 
             osrComponent?.let { comp ->
                 setupComponent(comp)
-                addEmacsKeyListener(comp)
             }
 
             browserComponent?.let { comp ->
                 setupComponent(comp)
             }
-
-            setupComponentHierarchy(osrComponent)
-            setupComponentHierarchy(browserComponent)
-        }
-
-        private fun addEmacsKeyListener(component: Component) {
-            val emacsMappings = mapOf(
-                KeyEvent.VK_N to KeyEvent.VK_DOWN,
-                KeyEvent.VK_P to KeyEvent.VK_UP,
-                KeyEvent.VK_E to KeyEvent.VK_END,
-                KeyEvent.VK_A to KeyEvent.VK_HOME,
-                KeyEvent.VK_B to KeyEvent.VK_LEFT,
-                KeyEvent.VK_F to KeyEvent.VK_RIGHT
-            )
-
-            component.addKeyListener(object : java.awt.event.KeyAdapter() {
-                override fun keyPressed(e: KeyEvent) {
-                    handleEmacsKey(e, emacsMappings)
-                }
-
-                override fun keyReleased(e: KeyEvent) {
-                    handleEmacsKey(e, emacsMappings)
-                }
-
-                private fun handleEmacsKey(e: KeyEvent, mappings: Map<Int, Int>) {
-                    if ((e.modifiersEx and KeyEvent.CTRL_DOWN_MASK) == 0) return
-                    val targetKeyCode = mappings[e.keyCode] ?: return
-                    sendKeyEvent(component, e.id, targetKeyCode, 0)
-                    e.consume()
-                }
-            })
-        }
-
-        private fun sendKeyEvent(target: Component, eventId: Int, keyCode: Int, modifiers: Int) {
-            val keyEvent = KeyEvent(
-                target,
-                eventId,
-                System.currentTimeMillis(),
-                modifiers,
-                keyCode,
-                KeyEvent.CHAR_UNDEFINED
-            )
-            target.dispatchEvent(keyEvent)
         }
 
         private fun setupComponent(component: Component) {
@@ -347,15 +315,16 @@ class MyToolWindowFactory : ToolWindowFactory {
         fun requestBrowserFocus() {
             ApplicationManager.getApplication().invokeLater {
                 try {
+                    val browser = browserPanel.getBrowser() ?: return@invokeLater
                     val osrComponent = browser.cefBrowser.uiComponent
                     val browserComponent = browser.component
-                    
+
                     osrComponent?.let { comp ->
                         if (comp.isFocusable) {
                             comp.requestFocus()
                         }
                     }
-                    
+
                     if (browserComponent.isFocusable) {
                         browserComponent.requestFocus()
                     }
@@ -366,6 +335,21 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun checkAndLoadContent() {
+            if (mainBrowser == null) {
+                val projectPath = project.basePath ?: return
+                val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+                val sessionId = SessionHelper.getLatestSessionId(projectPath)
+                val url = if (sessionId != null) {
+                    "http://$HOST:$PORT/$encodedPath?session=$sessionId"
+                } else {
+                    "http://$HOST:$PORT/$encodedPath"
+                }
+                mainBrowser = browserPanel.createMainTab(url)
+                browserInstance.set(mainBrowser)
+                setupBrowserComponent(mainBrowser!!)
+                thisLogger().info("Created main browser with URL: $url")
+            }
+
             if (hasInitializedOnStartup.get()) {
                 if (checkPortOpen(HOST, PORT)) {
                     thisLogger().info("Port $PORT is already open, reusing existing server")
@@ -487,7 +471,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                 "http://$HOST:$PORT/$encodedPath"
             }
             thisLogger().info("Loading page: $url")
-            browser.loadURL(url)
+            mainBrowser?.loadURL(url)
         }
 
         private fun showErrorInBrowser() {
@@ -501,7 +485,100 @@ class MyToolWindowFactory : ToolWindowFactory {
                 </body>
                 </html>
             """.trimIndent()
-            browser.loadHTML(html)
+            mainBrowser?.loadHTML(html)
+        }
+    }
+
+    class BrowserPanel(private val host: String, private val port: Int) : JPanel() {
+        private var browser: JBCefBrowser? = null
+        private val sharedClient = JBCefApp.getInstance().createClient()
+
+        companion object {
+            private const val COPY_LINK_COMMAND_ID = 26500
+        }
+
+        init {
+            layout = java.awt.BorderLayout()
+        }
+
+        fun createMainTab(url: String): JBCefBrowser {
+            val browser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
+            this.browser = browser
+            add(browser.component, java.awt.BorderLayout.CENTER)
+            sharedClient.addLifeSpanHandler(ExternalLinkLifeSpanHandler(), browser.cefBrowser)
+            sharedClient.addContextMenuHandler(LinkContextMenuHandler(), browser.cefBrowser)
+            return browser
+        }
+
+        fun getBrowser(): JBCefBrowser? = browser
+
+        private inner class ExternalLinkLifeSpanHandler : CefLifeSpanHandlerAdapter() {
+            override fun onBeforePopup(
+                browser: CefBrowser,
+                frame: CefFrame,
+                target_url: String,
+                target_frame_name: String
+            ): Boolean {
+                if (isExternalUrl(target_url)) {
+                    ApplicationManager.getApplication().invokeLater {
+                        BrowserUtil.browse(java.net.URI(target_url))
+                    }
+                    return true
+                }
+                return false
+            }
+        }
+
+        private fun isExternalUrl(url: String?): Boolean {
+            if (url == null) return false
+            return try {
+                val uri = java.net.URI(url)
+                val host = uri.host ?: return false
+                val scheme = uri.scheme ?: return false
+
+                if (scheme !in listOf("http", "https")) return false
+
+                if (host == "localhost" || host == "127.0.0.1" ||
+                    host.startsWith("192.168.") || host.startsWith("10.") ||
+                    host == "0.0.0.0" || host == this@BrowserPanel.host) {
+                    return false
+                }
+
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        private inner class LinkContextMenuHandler : org.cef.handler.CefContextMenuHandlerAdapter() {
+            override fun onBeforeContextMenu(
+                browser: CefBrowser,
+                frame: CefFrame,
+                params: CefContextMenuParams,
+                model: CefMenuModel
+            ) {
+                val linkUrl = params.linkUrl
+                if (!linkUrl.isNullOrEmpty()) {
+                    model.addItem(COPY_LINK_COMMAND_ID, "在浏览器中打开 Open in Browser")
+                }
+            }
+
+            override fun onContextMenuCommand(
+                browser: CefBrowser,
+                frame: CefFrame,
+                params: CefContextMenuParams,
+                commandId: Int,
+                eventFlags: Int
+            ): Boolean {
+                if (commandId == COPY_LINK_COMMAND_ID) {
+                    val linkUrl = params.linkUrl
+                    if (!linkUrl.isNullOrEmpty() && isExternalUrl(linkUrl)) {
+                        BrowserUtil.browse(java.net.URI(linkUrl))
+                    }
+                    return true
+                }
+                return false
+            }
         }
     }
 }

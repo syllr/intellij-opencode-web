@@ -25,7 +25,7 @@ intellij-opencode-web/
 ## 关键位置
 | 任务 | 位置 | 备注 |
 |------|------|------|
-| 核心逻辑 | toolWindow/MyToolWindowFactory.kt | 507行，JCEF + 服务器管理 |
+| 核心逻辑 | toolWindow/MyToolWindowFactory.kt | 587行，JCEF + 服务器管理 + 多标签页 |
 | IDE actions | actions/ | 重启、切换、快捷键转发 |
 | CI/CD | .github/workflows/ | 构建、发布、UI测试 |
 | 构建配置 | build.gradle.kts, gradle.properties | 依赖、版本 |
@@ -42,8 +42,9 @@ intellij-opencode-web/
 
 ## 反模式（此项目问题）
 - 包名不匹配：`com.github.xausky.opencodewebui` 源码 vs `com.shenyuanlaolarou` pluginGroup
-- 单个 507 行核心文件（MyToolWindowFactory.kt，可拆分）
+- 单个 587 行核心文件（MyToolWindowFactory.kt，可拆分）
 - ~~静态全局服务器状态~~ → 已修复：使用 AtomicReference/AtomicBoolean
+- ~~弃用的 JBCefBrowser 构造函数~~ → 已修复：使用 JBCefBrowserBuilder
 - 使用 SQLite JDBC 进行会话管理（对插件来说不常见）
 
 ## 特色功能
@@ -52,6 +53,10 @@ intellij-opencode-web/
 - ESC 键焦点修复（JCEF）
 - 通过 Find Action 手动重启（Cmd+Shift+A）
 - 端口 12396（非标准 10086）
+- **中文输入法修复**：移除 `e.consume()`，解决 JCEF 中中文输入滞后问题
+- **外部链接处理**：点击外部链接（GitHub、文档等）在系统浏览器打开，而非 JCEF 内部
+- **右键菜单**：支持"在浏览器中打开"选项
+- **会话恢复**：自动恢复上次会话（从 SQLite 数据库读取 session ID）
 
 ## 常用命令
 ```bash
@@ -62,6 +67,26 @@ intellij-opencode-web/
 ./gradlew publishPlugin         # 发布到 Marketplace
 ./gradlew qodana                # 代码质量检查
 ```
+
+## 发布插件
+```bash
+# 1. 升级版本号（gradle.properties 中的 pluginVersion）
+
+# 2. 设置 token（方式一：环境变量）
+export PUBLISH_TOKEN="your-jetbrains-marketplace-token"
+
+# 3. 发布
+./gradlew publishPlugin
+
+# 或方式二：使用 Gradle property
+./gradlew publishPlugin -PpublishToken="your-token"
+```
+
+**Token 获取方式**：
+1. 登录 [JetBrains Marketplace](https://plugins.jetbrains.com/)
+2. 进入插件管理页面 → Access Tokens
+3. 创建一个新的 Publishing token
+4. 设置环境变量或直接使用
 
 ## 备注
 - Fork 自 xausky/intellij-opencode-web-ui 的增强版本
