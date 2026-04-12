@@ -268,6 +268,11 @@ class MyToolWindowFactory : ToolWindowFactory {
             val panel = browserPanel
             setupComponent(panel)
             setupComponentHierarchy(panel)
+            val osrComponent = (browserPanel.getBrowser()?.cefBrowser?.uiComponent as? JComponent)
+            osrComponent?.let {
+                setupComponent(it)
+                addEmacsKeyListener(it)
+            }
         }
 
         private fun setupBrowserComponent(browser: JBCefBrowser) {
@@ -276,6 +281,7 @@ class MyToolWindowFactory : ToolWindowFactory {
 
             osrComponent?.let { comp ->
                 setupComponent(comp)
+                addEmacsKeyListener(comp)
             }
 
             browserComponent?.let { comp ->
@@ -312,6 +318,46 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
+        private fun addEmacsKeyListener(component: Component) {
+            val emacsMappings = mapOf(
+                KeyEvent.VK_N to KeyEvent.VK_DOWN,
+                KeyEvent.VK_P to KeyEvent.VK_UP,
+                KeyEvent.VK_E to KeyEvent.VK_END,
+                KeyEvent.VK_A to KeyEvent.VK_HOME,
+                KeyEvent.VK_B to KeyEvent.VK_LEFT,
+                KeyEvent.VK_F to KeyEvent.VK_RIGHT
+            )
+
+            component.addKeyListener(object : java.awt.event.KeyAdapter() {
+                override fun keyPressed(e: KeyEvent) {
+                    handleEmacsKey(e, emacsMappings)
+                }
+
+                override fun keyReleased(e: KeyEvent) {
+                    handleEmacsKey(e, emacsMappings)
+                }
+
+                private fun handleEmacsKey(e: KeyEvent, mappings: Map<Int, Int>) {
+                    if ((e.modifiersEx and KeyEvent.CTRL_DOWN_MASK) == 0) return
+                    val targetKeyCode = mappings[e.keyCode] ?: return
+                    sendKeyEvent(component, e.id, targetKeyCode, 0)
+                    e.consume()
+                }
+            })
+        }
+
+        private fun sendKeyEvent(target: Component, eventId: Int, keyCode: Int, modifiers: Int) {
+            val keyEvent = KeyEvent(
+                target,
+                eventId,
+                System.currentTimeMillis(),
+                modifiers,
+                keyCode,
+                KeyEvent.CHAR_UNDEFINED
+            )
+            target.dispatchEvent(keyEvent)
+        }
+
         fun requestBrowserFocus() {
             ApplicationManager.getApplication().invokeLater {
                 try {
@@ -337,16 +383,13 @@ class MyToolWindowFactory : ToolWindowFactory {
         fun checkAndLoadContent() {
             if (mainBrowser == null) {
                 val projectPath = project.basePath ?: return
-                println("=== SESSION DEBUG checkAndLoadContent: projectPath = $projectPath")
                 val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
                 val sessionId = SessionHelper.getLatestSessionId(projectPath)
-                println("=== SESSION DEBUG checkAndLoadContent: sessionId = $sessionId")
                 val url = if (sessionId != null) {
                     "http://$HOST:$PORT/$encodedPath/session/$sessionId"
                 } else {
                     "http://$HOST:$PORT/$encodedPath"
                 }
-                println("=== SESSION DEBUG checkAndLoadContent: final URL = $url")
                 mainBrowser = browserPanel.createMainTab(url)
                 browserInstance.set(mainBrowser)
                 setupBrowserComponent(mainBrowser!!)
@@ -466,16 +509,13 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun loadProjectPage() {
             val projectPath = project.basePath ?: return
-            thisLogger().info("=== SESSION DEBUG loadProjectPage: projectPath = $projectPath")
             val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
             val sessionId = SessionHelper.getLatestSessionId(projectPath)
-            println("=== SESSION DEBUG loadProjectPage: sessionId = $sessionId")
             val url = if (sessionId != null) {
                 "http://$HOST:$PORT/$encodedPath/session/$sessionId"
             } else {
                 "http://$HOST:$PORT/$encodedPath"
             }
-            println("=== SESSION DEBUG loadProjectPage: final URL = $url")
             thisLogger().info("Loading page: $url")
             mainBrowser?.loadURL(url)
         }

@@ -23,12 +23,7 @@ class PassToJcefAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         // 当 OpenCodeWeb 工具窗口激活时，什么都不做
         // 快捷键会通过 KeyEventDispatcher 传递给 JCEF
-        val project = e.project
-        if (project != null) {
-            val toolWindowManager = ToolWindowManager.getInstance(project)
-            val activeToolWindowId = toolWindowManager.activeToolWindowId
-            println("[ACTION] OpenCodeWeb active: ${activeToolWindowId == TOOL_WINDOW_ID}, active window: $activeToolWindowId")
-        }
+        // Action performed - when tool window is active, shortcuts are passed to JCEF
     }
     
     override fun update(e: AnActionEvent) {
