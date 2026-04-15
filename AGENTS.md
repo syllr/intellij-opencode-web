@@ -97,6 +97,8 @@ export PUBLISH_TOKEN="your-jetbrains-marketplace-token"
 ./gradlew publishPlugin -PpublishToken="your-token"
 ```
 
+**Token 位置**: `local.properties`（已加入 .gitignore，不会上传到 Git）
+
 **Token 获取方式**：
 1. 登录 [JetBrains Marketplace](https://plugins.jetbrains.com/)
 2. 进入插件管理页面 → Access Tokens

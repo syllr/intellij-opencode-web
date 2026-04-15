@@ -7,3 +7,4 @@
 build
 cert/
 .run/
+local.properties
