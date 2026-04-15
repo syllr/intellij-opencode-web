@@ -87,14 +87,11 @@ println("=== DEBUG: variable = $variable")
 ```bash
 # 1. 升级版本号（gradle.properties 中的 pluginVersion）
 
-# 2. 设置 token（方式一：环境变量）
-export PUBLISH_TOKEN="your-jetbrains-marketplace-token"
+# 2. 发布（token 从 local.properties 读取，或直接设置环境变量）
+source local.properties && ./gradlew publishPlugin
 
-# 3. 发布
-./gradlew publishPlugin
-
-# 或方式二：使用 Gradle property
-./gradlew publishPlugin -PpublishToken="your-token"
+# 或直接使用环境变量
+export PUBLISH_TOKEN="your-jetbrains-marketplace-token" && ./gradlew publishPlugin
 ```
 
 **Token 位置**: `local.properties`（已加入 .gitignore，不会上传到 Git）
@@ -103,7 +100,7 @@ export PUBLISH_TOKEN="your-jetbrains-marketplace-token"
 1. 登录 [JetBrains Marketplace](https://plugins.jetbrains.com/)
 2. 进入插件管理页面 → Access Tokens
 3. 创建一个新的 Publishing token
-4. 设置环境变量或直接使用
+4. 保存到 `local.properties`（格式：`export PUBLISH_TOKEN="your-token"`）
 
 ## 备注
 - Fork 自 xausky/intellij-opencode-web-ui 的增强版本
