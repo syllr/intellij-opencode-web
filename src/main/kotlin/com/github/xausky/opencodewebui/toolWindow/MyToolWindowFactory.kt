@@ -1,5 +1,6 @@
 package com.github.xausky.opencodewebui.toolWindow
 
+import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
@@ -49,6 +50,8 @@ class MyToolWindowFactory : ToolWindowFactory {
         private val serverProcess = AtomicReference<Process?>(null)
         private var checkScheduledFuture: ScheduledFuture<*>? = null
         private val hasInitializedOnStartup = AtomicBoolean(false)
+        private val isRestarting = AtomicBoolean(false)
+        private var myToolWindowInstance: MyToolWindow? = null
 
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "OpenCode-Server-Checker")
@@ -75,23 +78,35 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun restartServer(project: Project?) {
-            stopServer()
-
-            if (project == null || browserInstance.get() == null) {
+            if (!isRestarting.compareAndSet(false, true)) {
+                thisLogger().info("Restart already in progress, skipping")
                 return
             }
 
-            val projectPath = project.basePath ?: return
-            val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-            val sessionId = SessionHelper.getLatestSessionId(projectPath)
-            val url = if (sessionId != null) {
-                "http://$HOST:$PORT/$encodedPath/session/$sessionId"
-            } else {
-                "http://$HOST:$PORT/$encodedPath"
-            }
+            try {
+                stopServer()
 
-            startServerInternal(project) {
-                browserInstance.get()?.cefBrowser?.reload()
+                if (project == null || myToolWindowInstance == null) {
+                    return
+                }
+
+                val projectPath = project.basePath ?: return
+                OpenCodeApi.getLatestSessionId(projectPath) { sessionId ->
+                    val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+                    val url = if (sessionId != null) {
+                        "http://$HOST:$PORT/$encodedPath/session/$sessionId"
+                    } else {
+                        "http://$HOST:$PORT/$encodedPath"
+                    }
+
+                    startServerInternal(project) {
+                        ApplicationManager.getApplication().invokeLater {
+                            myToolWindowInstance?.restartBrowser(url, projectPath)
+                        }
+                    }
+                }
+            } finally {
+                isRestarting.set(false)
             }
         }
 
@@ -246,6 +261,7 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         init {
             setupWindowFocusListener(toolWindow)
+            myToolWindowInstance = this
         }
 
         private fun setupWindowFocusListener(toolWindow: ToolWindow) {
@@ -263,6 +279,17 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun getContent() = browserPanel
+
+        fun restartBrowser(url: String, projectPath: String) {
+            thisLogger().info("Disposing old browser instance...")
+            browserPanel.disposeBrowser()
+            thisLogger().info("Creating new browser instance...")
+            mainBrowser = browserPanel.createMainTab(url, projectPath)
+            browserInstance.set(mainBrowser)
+            setupBrowserKeyboardHandling()
+            thisLogger().info("New browser created and ready")
+            isRestarting.set(false)
+        }
 
         fun setupBrowserKeyboardHandling() {
             val panel = browserPanel
@@ -381,19 +408,30 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun checkAndLoadContent() {
+            println("=== checkAndLoadContent START: mainBrowser=${mainBrowser == null}")
             if (mainBrowser == null) {
-                val projectPath = project.basePath ?: return
-                val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-                val sessionId = SessionHelper.getLatestSessionId(projectPath)
-                val url = if (sessionId != null) {
-                    "http://$HOST:$PORT/$encodedPath/session/$sessionId"
-                } else {
-                    "http://$HOST:$PORT/$encodedPath"
+                val projectPath = project.basePath
+                println("=== checkAndLoadContent: projectPath=$projectPath")
+                if (projectPath == null) {
+                    println("=== checkAndLoadContent: projectPath is null, returning")
+                    return
                 }
-                mainBrowser = browserPanel.createMainTab(url)
-                browserInstance.set(mainBrowser)
-                setupBrowserComponent(mainBrowser!!)
-                thisLogger().info("Created main browser with URL: $url")
+                println("=== checkAndLoadContent: calling OpenCodeApi asynchronously")
+                OpenCodeApi.getLatestSessionId(projectPath) { sessionId ->
+                    println("=== checkAndLoadContent: sessionId=$sessionId (async callback)")
+                    val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+                    val url = if (sessionId != null) {
+                        "http://$HOST:$PORT/$encodedPath/session/$sessionId"
+                    } else {
+                        "http://$HOST:$PORT/$encodedPath"
+                    }
+                    println("=== checkAndLoadContent: calling createMainTab with url=$url")
+                    mainBrowser = browserPanel.createMainTab(url, projectPath)
+                    browserInstance.set(mainBrowser)
+                    setupBrowserComponent(mainBrowser!!)
+                    thisLogger().info("Created main browser with URL: $url")
+                }
+                return
             }
 
             if (hasInitializedOnStartup.get()) {
@@ -509,15 +547,16 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun loadProjectPage() {
             val projectPath = project.basePath ?: return
-            val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-            val sessionId = SessionHelper.getLatestSessionId(projectPath)
-            val url = if (sessionId != null) {
-                "http://$HOST:$PORT/$encodedPath/session/$sessionId"
-            } else {
-                "http://$HOST:$PORT/$encodedPath"
+            OpenCodeApi.getLatestSessionId(projectPath) { sessionId ->
+                val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+                val url = if (sessionId != null) {
+                    "http://$HOST:$PORT/$encodedPath/session/$sessionId"
+                } else {
+                    "http://$HOST:$PORT/$encodedPath"
+                }
+                thisLogger().info("Loading page: $url")
+                mainBrowser?.loadURL(url)
             }
-            thisLogger().info("Loading page: $url")
-            mainBrowser?.loadURL(url)
         }
 
         private fun showErrorInBrowser() {
@@ -547,16 +586,64 @@ class MyToolWindowFactory : ToolWindowFactory {
             layout = java.awt.BorderLayout()
         }
 
-        fun createMainTab(url: String): JBCefBrowser {
-            val browser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
-            this.browser = browser
-            add(browser.component, java.awt.BorderLayout.CENTER)
-            sharedClient.addLifeSpanHandler(ExternalLinkLifeSpanHandler(), browser.cefBrowser)
-            sharedClient.addContextMenuHandler(LinkContextMenuHandler(), browser.cefBrowser)
-            return browser
+        fun createMainTab(url: String, projectPath: String): JBCefBrowser {
+            println("=== createMainTab START: url=$url, projectPath=$projectPath")
+            val createdBrowser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
+            this.browser = createdBrowser
+            println("=== createMainTab: browser created, adding to panel")
+            add(createdBrowser.component, java.awt.BorderLayout.CENTER)
+            sharedClient.addLifeSpanHandler(ExternalLinkLifeSpanHandler(), createdBrowser.cefBrowser)
+            sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
+            println("=== createMainTab: adding loadHandler")
+            sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
+                override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
+                    println("=== createMainTab onLoadEnd: httpStatusCode=$httpStatusCode")
+                    val js = """
+                        try {
+                            var serverKey = 'opencode.global.dat:server';
+                            var raw = localStorage.getItem(serverKey);
+                            var store = raw ? JSON.parse(raw) : { list: [], projects: {}, lastProject: {} };
+                            if (!store.list) store.list = [];
+                            if (!store.projects) store.projects = {};
+                            if (!store.lastProject) store.lastProject = {};
+                            var origin = location.origin;
+                            var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
+                            var serverKeyName = isLocal ? 'local' : origin;
+                            var alreadySet = store.projects[serverKeyName] && store.projects[serverKeyName].some(function(p) { return p.worktree === '$projectPath'; });
+                            if (!alreadySet) {
+                                if (!store.list.includes(origin)) store.list.push(origin);
+                                if (!store.projects[serverKeyName]) store.projects[serverKeyName] = [];
+                                store.projects[serverKeyName].push({ worktree: '$projectPath', expanded: true });
+                                store.lastProject[serverKeyName] = '$projectPath';
+                                localStorage.setItem(serverKey, JSON.stringify(store));
+                                setTimeout(function() { location.reload(); }, 100);
+                            }
+                            // Also set layout to ensure sidebar is visible
+                            var layoutKey = 'opencode.global.dat:layout';
+                            var layoutRaw = localStorage.getItem(layoutKey);
+                            if (!layoutRaw) {
+                                localStorage.setItem(layoutKey, JSON.stringify({
+                                    sidebar: { opened: true, width: 344, workspaces: {}, workspacesDefault: false }
+                                }));
+                            }
+                        } catch(e) { console.log('opencode localStorage error: ' + e.message); }
+                    """.trimIndent()
+                    cefBrowser?.executeJavaScript(js, "", 0)
+                    println("=== createMainTab onLoadEnd: JS executed")
+                }
+            }, createdBrowser.cefBrowser)
+            println("=== createMainTab END")
+            return createdBrowser
         }
 
         fun getBrowser(): JBCefBrowser? = browser
+
+        fun disposeBrowser() {
+            browser?.cefBrowser?.stopLoad()
+            browser?.dispose()
+            removeAll()
+            browser = null
+        }
 
         private inner class ExternalLinkLifeSpanHandler : CefLifeSpanHandlerAdapter() {
             override fun onBeforePopup(
