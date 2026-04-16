@@ -49,7 +49,6 @@ class MyToolWindowFactory : ToolWindowFactory {
         private val serverRunning = AtomicBoolean(false)
         private val serverProcess = AtomicReference<Process?>(null)
         private var checkScheduledFuture: ScheduledFuture<*>? = null
-        private val hasInitializedOnStartup = AtomicBoolean(false)
         private val isRestarting = AtomicBoolean(false)
         private var myToolWindowInstance: MyToolWindow? = null
 
@@ -84,7 +83,13 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
 
             try {
-                stopServer()
+                // 只杀自己启动的进程，不杀端口上的其他进程
+                serverProcess.get()?.let { process ->
+                    if (process.isAlive) {
+                        process.destroy()
+                    }
+                }
+                serverProcess.set(null)
 
                 if (project == null || myToolWindowInstance == null) {
                     return
@@ -434,19 +439,15 @@ class MyToolWindowFactory : ToolWindowFactory {
                 return
             }
 
-            if (hasInitializedOnStartup.get()) {
-                if (checkPortOpen(HOST, PORT)) {
-                    thisLogger().info("Port $PORT is already open, reusing existing server")
-                    serverRunning.set(true)
-                    loadProjectPage()
-                } else {
-                    thisLogger().info("Port $PORT is not open, starting opencode serve...")
-                    startOpenCodeServer()
-                }
+            // 简化逻辑：先检查端口，有服务就复用，没服务才启动
+            if (checkPortOpen(HOST, PORT)) {
+                // 端口开放，复用已有服务器（不杀、不启动新）
+                thisLogger().info("Port $PORT is already open, reusing existing server")
+                serverRunning.set(true)
+                loadProjectPage()
             } else {
-                hasInitializedOnStartup.set(true)
-                thisLogger().info("First initialization on IDE startup, ensuring latest opencode version")
-                stopServer()
+                // 端口未开放，启动新服务器
+                thisLogger().info("Port $PORT is not open, starting opencode serve...")
                 startOpenCodeServer()
             }
         }
@@ -486,13 +487,8 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun checkServerHealth() {
             if (!checkPortOpen(HOST, PORT)) {
-                thisLogger().warn("Server is not responding, attempting to restart...")
-                serverProcess.get()?.let { process ->
-                    if (process.isAlive) {
-                        process.destroy()
-                    }
-                }
-                startOpenCodeServer()
+                thisLogger().warn("Server is not responding on port $PORT")
+                // 不再自动重启，让用户手动通过 action 重启
             }
         }
 
