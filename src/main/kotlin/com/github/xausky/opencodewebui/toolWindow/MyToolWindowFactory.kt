@@ -157,9 +157,9 @@ class MyToolWindowFactory : ToolWindowFactory {
         private fun getOpenCodeCommand(): List<String> {
             val isMac = System.getProperty("os.name").lowercase().contains("mac")
             return if (isMac) {
-                listOf("/bin/zsh", "-l", "-c", "opencode serve --hostname $HOST --port $PORT")
+                listOf("/bin/zsh", "-l", "-c", "opencode serve --port $PORT")
             } else {
-                listOf("opencode", "serve", "--hostname", HOST, "--port", PORT.toString())
+                listOf("opencode", "serve", "--port", PORT.toString())
             }
         }
 

@@ -20,22 +20,28 @@ object OpenCodeApi {
     }
 
     private fun fetchSessionId(projectPath: String): String? {
+        var connection: HttpURLConnection? = null
         return try {
             val encodedPath = URLEncoder.encode(projectPath, "UTF-8")
             val url = "http://$HOST:$PORT/session?directory=$encodedPath"
-            val connection = URL(url).openConnection() as HttpURLConnection
+            connection = URL(url).openConnection() as HttpURLConnection
             connection.connectTimeout = 5000
             connection.readTimeout = 5000
 
             if (connection.responseCode == 200) {
-                val response = connection.inputStream.bufferedReader().readText()
-                parseSessionId(response)
+                connection.inputStream.bufferedReader().use { reader ->
+                    reader.readText()
+                }.let { response ->
+                    parseSessionId(response)
+                }
             } else {
                 null
             }
         } catch (e: Exception) {
             thisLogger().warn("Failed to get session from API: ${e.message}")
             null
+        } finally {
+            connection?.disconnect()
         }
     }
 
