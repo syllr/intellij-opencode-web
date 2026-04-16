@@ -49,6 +49,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         private val serverRunning = AtomicBoolean(false)
         private val serverProcess = AtomicReference<Process?>(null)
         private var checkScheduledFuture: ScheduledFuture<*>? = null
+        private var updateScheduledFuture: ScheduledFuture<*>? = null
         private val isRestarting = AtomicBoolean(false)
         private var myToolWindowInstance: MyToolWindow? = null
 
@@ -60,6 +61,8 @@ class MyToolWindowFactory : ToolWindowFactory {
             try {
                 checkScheduledFuture?.cancel(true)
                 checkScheduledFuture = null
+                updateScheduledFuture?.cancel(true)
+                updateScheduledFuture = null
 
                 val process = serverProcess.get()
                 if (process?.isAlive == true) {
@@ -253,6 +256,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             myToolWindow.setupBrowserKeyboardHandling()
             myToolWindow.checkAndLoadContent()
             myToolWindow.startPeriodicCheck()
+            myToolWindow.startPeriodicUpdateCheck()
         }
     }
 
@@ -485,10 +489,47 @@ class MyToolWindowFactory : ToolWindowFactory {
             thisLogger().info("Started periodic server health check")
         }
 
+        fun startPeriodicUpdateCheck() {
+            if (updateScheduledFuture != null) return
+
+            val future = scheduler.scheduleAtFixedRate(
+                {
+                    try {
+                        ApplicationManager.getApplication().invokeLater {
+                            checkAndPerformUpgrade()
+                        }
+                    } catch (e: Exception) {
+                        thisLogger().warn("Periodic update check skipped: ${e.message}")
+                    }
+                },
+                1L,
+                1L,
+                TimeUnit.HOURS
+            )
+            updateScheduledFuture = future
+            thisLogger().info("Started periodic update check (every 1 hour)")
+        }
+
         private fun checkServerHealth() {
+            OpenCodeApi.checkHealth { status ->
+                if (status.healthy) {
+                    thisLogger().info("OpenCode server is healthy, version: ${status.version}")
+                } else {
+                    thisLogger().warn("OpenCode server is not responding on port $PORT")
+                }
+            }
+        }
+
+        private fun checkAndPerformUpgrade() {
             if (!checkPortOpen(HOST, PORT)) {
-                thisLogger().warn("Server is not responding on port $PORT")
-                // 不再自动重启，让用户手动通过 action 重启
+                return
+            }
+            OpenCodeApi.checkAndPerformUpgrade { result ->
+                if (result.success) {
+                    thisLogger().info("OpenCode upgraded successfully: ${result.message}")
+                } else {
+                    thisLogger().warn("OpenCode upgrade check: ${result.message}")
+                }
             }
         }
 
