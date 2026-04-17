@@ -35,6 +35,10 @@ import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
+import com.intellij.execution.configurations.GeneralCommandLine
+import com.intellij.execution.process.OSProcessHandler
+import com.intellij.execution.process.ProcessHandlerFactory
+import com.intellij.execution.process.ProcessHandler
 
 /**
  * OpenCode Web UI 工具窗口工厂类
@@ -45,12 +49,10 @@ class MyToolWindowFactory : ToolWindowFactory {
         private const val PORT = 12396
         private const val HOST = "127.0.0.1"
 
-        private val browserInstance = AtomicReference<JBCefBrowser?>(null)
         private val serverRunning = AtomicBoolean(false)
-        private val serverProcess = AtomicReference<Process?>(null)
+        private val serverProcess = AtomicReference<ProcessHandler?>(null)
         private var checkScheduledFuture: ScheduledFuture<*>? = null
         private var updateScheduledFuture: ScheduledFuture<*>? = null
-        private val isRestarting = AtomicBoolean(false)
         private var myToolWindowInstance: MyToolWindow? = null
 
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
@@ -64,10 +66,11 @@ class MyToolWindowFactory : ToolWindowFactory {
                 updateScheduledFuture?.cancel(true)
                 updateScheduledFuture = null
 
-                val process = serverProcess.get()
-                if (process?.isAlive == true) {
-                    process.destroy()
-                    thisLogger().info("OpenCode server stopped (via process reference)")
+                serverProcess.get()?.let { handler ->
+                    if (!handler.isProcessTerminated) {
+                        handler.destroyProcess()
+                        thisLogger().info("OpenCode server stopped (via ProcessHandler)")
+                    }
                 }
 
                 killProcessByPort(PORT)
@@ -200,17 +203,6 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         fun getContent() = browserPanel
 
-        fun restartBrowser(url: String, projectPath: String) {
-            thisLogger().info("Disposing old browser instance...")
-            browserPanel.disposeBrowser()
-            thisLogger().info("Creating new browser instance...")
-            mainBrowser = browserPanel.createMainTab(url, projectPath)
-            browserInstance.set(mainBrowser)
-            setupBrowserKeyboardHandling()
-            thisLogger().info("New browser created and ready")
-            isRestarting.set(false)
-        }
-
         fun setupBrowserKeyboardHandling() {
             val panel = browserPanel
             setupComponent(panel)
@@ -333,6 +325,9 @@ class MyToolWindowFactory : ToolWindowFactory {
                 ApplicationManager.getApplication().invokeLater {
                     if (!isServerHealthy()) {
                         onServerBecameUnhealthy()
+                    } else if (mainBrowser == null) {
+                        // Server is healthy but browser doesn't exist - load the page
+                        loadProjectPage()
                     }
                 }
             }, 5L, 5L, TimeUnit.SECONDS)
@@ -343,7 +338,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             thisLogger().info("Server became unhealthy, showing start button")
             browserPanel.disposeBrowser()
             mainBrowser = null
-            browserInstance.set(null)
             showServerNotRunning()
         }
 
@@ -385,9 +379,9 @@ class MyToolWindowFactory : ToolWindowFactory {
             val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
                 override fun run(indicator: ProgressIndicator) {
                     try {
-                        val logFile = createLogFile()
-                        val process = startOpenCodeProcess(logFile)
-                        serverProcess.set(process)
+                        val handler = startOpenCodeProcess()
+                        serverProcess.set(handler)
+
                         if (OpenCodeApi.waitForServerHealthy(30000)) {
                             onServerStarted()
                         } else {
@@ -402,19 +396,13 @@ class MyToolWindowFactory : ToolWindowFactory {
             ProgressManager.getInstance().run(task)
         }
 
-        private fun createLogFile(): java.io.File {
-            val logDir = java.io.File(System.getProperty("user.home"), "Desktop/tmp")
-            logDir.mkdirs()
-            return java.io.File(logDir, "opencode.log")
-        }
+        private fun startOpenCodeProcess(): ProcessHandler {
+            val commandLine = GeneralCommandLine(getOpenCodeCommand())
+            commandLine.environment.clear()
+            commandLine.environment.putAll(getEnvironment())
 
-        private fun startOpenCodeProcess(logFile: java.io.File): Process {
-            val processBuilder = ProcessBuilder()
-                .command(getOpenCodeCommand())
-                .redirectOutput(logFile)
-                .redirectErrorStream(true)
-            processBuilder.environment().putAll(getEnvironment())
-            return processBuilder.start()
+            return ProcessHandlerFactory.getInstance()
+                .createProcessHandler(commandLine)
         }
 
         private fun onServerStarted() {
@@ -436,7 +424,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             browserPanel.hideStartButton()
             if (mainBrowser == null) {
                 mainBrowser = browserPanel.createMainTab(url, projectPath)
-                browserInstance.set(mainBrowser)
                 setupBrowserComponent(mainBrowser!!)
             } else {
                 mainBrowser?.loadURL(url)
