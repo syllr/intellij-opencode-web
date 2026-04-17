@@ -467,8 +467,9 @@ class MyToolWindowFactory : ToolWindowFactory {
         private fun loadProjectPage() {
             isShowingStartButton = false
             val projectPath = project.basePath ?: return
-            val sessionId = SessionHelper.getLatestSessionId(projectPath)
-            val url = buildProjectUrl(projectPath, sessionId)
+            // 只加载项目 URL，不带 session ID，让 OpenCode 自己恢复 session
+            val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+            val url = "http://$HOST:$PORT/$encodedPath"
             thisLogger().info("Loading page: $url")
             browserPanel.hideStartButton()
             if (mainBrowser == null) {
