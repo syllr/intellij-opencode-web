@@ -608,13 +608,6 @@ class MyToolWindowFactory : ToolWindowFactory {
                                 localStorage.setItem(serverKey, JSON.stringify(store));
                                 setTimeout(function() { location.reload(); }, 100);
                             }
-                            var layoutKey = 'opencode.global.dat:layout';
-                            var layoutRaw = localStorage.getItem(layoutKey);
-                            if (!layoutRaw) {
-                                localStorage.setItem(layoutKey, JSON.stringify({
-                                    sidebar: { opened: true, width: 344, workspaces: {}, workspacesDefault: false }
-                                }));
-                            }
                         } catch(e) { console.log('opencode localStorage error: ' + e.message); }
                     """.trimIndent()
                     cefBrowser?.executeJavaScript(js, "", 0)
