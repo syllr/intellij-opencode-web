@@ -84,17 +84,14 @@ class MyToolWindowFactory : ToolWindowFactory {
                 thisLogger().info("Restart already in progress, skipping")
                 return
             }
-
             try {
                 if (project == null || myToolWindowInstance == null) {
                     return
                 }
-
-                if (!checkPortOpenInternal()) {
+                if (!OpenCodeApi.isServerHealthySync()) {
                     myToolWindowInstance?.checkAndLoadContent()
                     return
                 }
-
                 val projectPath = project.basePath ?: return
                 val sessionId = SessionHelper.getLatestSessionId(projectPath)
                 val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
@@ -123,7 +120,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                         serverProcess.set(process)
                         thisLogger().info("OpenCode server process started")
 
-                        if (checkPortOpenInternal()) {
+                        if (OpenCodeApi.waitForServerHealthy(30000)) {
                             thisLogger().info("OpenCode server is ready")
                             serverRunning.set(true)
                             ApplicationManager.getApplication().invokeLater {
@@ -175,17 +172,6 @@ class MyToolWindowFactory : ToolWindowFactory {
 
             env["PATH"] = (additionalPaths + originalPath).joinToString(":")
             return env
-        }
-
-        private fun checkPortOpenInternal(): Boolean {
-            return try {
-                val socket = java.net.Socket(HOST, PORT)
-                socket.soTimeout = 2000
-                socket.close()
-                true
-            } catch (e: Exception) {
-                false
-            }
         }
 
         private fun killProcessByPort(port: Int) {
@@ -263,6 +249,34 @@ class MyToolWindowFactory : ToolWindowFactory {
         init {
             setupWindowFocusListener(toolWindow)
             myToolWindowInstance = this
+        }
+
+        private fun isServerHealthy(): Boolean = OpenCodeApi.isServerHealthySync()
+
+        private fun isServerRunning(): Boolean {
+            return if (isServerHealthy()) {
+                serverRunning.set(true)
+                true
+            } else {
+                serverRunning.set(false)
+                false
+            }
+        }
+
+        fun checkAndLoadContent() {
+            val projectPath = project.basePath ?: return
+            if (isServerRunning()) {
+                loadProjectPage()
+            } else {
+                showServerNotRunning()
+            }
+        }
+
+        private fun showServerNotRunning() {
+            serverRunning.set(false)
+            mainBrowser = null
+            browserPanel.disposeBrowser()
+            browserPanel.showStartButton { startOpenCodeServer() }
         }
 
         private fun setupWindowFocusListener(toolWindow: ToolWindow) {
@@ -408,105 +422,24 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        fun checkAndLoadContent() {
-            if (mainBrowser != null) {
-                if (checkPortOpen(HOST, PORT)) {
-                    serverRunning.set(true)
-                    loadProjectPage()
-                } else {
-                    showServerNotRunning()
-                }
-                return
-            }
-
-            val projectPath = project.basePath
-            if (projectPath == null) {
-                return
-            }
-
-            if (checkPortOpen(HOST, PORT)) {
-                serverRunning.set(true)
-                loadProjectPage()
-            } else {
-                showServerNotRunning()
-            }
-        }
-
-        private fun showServerNotRunning() {
-            serverRunning.set(false)
-            mainBrowser = null
-            browserPanel.showStartButton {
-                startOpenCodeServer()
-            }
-        }
-
-        private fun checkPortOpen(host: String, port: Int): Boolean {
-            return try {
-                val socket = java.net.Socket(host, port)
-                socket.soTimeout = 2000
-                socket.close()
-                true
-            } catch (e: Exception) {
-                thisLogger().info("Port check failed: ${e.message}")
-                false
-            }
-        }
-
-        private fun waitForServerReady(host: String, port: Int, timeoutMs: Long): Boolean {
-            val startTime = System.currentTimeMillis()
-            val interval = 500L
-            while (System.currentTimeMillis() - startTime < timeoutMs) {
-                if (checkPortOpen(host, port)) {
-                    try {
-                        val uri = java.net.URI("http", null, host, port, "/global/config", null, null)
-                        val url = uri.toURL()
-                        val connection = url.openConnection() as java.net.HttpURLConnection
-                        connection.requestMethod = "GET"
-                        connection.connectTimeout = 2000
-                        connection.readTimeout = 2000
-                        val responseCode = connection.responseCode
-                        connection.disconnect()
-                        if (responseCode == 200) {
-                            return true
-                        }
-                    } catch (e: Exception) {
-                    }
-                }
-                try {
-                    Thread.sleep(interval)
-                } catch (e: InterruptedException) {
-                    break
-                }
-            }
-            return false
-        }
-
-        // 【八】定期检查服务器状态（定时任务，每5秒执行一次）
-        // 调用此函数 → 检查端口是否开放 → 端口关则 kill 浏览器并显示启动按钮
         fun startPeriodicCheck() {
             if (checkScheduledFuture != null) return
-
-            val future = scheduler.scheduleAtFixedRate(
-                {
-                    try {
-                        ApplicationManager.getApplication().invokeLater {
-                            if (!checkPortOpen(HOST, PORT)) {
-                                browserPanel.disposeBrowser()
-                                mainBrowser = null
-                                browserInstance.set(null)
-                                showServerNotRunning()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        thisLogger().warn("Periodic check skipped: ${e.message}")
+            checkScheduledFuture = scheduler.scheduleAtFixedRate({
+                ApplicationManager.getApplication().invokeLater {
+                    if (!isServerHealthy()) {
+                        onServerBecameUnhealthy()
                     }
-                },
-                5L,
-                5L,
-                TimeUnit.SECONDS
-            )
-            checkScheduledFuture = future
+                }
+            }, 5L, 5L, TimeUnit.SECONDS)
             thisLogger().info("Started periodic server health check")
+        }
+
+        private fun onServerBecameUnhealthy() {
+            thisLogger().info("Server became unhealthy, showing start button")
+            browserPanel.disposeBrowser()
+            mainBrowser = null
+            browserInstance.set(null)
+            showServerNotRunning()
         }
 
         // 【九】定期检查更新（定时任务，每1小时执行一次）
@@ -532,20 +465,8 @@ class MyToolWindowFactory : ToolWindowFactory {
             thisLogger().info("Started periodic update check (every 1 hour)")
         }
 
-        private fun checkServerHealth() {
-            OpenCodeApi.checkHealth { status ->
-                if (status.healthy) {
-                    thisLogger().info("OpenCode server is healthy, version: ${status.version}")
-                } else {
-                    thisLogger().warn("OpenCode server is not responding on port $PORT")
-                }
-            }
-        }
-
         private fun checkAndPerformUpgrade() {
-            if (!checkPortOpen(HOST, PORT)) {
-                return
-            }
+            if (!isServerHealthy()) return
             OpenCodeApi.checkAndPerformUpgrade { result ->
                 if (result.success) {
                     thisLogger().info("OpenCode upgraded successfully: ${result.message}")
@@ -555,64 +476,58 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        // 【五】启动 OpenCode 服务器（暴露给 action 的版本，内部调用 startServerInternal）
-        // 调用此函数 → startServerInternal → loadProjectPage
         private fun startOpenCodeServer() {
             val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
                 override fun run(indicator: ProgressIndicator) {
                     try {
-                        val logDir = java.io.File(System.getProperty("user.home"), "Desktop/tmp")
-                        logDir.mkdirs()
-                        val logFile = java.io.File(logDir, "opencode.log")
-                        val processBuilder = ProcessBuilder()
-                            .command(getOpenCodeCommand())
-                            .redirectOutput(logFile)
-                            .redirectErrorStream(true)
-
-                        processBuilder.environment().putAll(getEnvironment())
-
-                        val process = processBuilder.start()
+                        val logFile = createLogFile()
+                        val process = startOpenCodeProcess(logFile)
                         serverProcess.set(process)
-                        thisLogger().info("OpenCode server log file: ${logFile.absolutePath}")
-
-                        if (waitForServerReady(HOST, PORT, 30000)) {
-                            thisLogger().info("OpenCode server is ready")
-                            serverRunning.set(true)
-                            ApplicationManager.getApplication().invokeLater {
-                                loadProjectPage()
-                            }
+                        if (OpenCodeApi.waitForServerHealthy(30000)) {
+                            onServerStarted()
                         } else {
-                            thisLogger().warn("OpenCode server may not be fully ready, proceeding anyway")
-                            serverRunning.set(true)
-                            ApplicationManager.getApplication().invokeLater {
-                                loadProjectPage()
-                            }
+                            thisLogger().warn("Server may not be ready, proceeding anyway")
+                            onServerStarted()
                         }
                     } catch (e: Exception) {
-                        thisLogger().error("Error starting OpenCode server: ${e.message}")
-                        ApplicationManager.getApplication().invokeLater {
-                            showErrorInBrowser()
-                        }
-                        serverRunning.set(false)
+                        onServerStartFailed(e)
                     }
                 }
             }
             ProgressManager.getInstance().run(task)
         }
 
-        // 【六】加载项目页面（server 启动后或复用已有 server 时调用）
-        // 调用此函数 → 从 SQLite 读取 session → 创建或刷新浏览器
+        private fun createLogFile(): java.io.File {
+            val logDir = java.io.File(System.getProperty("user.home"), "Desktop/tmp")
+            logDir.mkdirs()
+            return java.io.File(logDir, "opencode.log")
+        }
+
+        private fun startOpenCodeProcess(logFile: java.io.File): Process {
+            val processBuilder = ProcessBuilder()
+                .command(getOpenCodeCommand())
+                .redirectOutput(logFile)
+                .redirectErrorStream(true)
+            processBuilder.environment().putAll(getEnvironment())
+            return processBuilder.start()
+        }
+
+        private fun onServerStarted() {
+            serverRunning.set(true)
+            ApplicationManager.getApplication().invokeLater { loadProjectPage() }
+        }
+
+        private fun onServerStartFailed(e: Exception) {
+            thisLogger().error("Error starting OpenCode server: ${e.message}")
+            serverRunning.set(false)
+            ApplicationManager.getApplication().invokeLater { showErrorInBrowser() }
+        }
+
         private fun loadProjectPage() {
             val projectPath = project.basePath ?: return
             val sessionId = SessionHelper.getLatestSessionId(projectPath)
-            val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-            val url = if (sessionId != null) {
-                "http://$HOST:$PORT/$encodedPath/session/$sessionId"
-            } else {
-                "http://$HOST:$PORT/$encodedPath"
-            }
+            val url = buildProjectUrl(projectPath, sessionId)
             thisLogger().info("Loading page: $url")
-
             browserPanel.hideStartButton()
             if (mainBrowser == null) {
                 mainBrowser = browserPanel.createMainTab(url, projectPath)
@@ -621,6 +536,36 @@ class MyToolWindowFactory : ToolWindowFactory {
             } else {
                 mainBrowser?.loadURL(url)
             }
+        }
+
+        private fun buildProjectUrl(projectPath: String, sessionId: String?): String {
+            val encodedPath = Base64.getEncoder()
+                .encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+            return if (sessionId != null) {
+                "http://$HOST:$PORT/$encodedPath/session/$sessionId"
+            } else {
+                "http://$HOST:$PORT/$encodedPath"
+            }
+        }
+
+        private fun getOpenCodeCommand(): List<String> {
+            val path = findOpenCodePath()
+            return listOf(path, "serve", "--hostname", HOST, "--port", PORT.toString(), "--log-level", "INFO")
+        }
+
+        private fun findOpenCodePath(): String {
+            listOf("/opt/homebrew/bin/opencode", "/usr/local/bin/opencode")
+                .forEach { if (java.io.File(it).exists()) return it }
+            return "opencode"
+        }
+
+        private fun getEnvironment(): Map<String, String> {
+            val env = mutableMapOf<String, String>()
+            env.putAll(System.getenv())
+            val additionalPaths = listOf("/usr/local/bin", "/opt/homebrew/bin")
+                .filterNot { env["PATH"]?.contains(it) == true }
+            env["PATH"] = (additionalPaths + (env["PATH"] ?: "")).joinToString(":")
+            return env
         }
 
         private fun showErrorInBrowser() {

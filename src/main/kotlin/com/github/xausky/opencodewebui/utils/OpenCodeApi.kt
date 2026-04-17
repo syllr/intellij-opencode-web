@@ -161,4 +161,31 @@ object OpenCodeApi {
             connection?.disconnect()
         }
     }
+
+    // 同步健康检查
+    fun isServerHealthySync(): Boolean {
+        var connection: HttpURLConnection? = null
+        return try {
+            val url = URL("http://$HOST:$PORT/global/health")
+            connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 2000
+            connection.readTimeout = 2000
+            connection.responseCode == 200
+        } catch (e: Exception) {
+            false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    // 等待服务器健康
+    fun waitForServerHealthy(timeoutMs: Long): Boolean {
+        val startTime = System.currentTimeMillis()
+        val interval = 500L
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            if (isServerHealthySync()) return true
+            Thread.sleep(interval)
+        }
+        return false
+    }
 }
