@@ -588,6 +588,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
             sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
+                    /*
                     val js = """
                         try {
                             var serverKey = 'opencode.global.dat:server';
@@ -611,6 +612,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                         } catch(e) { console.log('opencode localStorage error: ' + e.message); }
                     """.trimIndent()
                     cefBrowser?.executeJavaScript(js, "", 0)
+                    */
                 }
             }, createdBrowser.cefBrowser)
             return createdBrowser
