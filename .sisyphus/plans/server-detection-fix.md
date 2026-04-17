@@ -105,9 +105,9 @@ fun restartServer(project: Project?) {
 - [x] 2. 修复 `restartServer()` - 不再调用 `stopServer()`
 - [x] 3. 修复 `checkServerHealth()` - 健康检查失败不再自动重启
 - [x] 4. 研究 OpenCode 更新接口（已完成）
-- [ ] 5. 实现自动更新检查功能（可选 - 用户决定）
-- [ ] 6. 构建并测试
-- [ ] 7. 发布新版本
+- [x] 5. 实现每小时自动更新检查 (POST /global/upgrade)
+- [x] 6. 构建并测试
+- [x] 7. 发布新版本 (v1.0.7)
 
 ## Verification Strategy
 

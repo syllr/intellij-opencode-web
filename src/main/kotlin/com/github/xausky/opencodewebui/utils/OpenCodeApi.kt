@@ -9,10 +9,14 @@ import java.net.URLEncoder
 object OpenCodeApi {
     private const val HOST = "127.0.0.1"
     private const val PORT = 12396
+    private const val CONNECT_TIMEOUT = 30000
+    private const val READ_TIMEOUT = 30000
+    private const val MAX_RETRIES = 3
+    private const val RETRY_DELAY_MS = 2000L
 
     fun getLatestSessionId(projectPath: String, callback: (String?) -> Unit) {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = fetchSessionId(projectPath)
+            val result = fetchSessionIdWithRetry(projectPath)
             ApplicationManager.getApplication().invokeLater {
                 callback(result)
             }
@@ -21,7 +25,7 @@ object OpenCodeApi {
 
     fun checkHealth(callback: (HealthStatus) -> Unit) {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = fetchHealth()
+            val result = fetchHealthWithRetry()
             ApplicationManager.getApplication().invokeLater {
                 callback(result)
             }
@@ -30,13 +34,24 @@ object OpenCodeApi {
 
     data class HealthStatus(val healthy: Boolean, val version: String?)
 
+    private fun fetchHealthWithRetry(): HealthStatus {
+        repeat(MAX_RETRIES) { attempt ->
+            val result = fetchHealth()
+            if (result.healthy || attempt == MAX_RETRIES - 1) {
+                return result
+            }
+            Thread.sleep(RETRY_DELAY_MS)
+        }
+        return HealthStatus(false, null)
+    }
+
     private fun fetchHealth(): HealthStatus {
         var connection: HttpURLConnection? = null
         return try {
             val url = "http://$HOST:$PORT/global/health"
             connection = URL(url).openConnection() as HttpURLConnection
-            connection.connectTimeout = 5000
-            connection.readTimeout = 5000
+            connection.connectTimeout = CONNECT_TIMEOUT
+            connection.readTimeout = READ_TIMEOUT
 
             if (connection.responseCode == 200) {
                 connection.inputStream.bufferedReader().use { reader ->
@@ -56,14 +71,25 @@ object OpenCodeApi {
         }
     }
 
+    private fun fetchSessionIdWithRetry(projectPath: String): String? {
+        repeat(MAX_RETRIES) { attempt ->
+            val result = fetchSessionId(projectPath)
+            if (result != null || attempt == MAX_RETRIES - 1) {
+                return result
+            }
+            Thread.sleep(RETRY_DELAY_MS)
+        }
+        return null
+    }
+
     private fun fetchSessionId(projectPath: String): String? {
         var connection: HttpURLConnection? = null
         return try {
             val encodedPath = URLEncoder.encode(projectPath, "UTF-8")
             val url = "http://$HOST:$PORT/session?directory=$encodedPath"
             connection = URL(url).openConnection() as HttpURLConnection
-            connection.connectTimeout = 5000
-            connection.readTimeout = 5000
+            connection.connectTimeout = CONNECT_TIMEOUT
+            connection.readTimeout = READ_TIMEOUT
 
             if (connection.responseCode == 200) {
                 connection.inputStream.bufferedReader().use { reader ->
