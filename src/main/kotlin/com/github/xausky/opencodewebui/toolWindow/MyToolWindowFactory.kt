@@ -79,65 +79,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        fun restartServer(project: Project?) {
-            if (!isRestarting.compareAndSet(false, true)) {
-                thisLogger().info("Restart already in progress, skipping")
-                return
-            }
-            try {
-                if (project == null || myToolWindowInstance == null) {
-                    return
-                }
-                if (!OpenCodeApi.isServerHealthySync()) {
-                    myToolWindowInstance?.checkAndLoadContent()
-                    return
-                }
-                val projectPath = project.basePath ?: return
-                val sessionId = SessionHelper.getLatestSessionId(projectPath)
-                val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-                val url = if (sessionId != null) {
-                    "http://$HOST:$PORT/$encodedPath/session/$sessionId"
-                } else {
-                    "http://$HOST:$PORT/$encodedPath"
-                }
-                myToolWindowInstance?.restartBrowser(url, projectPath)
-            } finally {
-                isRestarting.set(false)
-            }
-        }
-
-        private fun getOpenCodeCommand(): List<String> {
-            val opencodePath = findOpenCodePath()
-            return listOf(opencodePath, "serve", "--hostname", HOST, "--port", PORT.toString(), "--log-level", "INFO")
-        }
-
-        private fun findOpenCodePath(): String {
-            val possiblePaths = listOf(
-                "/opt/homebrew/bin/opencode",
-                "/usr/local/bin/opencode"
-            )
-            for (path in possiblePaths) {
-                if (java.io.File(path).exists()) {
-                    return path
-                }
-            }
-            return "opencode"
-        }
-
-        private fun getEnvironment(): Map<String, String> {
-            val env = mutableMapOf<String, String>()
-            env.putAll(System.getenv())
-
-            val originalPath = env["PATH"] ?: ""
-            val additionalPaths = listOf(
-                "/usr/local/bin",
-                "/opt/homebrew/bin"
-            ).filterNot { originalPath.contains(it) }
-
-            env["PATH"] = (additionalPaths + originalPath).joinToString(":")
-            return env
-        }
-
         private fun killProcessByPort(port: Int) {
             try {
                 val os = System.getProperty("os.name").lowercase()
