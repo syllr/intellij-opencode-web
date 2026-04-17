@@ -624,6 +624,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                                 var serverKeyName = isLocal ? 'local' : origin;
                                 var projectPath = '$escapedProjectPath';
                                 var alreadySet = store.projects[serverKeyName] && store.projects[serverKeyName].some(function(p) { return p.worktree === projectPath; });
+                                console.log('alreadySet:', alreadySet, 'projectPath:', projectPath);
                                 if (!alreadySet) {
                                     if (!store.list.includes(origin)) store.list.push(origin);
                                     if (!store.projects[serverKeyName]) store.projects[serverKeyName] = [];
