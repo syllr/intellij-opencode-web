@@ -240,6 +240,8 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun checkAndLoadContent() {
+            // 先同步检查一次服务器状态，避免后台线程尚未更新状态的时序问题
+            serverHealthy.set(OpenCodeApi.isServerHealthySync())
             startHealthMonitoring()
             if (isServerHealthy()) {
                 loadProjectPage()
@@ -622,23 +624,18 @@ class MyToolWindowFactory : ToolWindowFactory {
                                 var serverKey = 'opencode.global.dat:server';
                                 var raw = localStorage.getItem(serverKey);
                                 var store = raw ? JSON.parse(raw) : { list: [], projects: {}, lastProject: {} };
-                                if (!store.list) store.list = [];
-                                if (!store.projects) store.projects = {};
-                                if (!store.lastProject) store.lastProject = {};
+                                store.list = store.list || [];
+                                store.projects = store.projects || {};
+                                store.lastProject = store.lastProject || {};
                                 var origin = location.origin;
                                 var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
                                 var serverKeyName = isLocal ? 'local' : origin;
                                 var projectPath = '$escapedProjectPath';
-                                // 移除已存在的项目
                                 store.projects[serverKeyName] = (store.projects[serverKeyName] || []).filter(function(p) { return p.worktree !== projectPath; });
-                                // 添加当前项目
                                 if (!store.list.includes(origin)) store.list.push(origin);
                                 store.projects[serverKeyName].push({ worktree: projectPath, expanded: true });
                                 store.lastProject[serverKeyName] = projectPath;
                                 localStorage.setItem(serverKey, JSON.stringify(store));
-                                console.log('OpenCode project registered: ' + projectPath);
-                                console.log('URL:', window.location.href);
-                                console.log('params:', window.location.search);
                             } catch(e) {
                                 console.error('opencode localStorage error: ' + e.message);
                             }

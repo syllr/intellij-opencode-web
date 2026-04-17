@@ -1,12 +1,17 @@
 {
-  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/global-healthcheck.md",
-  "started_at": "2026-04-17T09:06:50.934Z",
+  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/button-display-debug.md",
+  "started_at": "2026-04-17T11:40:44.169Z",
   "session_ids": [
-    "ses_266f2cf7cffepv3ft2DoJra9It"
+    "ses_264c1b5a6ffezPFOSLztm0SgWZ",
+    "ses_264b39960ffeJGbsM9BHPIjW84",
+    "ses_264b3934bffeOwzw8uJUnM4UGM"
   ],
   "session_origins": {
-    "ses_266f2cf7cffepv3ft2DoJra9It": "direct"
+    "ses_264c1b5a6ffezPFOSLztm0SgWZ": "direct",
+    "ses_264b39960ffeJGbsM9BHPIjW84": "appended",
+    "ses_264b3934bffeOwzw8uJUnM4UGM": "appended"
   },
-  "plan_name": "global-healthcheck",
-  "agent": "atlas"
+  "plan_name": "button-display-debug",
+  "agent": "atlas",
+  "task_sessions": {}
 }
