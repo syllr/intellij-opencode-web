@@ -466,16 +466,13 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun loadProjectPage() {
             isShowingStartButton = false
-            // 简化：直接加载首页，不指定 project 和 session
-            val url = "http://$HOST:$PORT"
-            // val projectPath = project.basePath ?: return
-            // val sessionId = SessionHelper.getLatestSessionId(projectPath)
-            // val url = buildProjectUrl(projectPath, sessionId)
+            val projectPath = project.basePath ?: return
+            val sessionId = SessionHelper.getLatestSessionId(projectPath)
+            val url = buildProjectUrl(projectPath, sessionId)
             thisLogger().info("Loading page: $url")
             browserPanel.hideStartButton()
             if (mainBrowser == null) {
-                // mainBrowser = browserPanel.createMainTab(url, projectPath)
-                mainBrowser = browserPanel.createMainTab(url)
+                mainBrowser = browserPanel.createMainTab(url, projectPath)
                 setupBrowserComponent(mainBrowser!!)
             } else {
                 mainBrowser?.loadURL(url)
@@ -599,7 +596,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         // 【七】创建浏览器 Tab 并加载 URL
-        fun createMainTab(url: String): JBCefBrowser {
+        fun createMainTab(url: String, projectPath: String): JBCefBrowser {
             browser?.cefBrowser?.stopLoad()
             browser?.dispose()
             removeAll()
@@ -610,7 +607,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
             sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
-                    /*
+                    val escapedProjectPath = projectPath.replace("'", "\'")
                     val js = """
                         try {
                             var serverKey = 'opencode.global.dat:server';
@@ -622,19 +619,18 @@ class MyToolWindowFactory : ToolWindowFactory {
                             var origin = location.origin;
                             var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
                             var serverKeyName = isLocal ? 'local' : origin;
-                            var alreadySet = store.projects[serverKeyName] && store.projects[serverKeyName].some(function(p) { return p.worktree === '$projectPath'; });
+                            var alreadySet = store.projects[serverKeyName] && store.projects[serverKeyName].some(function(p) { return p.worktree === '$escapedProjectPath'; });
                             if (!alreadySet) {
                                 if (!store.list.includes(origin)) store.list.push(origin);
                                 if (!store.projects[serverKeyName]) store.projects[serverKeyName] = [];
-                                store.projects[serverKeyName].push({ worktree: '$projectPath', expanded: true });
-                                store.lastProject[serverKeyName] = '$projectPath';
+                                store.projects[serverKeyName].push({ worktree: '$escapedProjectPath', expanded: true });
+                                store.lastProject[serverKeyName] = '$escapedProjectPath';
                                 localStorage.setItem(serverKey, JSON.stringify(store));
                                 setTimeout(function() { location.reload(); }, 100);
                             }
                         } catch(e) { console.log('opencode localStorage error: ' + e.message); }
                     """.trimIndent()
                     cefBrowser?.executeJavaScript(js, "", 0)
-                    */
                 }
             }, createdBrowser.cefBrowser)
             sharedClient.addDisplayHandler(object : org.cef.handler.CefDisplayHandlerAdapter() {
