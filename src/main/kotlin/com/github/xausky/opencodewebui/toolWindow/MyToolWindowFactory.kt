@@ -607,28 +607,35 @@ class MyToolWindowFactory : ToolWindowFactory {
             sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
             sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
-                    val escapedProjectPath = projectPath.replace("'", "\'")
+                    // 使用 Java executeJavaScript 执行，绕过 CSP
+                    val escapedProjectPath = projectPath.replace("\\", "\\\\").replace("'", "\'")
                     val js = """
-                        try {
-                            var serverKey = 'opencode.global.dat:server';
-                            var raw = localStorage.getItem(serverKey);
-                            var store = raw ? JSON.parse(raw) : { list: [], projects: {}, lastProject: {} };
-                            if (!store.list) store.list = [];
-                            if (!store.projects) store.projects = {};
-                            if (!store.lastProject) store.lastProject = {};
-                            var origin = location.origin;
-                            var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
-                            var serverKeyName = isLocal ? 'local' : origin;
-                            var alreadySet = store.projects[serverKeyName] && store.projects[serverKeyName].some(function(p) { return p.worktree === '$escapedProjectPath'; });
-                            if (!alreadySet) {
-                                if (!store.list.includes(origin)) store.list.push(origin);
-                                if (!store.projects[serverKeyName]) store.projects[serverKeyName] = [];
-                                store.projects[serverKeyName].push({ worktree: '$escapedProjectPath', expanded: true });
-                                store.lastProject[serverKeyName] = '$escapedProjectPath';
-                                localStorage.setItem(serverKey, JSON.stringify(store));
-                                setTimeout(function() { location.reload(); }, 100);
+                        (function() {
+                            try {
+                                var serverKey = 'opencode.global.dat:server';
+                                var raw = localStorage.getItem(serverKey);
+                                var store = raw ? JSON.parse(raw) : { list: [], projects: {}, lastProject: {} };
+                                if (!store.list) store.list = [];
+                                if (!store.projects) store.projects = {};
+                                if (!store.lastProject) store.lastProject = {};
+                                var origin = location.origin;
+                                var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
+                                var serverKeyName = isLocal ? 'local' : origin;
+                                var projectPath = '$escapedProjectPath';
+                                var alreadySet = store.projects[serverKeyName] && store.projects[serverKeyName].some(function(p) { return p.worktree === projectPath; });
+                                if (!alreadySet) {
+                                    if (!store.list.includes(origin)) store.list.push(origin);
+                                    if (!store.projects[serverKeyName]) store.projects[serverKeyName] = [];
+                                    store.projects[serverKeyName].push({ worktree: projectPath, expanded: true });
+                                    store.lastProject[serverKeyName] = projectPath;
+                                    localStorage.setItem(serverKey, JSON.stringify(store));
+                                    console.log('OpenCode project registered: ' + projectPath);
+                                    setTimeout(function() { location.reload(); }, 100);
+                                }
+                            } catch(e) {
+                                console.error('opencode localStorage error: ' + e.message);
                             }
-                        } catch(e) { console.log('opencode localStorage error: ' + e.message); }
+                        })();
                     """.trimIndent()
                     cefBrowser?.executeJavaScript(js, "", 0)
                 }
