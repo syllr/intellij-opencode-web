@@ -503,15 +503,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             return "opencode"
         }
 
-        private fun getEnvironment(): Map<String, String> {
-            val env = mutableMapOf<String, String>()
-            env.putAll(System.getenv())
-            val additionalPaths = listOf("/usr/local/bin", "/opt/homebrew/bin")
-                .filterNot { env["PATH"]?.contains(it) == true }
-            env["PATH"] = (additionalPaths + (env["PATH"] ?: "")).joinToString(":")
-            return env
-        }
-
         private fun showErrorInBrowser() {
             val html = """
                 <html>
