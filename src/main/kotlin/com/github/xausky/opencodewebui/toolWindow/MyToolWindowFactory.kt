@@ -103,6 +103,24 @@ class MyToolWindowFactory : ToolWindowFactory {
                 thisLogger().error("Error killing process by port: ${e.message}")
             }
         }
+
+        // 新增：全局健康状态（由健康检查线程写入）
+        private val serverHealthy = AtomicBoolean(false)
+
+        // 新增：启动全局健康检查（IDEA启动时调用）
+        fun startGlobalHealthCheck() {
+            Thread({
+                while (true) {
+                    val healthy = OpenCodeApi.isServerHealthySync()
+                    serverHealthy.set(healthy)
+                    thisLogger().info("Global health check: $healthy")
+                    Thread.sleep(5000)
+                }
+            }).start()
+        }
+
+        // 供工具窗口读取
+        fun isServerHealthy() = serverHealthy.get()
     }
 
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
@@ -141,7 +159,6 @@ class MyToolWindowFactory : ToolWindowFactory {
 
             myToolWindow.setupBrowserKeyboardHandling()
             myToolWindow.checkAndLoadContent()
-            myToolWindow.startPeriodicCheck()
             myToolWindow.startPeriodicUpdateCheck()
         }
     }
@@ -159,7 +176,27 @@ class MyToolWindowFactory : ToolWindowFactory {
             myToolWindowInstance = this
         }
 
-        private fun isServerHealthy(): Boolean = OpenCodeApi.isServerHealthySync()
+        private fun isServerHealthy(): Boolean = serverHealthy.get()
+
+        private var isShowingStartButton = false
+
+        private fun startHealthMonitoring() {
+            Thread({
+                while (true) {
+                    Thread.sleep(2000)
+                    val healthy = serverHealthy.get()
+                    if (!healthy && !isShowingStartButton && mainBrowser != null) {
+                        ApplicationManager.getApplication().invokeLater {
+                            showServerNotRunning()
+                        }
+                    } else if (healthy && isShowingStartButton) {
+                        ApplicationManager.getApplication().invokeLater {
+                            loadProjectPage()
+                        }
+                    }
+                }
+            }).start()
+        }
 
         private fun isServerRunning(): Boolean {
             return if (isServerHealthy()) {
@@ -172,8 +209,8 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun checkAndLoadContent() {
-            val projectPath = project.basePath ?: return
-            if (isServerRunning()) {
+            startHealthMonitoring()
+            if (isServerHealthy()) {
                 loadProjectPage()
             } else {
                 showServerNotRunning()
@@ -183,6 +220,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         private fun showServerNotRunning() {
             serverRunning.set(false)
             mainBrowser = null
+            isShowingStartButton = true
             browserPanel.disposeBrowser()
             browserPanel.showStartButton { startOpenCodeServer() }
         }
@@ -319,28 +357,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        fun startPeriodicCheck() {
-            if (checkScheduledFuture != null) return
-            checkScheduledFuture = scheduler.scheduleAtFixedRate({
-                ApplicationManager.getApplication().invokeLater {
-                    if (!isServerHealthy()) {
-                        onServerBecameUnhealthy()
-                    } else if (mainBrowser == null) {
-                        // Server is healthy but browser doesn't exist - load the page
-                        loadProjectPage()
-                    }
-                }
-            }, 5L, 5L, TimeUnit.SECONDS)
-            thisLogger().info("Started periodic server health check")
-        }
-
-        private fun onServerBecameUnhealthy() {
-            thisLogger().info("Server became unhealthy, showing start button")
-            browserPanel.disposeBrowser()
-            mainBrowser = null
-            showServerNotRunning()
-        }
-
         // 【九】定期检查更新（定时任务，每1小时执行一次）
         // 调用此函数 → 每1小时调用 OpenCodeApi.checkAndPerformUpgrade
         fun startPeriodicUpdateCheck() {
@@ -421,6 +437,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         private fun loadProjectPage() {
+            isShowingStartButton = false
             val projectPath = project.basePath ?: return
             val sessionId = SessionHelper.getLatestSessionId(projectPath)
             val url = buildProjectUrl(projectPath, sessionId)

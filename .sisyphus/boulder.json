@@ -1,12 +1,12 @@
 {
-  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/use-osprocesshandler.md",
-  "started_at": "2026-04-17T03:38:02.961Z",
+  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/global-healthcheck.md",
+  "started_at": "2026-04-17T09:06:50.934Z",
   "session_ids": [
     "ses_266f2cf7cffepv3ft2DoJra9It"
   ],
   "session_origins": {
     "ses_266f2cf7cffepv3ft2DoJra9It": "direct"
   },
-  "plan_name": "use-osprocesshandler",
+  "plan_name": "global-healthcheck",
   "agent": "atlas"
 }
