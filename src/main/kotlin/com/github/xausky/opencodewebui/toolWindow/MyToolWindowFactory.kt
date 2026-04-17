@@ -637,6 +637,18 @@ class MyToolWindowFactory : ToolWindowFactory {
                     */
                 }
             }, createdBrowser.cefBrowser)
+            sharedClient.addDisplayHandler(object : org.cef.handler.CefDisplayHandlerAdapter() {
+                override fun onConsoleMessage(
+                    browser: CefBrowser?,
+                    level: org.cef.CefSettings.LogSeverity?,
+                    message: String?,
+                    source: String?,
+                    line: Int
+                ): Boolean {
+                    thisLogger().info("[JCEF Console] $message (source: $source:$line)")
+                    return false
+                }
+            }, createdBrowser.cefBrowser)
             return createdBrowser
         }
 
