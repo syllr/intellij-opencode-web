@@ -632,9 +632,8 @@ class MyToolWindowFactory : ToolWindowFactory {
                                 store.lastProject[serverKeyName] = projectPath;
                                 localStorage.setItem(serverKey, JSON.stringify(store));
                                 console.log('OpenCode project registered: ' + projectPath);
-                                console.log('server:', localStorage.getItem('opencode.global.dat:server'));
-                                console.log('layout:', localStorage.getItem('opencode.global.dat:layout'));
-                                console.log('layout.page:', localStorage.getItem('opencode.global.dat:layout.page'));
+                                console.log('URL:', window.location.href);
+                                console.log('params:', window.location.search);
                             } catch(e) {
                                 console.error('opencode localStorage error: ' + e.message);
                             }
