@@ -31,6 +31,7 @@ intellij-opencode-web/
 | 构建配置 | build.gradle.kts, gradle.properties | 依赖、版本 |
 | 测试 | src/test/ | 单元测试 |
 | Action 注册 | plugin.xml | Action 的 add-to-group 配置 |
+| **IntelliJ Platform 参考** | `references/intellij-platform/` | 官方文档、Group ID、Action ID |
 
 ## 代码规范
 - Gradle 版本目录 (`gradle/libs.versions.toml`)
