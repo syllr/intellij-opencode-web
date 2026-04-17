@@ -106,42 +106,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        private fun startServerInternal(project: Project, onSuccess: () -> Unit) {
-            val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
-                override fun run(indicator: ProgressIndicator) {
-                    try {
-                        val processBuilder = ProcessBuilder()
-                            .command(getOpenCodeCommand())
-                            .redirectErrorStream(true)
-
-                        processBuilder.environment().putAll(getEnvironment())
-
-                        val process = processBuilder.start()
-                        serverProcess.set(process)
-                        thisLogger().info("OpenCode server process started")
-
-                        if (OpenCodeApi.waitForServerHealthy(30000)) {
-                            thisLogger().info("OpenCode server is ready")
-                            serverRunning.set(true)
-                            ApplicationManager.getApplication().invokeLater {
-                                onSuccess()
-                            }
-                        } else {
-                            thisLogger().warn("OpenCode server may not be ready yet, proceeding anyway")
-                            serverRunning.set(true)
-                            ApplicationManager.getApplication().invokeLater {
-                                onSuccess()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        thisLogger().error("Error starting OpenCode server: ${e.message}")
-                        serverRunning.set(false)
-                    }
-                }
-            }
-            ProgressManager.getInstance().run(task)
-        }
-
         private fun getOpenCodeCommand(): List<String> {
             val opencodePath = findOpenCodePath()
             return listOf(opencodePath, "serve", "--hostname", HOST, "--port", PORT.toString(), "--log-level", "INFO")

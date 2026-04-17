@@ -1,12 +1,12 @@
 {
-  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/refactor-health-check.md",
-  "started_at": "2026-04-17T01:55:08.043Z",
+  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/rename-to-shutdown.md",
+  "started_at": "2026-04-17T02:32:42.242Z",
   "session_ids": [
     "ses_266f2cf7cffepv3ft2DoJra9It"
   ],
   "session_origins": {
     "ses_266f2cf7cffepv3ft2DoJra9It": "direct"
   },
-  "plan_name": "refactor-health-check",
+  "plan_name": "rename-to-shutdown",
   "agent": "atlas"
 }

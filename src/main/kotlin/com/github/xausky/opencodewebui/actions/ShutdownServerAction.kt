@@ -5,17 +5,17 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory
 
 /**
- * 重启 OpenCode Server
+ * 关闭 OpenCode Server
  *
- * 功能：kill 端口 10086 的进程，然后重新启动 server
- * 用途：当 opencode 版本更新或 server 出问题时手动重启
+ * 功能：通过 killProcessByPort 关闭 12396 端口的进程
+ * 用途：当用户想要关闭服务器时手动关闭
  */
-class RestartServerAction : AnAction() {
-    
+class ShutdownServerAction : AnAction() {
+
     override fun actionPerformed(e: AnActionEvent) {
-        MyToolWindowFactory.restartServer(e.project)
+        MyToolWindowFactory.stopServer()
     }
-    
+
     override fun update(e: AnActionEvent) {
         e.presentation.isEnabled = true
     }
