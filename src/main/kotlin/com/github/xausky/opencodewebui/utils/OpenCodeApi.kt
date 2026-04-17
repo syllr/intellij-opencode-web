@@ -180,8 +180,11 @@ object OpenCodeApi {
 
     // 等待服务器健康
     fun waitForServerHealthy(timeoutMs: Long): Boolean {
+        // 先等待 5 秒让服务器启动完成
+        Thread.sleep(5000)
+
         val startTime = System.currentTimeMillis()
-        val interval = 500L
+        val interval = 2000L  // 每 2 秒检查一次
         while (System.currentTimeMillis() - startTime < timeoutMs) {
             if (isServerHealthySync()) return true
             Thread.sleep(interval)

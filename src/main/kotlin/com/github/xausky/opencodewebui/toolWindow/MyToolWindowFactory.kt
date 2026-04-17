@@ -398,8 +398,12 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun startOpenCodeProcess(): ProcessHandler {
             val commandLine = GeneralCommandLine(getOpenCodeCommand())
-            commandLine.environment.clear()
-            commandLine.environment.putAll(getEnvironment())
+            val currentPath = System.getenv("PATH") ?: ""
+            val additionalPaths = listOf("/usr/local/bin", "/opt/homebrew/bin")
+                .filterNot { currentPath.contains(it) }
+            if (additionalPaths.isNotEmpty()) {
+                commandLine.environment["PATH"] = (additionalPaths + currentPath).joinToString(":")
+            }
 
             return ProcessHandlerFactory.getInstance()
                 .createProcessHandler(commandLine)
@@ -442,7 +446,7 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun getOpenCodeCommand(): List<String> {
             val path = findOpenCodePath()
-            return listOf(path, "serve", "--hostname", HOST, "--port", PORT.toString(), "--log-level", "INFO")
+            return listOf(path, "serve", "--hostname", HOST, "--port", PORT.toString())
         }
 
         private fun findOpenCodePath(): String {
