@@ -623,17 +623,15 @@ class MyToolWindowFactory : ToolWindowFactory {
                                 var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
                                 var serverKeyName = isLocal ? 'local' : origin;
                                 var projectPath = '$escapedProjectPath';
-                                var alreadySet = store.projects[serverKeyName] && store.projects[serverKeyName].some(function(p) { return p.worktree === projectPath; });
-                                console.log('alreadySet:', alreadySet, 'projectPath:', projectPath);
-                                if (!alreadySet) {
-                                    if (!store.list.includes(origin)) store.list.push(origin);
-                                    if (!store.projects[serverKeyName]) store.projects[serverKeyName] = [];
-                                    store.projects[serverKeyName].push({ worktree: projectPath, expanded: true });
-                                    store.lastProject[serverKeyName] = projectPath;
-                                    localStorage.setItem(serverKey, JSON.stringify(store));
-                                    console.log('OpenCode project registered: ' + projectPath);
-                                    setTimeout(function() { location.reload(); }, 100);
-                                }
+                                // 移除已存在的项目
+                                store.projects[serverKeyName] = (store.projects[serverKeyName] || []).filter(function(p) { return p.worktree !== projectPath; });
+                                // 添加当前项目
+                                if (!store.list.includes(origin)) store.list.push(origin);
+                                store.projects[serverKeyName].push({ worktree: projectPath, expanded: true });
+                                store.lastProject[serverKeyName] = projectPath;
+                                localStorage.setItem(serverKey, JSON.stringify(store));
+                                console.log('OpenCode project registered: ' + projectPath);
+                                setTimeout(function() { location.reload(); }, 100);
                             } catch(e) {
                                 console.error('opencode localStorage error: ' + e.message);
                             }
