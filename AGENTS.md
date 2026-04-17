@@ -41,6 +41,7 @@ intellij-opencode-web/
 - 插件描述从 `README.md` 的 `<!-- Plugin description -->` 提取
 - SemVer 版本格式，支持预发布标签
 - **Git 提交规则**: Agent 禁止自动提交 git，必须等待用户显式调用才能提交
+- **发布规则**: Agent 禁止自动发布插件（publishPlugin），必须等待用户显式调用才能发布
 
 ## 调试日志
 IntelliJ 插件日志通过 `thisLogger().info/warn/error()` 输出到 IDE 日志窗口。

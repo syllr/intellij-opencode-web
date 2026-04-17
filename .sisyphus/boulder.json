@@ -1,30 +1,32 @@
 {
-  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/server-detection-fix.md",
-  "started_at": "2026-04-16T14:01:09.421Z",
+  "active_plan": "/Users/yutao/IdeaProjects/intellij-opencode-web/.sisyphus/plans/add-intellij-references.md",
+  "started_at": "2026-04-17T01:34:00.144Z",
   "session_ids": [
-    "ses_26f6a71ddffeeh94yue6KwY8Vx"
+    "ses_266f2cf7cffepv3ft2DoJra9It"
   ],
   "session_origins": {
-    "ses_26f6a71ddffeeh94yue6KwY8Vx": "direct"
+    "ses_266f2cf7cffepv3ft2DoJra9It": "direct"
   },
-  "plan_name": "server-detection-fix",
+  "plan_name": "add-intellij-references",
   "agent": "atlas",
   "task_sessions": {
     "todo:1": {
       "task_key": "todo:1",
       "task_label": "1",
-      "task_title": "修复 `checkAndLoadContent()` - 简化逻辑，先检查端口",
-      "session_id": "ses_26961f542ffeBt0n0mFBGKjX7X",
-      "agent": "explore",
-      "updated_at": "2026-04-16T14:08:53.163Z"
+      "task_title": "创建 `references/intellij-platform/` 目录",
+      "session_id": "ses_266ecaee8ffeVIPanUw0zJF2u3",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-17T01:34:51.546Z"
     },
-    "todo:4": {
-      "task_key": "todo:4",
-      "task_label": "4",
-      "task_title": "研究 OpenCode 更新接口（后台进行中）",
-      "session_id": "ses_26961f542ffeBt0n0mFBGKjX7X",
-      "agent": "explore",
-      "updated_at": "2026-04-16T14:10:02.970Z"
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "创建 `references/intellij-platform/PLATFORM_ACTIONS_SUMMARY.md`",
+      "session_id": "ses_266ebc7a7ffehXsNuPPxWfi9lf",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-17T01:36:02.739Z"
     }
   }
 }

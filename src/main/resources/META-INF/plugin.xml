@@ -33,11 +33,12 @@
         </action>
         
         <!-- Copy as Prompt - 在编辑器右键菜单添加选项 -->
-        <action id="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt" 
-                class="com.github.xausky.opencodewebui.actions.CopyAsPromptAction" 
+        <action id="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"
+                class="com.github.xausky.opencodewebui.actions.CopyAsPromptAction"
                 text="Copy as Prompt"
                 description="Copy selected text as prompt to clipboard">
             <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="$Paste"/>
+            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="$Copy"/>
         </action>
     </actions>
 
