@@ -438,13 +438,16 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun loadProjectPage() {
             isShowingStartButton = false
-            val projectPath = project.basePath ?: return
-            val sessionId = SessionHelper.getLatestSessionId(projectPath)
-            val url = buildProjectUrl(projectPath, sessionId)
+            // 简化：直接加载首页，不指定 project 和 session
+            val url = "http://$HOST:$PORT"
+            // val projectPath = project.basePath ?: return
+            // val sessionId = SessionHelper.getLatestSessionId(projectPath)
+            // val url = buildProjectUrl(projectPath, sessionId)
             thisLogger().info("Loading page: $url")
             browserPanel.hideStartButton()
             if (mainBrowser == null) {
-                mainBrowser = browserPanel.createMainTab(url, projectPath)
+                // mainBrowser = browserPanel.createMainTab(url, projectPath)
+                mainBrowser = browserPanel.createMainTab(url)
                 setupBrowserComponent(mainBrowser!!)
             } else {
                 mainBrowser?.loadURL(url)
@@ -577,7 +580,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         // 【七】创建浏览器 Tab 并加载 URL
-        fun createMainTab(url: String, projectPath: String): JBCefBrowser {
+        fun createMainTab(url: String): JBCefBrowser {
             browser?.cefBrowser?.stopLoad()
             browser?.dispose()
             removeAll()
