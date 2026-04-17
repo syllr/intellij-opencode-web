@@ -108,6 +108,15 @@ export PUBLISH_TOKEN="your-jetbrains-marketplace-token" && ./gradlew publishPlug
 - Fork 自 xausky/intellij-opencode-web-ui 的增强版本
 - 插件 ID: `com.shenyuanlaolarou.opencodewebui`
 
+## OpenCode Commands
+
+在 OpenCode 中使用 `/publish` 命令发布插件：
+
+```bash
+# 或者手动执行
+./gradlew buildPlugin && ./gradlew publishPlugin
+```
+
 ## 参考资料
 
 ### IntelliJ Platform 插件开发
