@@ -607,7 +607,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
             sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
-                    thisLogger().info("onLoadEnd called, projectPath: \$projectPath")
+                    thisLogger().info("onLoadEnd called, projectPath: $projectPath")
                     // 使用 Java executeJavaScript 执行，绕过 CSP
                     val escapedProjectPath = projectPath.replace("\\", "\\\\").replace("'", "\\'")
                     val js = """
