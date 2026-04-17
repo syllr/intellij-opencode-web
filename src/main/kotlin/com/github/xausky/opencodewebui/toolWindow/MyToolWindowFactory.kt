@@ -21,6 +21,7 @@ import org.cef.handler.CefLifeSpanHandlerAdapter
 import org.cef.callback.CefContextMenuParams
 import org.cef.callback.CefMenuModel
 import java.awt.Component
+import java.io.File
 import java.awt.event.KeyEvent
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
@@ -121,6 +122,36 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         // 供工具窗口读取
         fun isServerHealthy() = serverHealthy.get()
+
+        /**
+         * 获取完整的环境变量，包含用户在 shell 配置文件中设置的内容
+         */
+        private fun getFullEnvironment(): Map<String, String> {
+            val env = System.getenv().toMutableMap()
+
+            val home = System.getProperty("user.home")
+            listOf(".bashrc", ".zshrc").forEach { fileName ->
+                val file = File(home, fileName)
+                if (file.exists()) {
+                    file.readLines()
+                        .filter { it.trim().startsWith("export ") }
+                        .forEach { line ->
+                            val match = Regex("""export\s+([A-Za-z_][A-Za-z0-9_]*)=["']?([^"'$\s]+)["']?""")
+                                .find(line)
+                            match?.let {
+                                val key = it.groupValues[1]
+                                val value = it.groupValues[2]
+                                    .removeSurrounding("\"", "'")
+                                if (env[key] == null || value.length > (env[key]?.length ?: 0)) {
+                                    env[key] = value
+                                }
+                            }
+                        }
+                }
+            }
+
+            return env
+        }
     }
 
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
@@ -414,12 +445,9 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun startOpenCodeProcess(): ProcessHandler {
             val commandLine = GeneralCommandLine(getOpenCodeCommand())
-            val currentPath = System.getenv("PATH") ?: ""
-            val additionalPaths = listOf("/usr/local/bin", "/opt/homebrew/bin")
-                .filterNot { currentPath.contains(it) }
-            if (additionalPaths.isNotEmpty()) {
-                commandLine.environment["PATH"] = (additionalPaths + currentPath).joinToString(":")
-            }
+            val fullEnv = getFullEnvironment()
+            commandLine.environment.clear()
+            commandLine.environment.putAll(fullEnv)
 
             return ProcessHandlerFactory.getInstance()
                 .createProcessHandler(commandLine)
