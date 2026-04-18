@@ -124,33 +124,275 @@ class MyToolWindowFactory : ToolWindowFactory {
         fun isServerHealthy() = serverHealthy.get()
 
         /**
-         * 获取完整的环境变量，包含用户在 shell 配置文件中设置的内容
+         * 获取完整的环境变量
+         *
+         * 问题背景：
+         * macOS GUI 应用由 launchd 启动，不会加载用户的 shell 配置文件（~/.bashrc, ~/.zshrc 等）
+         * 导致 System.getenv() 获取的环境变量不完整，缺少 PATH、Go、Bun、Python 等工具路径
+         *
+         * 解决方案：
+         * 通过三种机制构建完整的环境变量：
+         * 1. 默认 macOS 路径（无条件添加）
+         * 2. 工具路径检测（仅当目录存在时添加）
+         * 3. Shell 配置解析（bashrc/zshrc 等）
+         *
+         * 测试说明：
+         * ⚠️ ./gradlew runIde 无法复现此问题！
+         * 因为通过终端启动的 GUI 应用会继承终端的完整环境变量。
+         * 必须手动 buildPlugin 然后安装到 IDEA/GoLand 中测试：
+         * 1. ./gradlew buildPlugin
+         * 2. 在 IDEA/GoLand 中通过 File -> Settings -> Plugins -> Install Plugin from Disk
+         * 3. 重启 IDE 并打开 OpenCode 工具窗口
          */
         private fun getFullEnvironment(): Map<String, String> {
             val env = System.getenv().toMutableMap()
+            val home = env["HOME"] ?: System.getProperty("user.home")
+            val currentPath = env["PATH"] ?: ""
 
-            val home = System.getProperty("user.home")
-            listOf(".bashrc", ".zshrc").forEach { fileName ->
-                val file = File(home, fileName)
-                if (file.exists()) {
-                    file.readLines()
-                        .filter { it.trim().startsWith("export ") }
-                        .forEach { line ->
-                            val match = Regex("""export\s+([A-Za-z_][A-Za-z0-9_]*)=["']?([^"'$\s]+)["']?""")
-                                .find(line)
-                            match?.let {
-                                val key = it.groupValues[1]
-                                val value = it.groupValues[2]
-                                    .removeSurrounding("\"", "'")
-                                if (env[key] == null || value.length > (env[key]?.length ?: 0)) {
-                                    env[key] = value
-                                }
-                            }
-                        }
+            // 收集所有检测到的路径
+            val allPaths = mutableListOf<String>()
+
+            // A. 添加默认 macOS 路径（无条件）
+            // 这些是 macOS 系统基础路径，即使不存在也添加
+            val defaultPaths = listOf(
+                "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+                "/usr/local/bin",
+                "/opt/homebrew/bin", "/opt/homebrew/sbin",
+                "/opt/local/bin", "/opt/local/sbin"
+            )
+            allPaths.addAll(defaultPaths)
+
+            // B. 检测工具路径（仅当目录存在）
+            // 检测常见开发工具的安装路径，如 Cargo, Go, Bun, Deno, NVM 等
+            val detectedPaths = detectToolPaths(home)
+            allPaths.addAll(detectedPaths)
+
+            // C. 从 shell 配置解析路径
+            // 解析 ~/.bashrc, ~/.zshrc 等配置文件中的 PATH 修改
+            val shellPaths = parseShellConfigPaths(home)
+            allPaths.addAll(shellPaths)
+
+            // 去重并过滤存在的路径
+            val uniquePaths = allPaths.distinct().filter { java.io.File(it).exists() }
+
+            // 构建新的 PATH，保留原始 PATH 中的自定义路径
+            val existingPaths = currentPath.split(":").filter { path ->
+                // 保留不在默认列表中的原始路径
+                !defaultPaths.contains(path) && !uniquePaths.contains(path)
+            }
+
+            val newPath = (uniquePaths + existingPaths).joinToString(":")
+            env["PATH"] = newPath
+
+            return env
+        }
+
+        /**
+         * 检测常见工具的安装路径
+         */
+        private fun detectToolPaths(home: String): List<String> {
+            val paths = mutableListOf<String>()
+
+            // Cargo
+            val cargoBin = "$home/.cargo/bin"
+            if (java.io.File(cargoBin).exists()) paths.add(cargoBin)
+
+            // Go (gopath style)
+            val gBin = "$home/.g/bin"
+            if (java.io.File(gBin).exists()) paths.add(gBin)
+
+            // Go installation
+            for (goPath in listOf("$home/.g/go", "$home/go")) {
+                val goBinPath = "$goPath/bin"
+                if (java.io.File(goBinPath).exists()) {
+                    paths.add(goBinPath)
+                    break
                 }
             }
 
-            return env
+            // Local bin
+            val localBin = "$home/.local/bin"
+            if (java.io.File(localBin).exists()) paths.add(localBin)
+
+            // Bun
+            val bunBin = "$home/.bun/bin"
+            if (java.io.File(bunBin).exists()) paths.add(bunBin)
+
+            // Deno
+            val denoBin = "$home/.deno/bin"
+            if (java.io.File(denoBin).exists()) paths.add(denoBin)
+
+            // NVM versions
+            val nvmVersionsDir = java.io.File("$home/.nvm/versions/node")
+            if (nvmVersionsDir.exists()) {
+                nvmVersionsDir.listFiles()?.forEach { versionDir ->
+                    val nvmBin = "${versionDir.absolutePath}/bin"
+                    if (java.io.File(nvmBin).exists()) paths.add(nvmBin)
+                }
+            }
+
+            // Pyenv
+            val pyenvBin = "$home/.pyenv/bin"
+            if (java.io.File(pyenvBin).exists()) paths.add(pyenvBin)
+
+            // RBenv
+            val rbenvBin = "$home/.rbenv/bin"
+            if (java.io.File(rbenvBin).exists()) paths.add(rbenvBin)
+
+            // Yarn
+            val yarnBin = "$home/.yarn/bin"
+            if (java.io.File(yarnBin).exists()) paths.add(yarnBin)
+
+            // Codeium/Windsurf
+            val codeiumBin = "$home/.codeium/windsurf/bin"
+            if (java.io.File(codeiumBin).exists()) paths.add(codeiumBin)
+
+            return paths
+        }
+
+        /**
+         * 从 shell 配置文件解析 PATH
+         */
+        private fun parseShellConfigPaths(home: String): List<String> {
+            val paths = mutableSetOf<String>()
+            val visitedFiles = mutableSetOf<String>()
+            val depth = 0
+
+            // 默认解析的配置文件
+            val configFiles = mutableListOf<String>()
+
+            // 根据 $SHELL 类型添加对应的配置文件
+            val shell = System.getenv("SHELL") ?: ""
+            when {
+                shell.contains("zsh") -> {
+                    configFiles.add("$home/.zshrc")
+                    configFiles.add("$home/.zprofile")
+                    configFiles.add("$home/.zshenv")
+                }
+                shell.contains("bash") -> {
+                    configFiles.add("$home/.bashrc")
+                    configFiles.add("$home/.bash_profile")
+                }
+                shell.contains("fish") -> {
+                    configFiles.add("$home/.config/fish/config.fish")
+                }
+                shell.contains("csh") -> {
+                    configFiles.add("$home/.cshrc")
+                }
+                shell.contains("ksh") -> {
+                    configFiles.add("$home/.kshrc")
+                }
+                else -> {
+                    // 默认尝试 bash 和 zsh
+                    configFiles.add("$home/.bashrc")
+                    configFiles.add("$home/.zshrc")
+                }
+            }
+
+            for (configFile in configFiles) {
+                parseConfigFile(configFile, home, paths, visitedFiles, depth)
+            }
+
+            return paths.toList()
+        }
+
+        /**
+         * 递归解析配置文件，提取 PATH 修改
+         */
+        private fun parseConfigFile(
+            filePath: String,
+            home: String,
+            paths: MutableSet<String>,
+            visitedFiles: MutableSet<String>,
+            depth: Int
+        ) {
+            val maxDepth = 5
+            if (depth >= maxDepth) return
+
+            val file = java.io.File(filePath)
+            if (!file.exists() || !file.isFile || !file.canRead()) return
+
+            // 避免循环引用
+            val canonicalPath = try {
+                file.canonicalPath
+            } catch (e: Exception) {
+                return
+            }
+            if (visitedFiles.contains(canonicalPath)) return
+            visitedFiles.add(canonicalPath)
+
+            try {
+                file.readLines().forEach { line ->
+                    val trimmedLine = line.trim()
+
+                    // 跳过注释和空行
+                    if (trimmedLine.isEmpty() || trimmedLine.startsWith("#")) return@forEach
+
+                    // 处理 export PATH=$PATH:xxx 格式
+                    if (trimmedLine.startsWith("export PATH=") || trimmedLine.startsWith("PATH=")) {
+                        val pathMatch = Regex("""PATH=["']?([^"'`\n]+)["']?""").find(trimmedLine)
+                        if (pathMatch != null) {
+                            parsePathString(pathMatch.groupValues[1], home, paths)
+                        }
+                    }
+
+                    // 处理 source xxx 或 . xxx 格式
+                    val sourceMatch = Regex("""^\s*(?:source|\.)\s+["']?([^"'\n]+)["']?""").find(trimmedLine)
+                    if (sourceMatch != null) {
+                        val sourcedFile = sourceMatch.groupValues[1]
+                        val expandedFile = sourcedFile.replace("~", home)
+                        parseConfigFile(expandedFile, home, paths, visitedFiles, depth + 1)
+                    }
+
+                    // 处理 eval "$(...)" 格式（如 pyenv init, nvm use, etc.）
+                    if (trimmedLine.contains("eval \"\$(") || trimmedLine.contains("eval $(")) {
+                        val evalMatch = Regex("""eval\s+\$?\("([^)]+)"\)""").find(trimmedLine)
+                        if (evalMatch != null) {
+                            val cmd = evalMatch.groupValues[1]
+                            when {
+                                cmd.contains("pyenv init") -> {
+                                    val pyenvBin = "$home/.pyenv/bin"
+                                    if (java.io.File(pyenvBin).exists()) paths.add(pyenvBin)
+                                }
+                                cmd.contains("rbenv init") -> {
+                                    val rbenvBin = "$home/.rbenv/bin"
+                                    if (java.io.File(rbenvBin).exists()) paths.add(rbenvBin)
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // 忽略解析错误
+            }
+        }
+
+        /**
+         * 解析 PATH 字符串，提取各个路径
+         */
+        private fun parsePathString(pathStr: String, home: String, paths: MutableSet<String>) {
+            val parts = pathStr.split(":")
+            for (part in parts) {
+                var expandedPart = part
+                    .replace("~", home)
+                    .replace("\$HOME", home)
+                    .replace("\${HOME}", home)
+
+                // 移除可能的引号
+                expandedPart = expandedPart.trim('"', '\'', '`')
+
+                // 跳过包含变量引用的部分（如 $PATH, ${PATH}）
+                if (expandedPart.contains("\$") && !expandedPart.startsWith("/") && !expandedPart.startsWith("~")) {
+                    continue
+                }
+
+                if (expandedPart.isNotEmpty() && !expandedPart.contains("\$")) {
+                    val file = java.io.File(expandedPart)
+                    if (file.exists() && file.isDirectory) {
+                        paths.add(expandedPart)
+                    }
+                }
+            }
         }
     }
 
@@ -431,13 +673,16 @@ class MyToolWindowFactory : ToolWindowFactory {
                         val handler = startOpenCodeProcess()
                         serverProcess.set(handler)
 
-                        if (OpenCodeApi.waitForServerHealthy(30000)) {
+                        val healthy = OpenCodeApi.waitForServerHealthy(30000)
+
+                        if (healthy) {
                             onServerStarted()
                         } else {
-                            thisLogger().warn("Server may not be ready, proceeding anyway")
                             onServerStarted()
                         }
                     } catch (e: Exception) {
+                        e.printStackTrace()
+                        thisLogger().error("[startOpenCodeServer] Exception: ${e.message}", e)
                         onServerStartFailed(e)
                     }
                 }
@@ -446,13 +691,14 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         private fun startOpenCodeProcess(): ProcessHandler {
-            val commandLine = GeneralCommandLine(getOpenCodeCommand())
+            val command = getOpenCodeCommand()
+            val commandLine = GeneralCommandLine(command)
             val fullEnv = getFullEnvironment()
+
             commandLine.environment.clear()
             commandLine.environment.putAll(fullEnv)
 
-            return ProcessHandlerFactory.getInstance()
-                .createProcessHandler(commandLine)
+            return ProcessHandlerFactory.getInstance().createProcessHandler(commandLine)
         }
 
         private fun onServerStarted() {

@@ -162,7 +162,6 @@ object OpenCodeApi {
         }
     }
 
-    // 同步健康检查
     fun isServerHealthySync(): Boolean {
         var connection: HttpURLConnection? = null
         return try {
@@ -170,7 +169,8 @@ object OpenCodeApi {
             connection = url.openConnection() as HttpURLConnection
             connection.connectTimeout = 2000
             connection.readTimeout = 2000
-            connection.responseCode == 200
+            val responseCode = connection.responseCode
+            responseCode == 200
         } catch (e: Exception) {
             false
         } finally {
@@ -178,17 +178,20 @@ object OpenCodeApi {
         }
     }
 
-    // 等待服务器健康
     fun waitForServerHealthy(timeoutMs: Long): Boolean {
-        // 先等待 5 秒让服务器启动完成
-        Thread.sleep(5000)
+        Thread.sleep(1000)
 
         val startTime = System.currentTimeMillis()
-        val interval = 2000L  // 每 2 秒检查一次
+        val interval = 2000L
+
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            if (isServerHealthySync()) return true
+            val healthy = isServerHealthySync()
+            if (healthy) {
+                return true
+            }
             Thread.sleep(interval)
         }
+
         return false
     }
 }
