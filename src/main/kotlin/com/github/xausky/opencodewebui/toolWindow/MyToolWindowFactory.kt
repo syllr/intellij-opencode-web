@@ -432,12 +432,19 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         private var isShowingStartButton = false
+        private var healthMonitoringStarted = false
         private var lastHealthState: Boolean? = null
 
         private fun startHealthMonitoring() {
+            if (healthMonitoringStarted) return
+            healthMonitoringStarted = true
             Thread({
+                // 如果上次状态是健康的，等10秒再开始检查，给服务器稳定窗口期
+                if (lastHealthState == true) {
+                    Thread.sleep(10000)
+                }
                 while (true) {
-                    Thread.sleep(2000)
+                    Thread.sleep(5000)
                     val healthy = OpenCodeApi.isServerHealthySync()
                     if (healthy != lastHealthState) {
                         lastHealthState = healthy
