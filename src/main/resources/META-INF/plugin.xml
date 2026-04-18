@@ -9,13 +9,6 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <actions>
-        <!-- 关闭 OpenCode Server -->
-        <action id="com.shenyuanlaolarou.opencodewebui.ShutdownServer"
-                class="com.github.xausky.opencodewebui.actions.ShutdownServerAction"
-                text="Shutdown OpenCode Server"
-                description="Shutdown the OpenCode server">
-        </action>
-        
         <!-- 覆盖 Cmd+, (设置快捷键)，在 JCEF 有焦点时传递给 JCEF -->
         <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefSettings" 
                 class="com.github.xausky.opencodewebui.actions.PassToJcefAction" 

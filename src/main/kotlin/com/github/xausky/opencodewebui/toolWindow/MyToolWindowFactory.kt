@@ -57,7 +57,6 @@ class MyToolWindowFactory : ToolWindowFactory {
         private val serverRunning = AtomicBoolean(false)
         private val serverProcess = AtomicReference<ProcessHandler?>(null)
         private var checkScheduledFuture: ScheduledFuture<*>? = null
-        private var updateScheduledFuture: ScheduledFuture<*>? = null
         private var myToolWindowInstance: MyToolWindow? = null
 
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
@@ -68,8 +67,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             try {
                 checkScheduledFuture?.cancel(true)
                 checkScheduledFuture = null
-                updateScheduledFuture?.cancel(true)
-                updateScheduledFuture = null
 
                 serverProcess.get()?.let { handler ->
                     if (!handler.isProcessTerminated) {
@@ -418,7 +415,6 @@ class MyToolWindowFactory : ToolWindowFactory {
 
             myToolWindow.setupBrowserKeyboardHandling()
             myToolWindow.checkAndLoadContent()
-            myToolWindow.startPeriodicUpdateCheck()
         }
     }
 
@@ -621,40 +617,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        // 【九】定期检查更新（定时任务，每1小时执行一次）
-        // 调用此函数 → 每1小时调用 OpenCodeApi.checkAndPerformUpgrade
-        fun startPeriodicUpdateCheck() {
-            if (updateScheduledFuture != null) return
-
-            val future = scheduler.scheduleAtFixedRate(
-                {
-                    try {
-                        ApplicationManager.getApplication().invokeLater {
-                            checkAndPerformUpgrade()
-                        }
-                    } catch (e: Exception) {
-                        thisLogger().warn("Periodic update check skipped: ${e.message}")
-                    }
-                },
-                1L,
-                1L,
-                TimeUnit.HOURS
-            )
-            updateScheduledFuture = future
-            thisLogger().info("Started periodic update check (every 1 hour)")
-        }
-
-        private fun checkAndPerformUpgrade() {
-            if (!OpenCodeApi.isServerHealthySync()) return
-            OpenCodeApi.checkAndPerformUpgrade { result ->
-                if (result.success) {
-                    thisLogger().info("OpenCode upgraded successfully: ${result.message}")
-                } else {
-                    thisLogger().warn("OpenCode upgrade check: ${result.message}")
-                }
-            }
-        }
-
         private fun startOpenCodeServer() {
             val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
                 override fun run(indicator: ProgressIndicator) {
@@ -767,6 +729,8 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         companion object {
             private const val COPY_LINK_COMMAND_ID = 26500
+        private const val REFRESH_COMMAND_ID = 26501
+        private const val SHUTDOWN_COMMAND_ID = 26502
         }
 
         init {
@@ -950,10 +914,17 @@ class MyToolWindowFactory : ToolWindowFactory {
                 params: CefContextMenuParams,
                 model: CefMenuModel
             ) {
+                model.clear()
+                model.addItem(100, "Back")
+                model.setEnabled(100, browser.canGoBack())
+                model.addItem(101, "Forward")
+                model.setEnabled(101, browser.canGoForward())
+                model.addItem(REFRESH_COMMAND_ID, "Refresh")
                 val linkUrl = params.linkUrl
                 if (!linkUrl.isNullOrEmpty()) {
-                    model.addItem(COPY_LINK_COMMAND_ID, "在浏览器中打开 Open in Browser")
+                    model.addItem(COPY_LINK_COMMAND_ID, "Open in Browser")
                 }
+                model.addItem(SHUTDOWN_COMMAND_ID, "Shutdown Server")
             }
 
             override fun onContextMenuCommand(
@@ -963,11 +934,19 @@ class MyToolWindowFactory : ToolWindowFactory {
                 commandId: Int,
                 eventFlags: Int
             ): Boolean {
+                if (commandId == REFRESH_COMMAND_ID) {
+                    browser.reload()
+                    return true
+                }
                 if (commandId == COPY_LINK_COMMAND_ID) {
                     val linkUrl = params.linkUrl
                     if (!linkUrl.isNullOrEmpty() && isExternalUrl(linkUrl)) {
                         BrowserUtil.browse(java.net.URI(linkUrl))
                     }
+                    return true
+                }
+                if (commandId == SHUTDOWN_COMMAND_ID) {
+                    stopServer()
                     return true
                 }
                 return false
