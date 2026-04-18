@@ -11,6 +11,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.ui.jcef.JBCefBrowser
+import com.intellij.ui.jcef.JBCefClient
 import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowserBuilder
 import com.intellij.ui.content.ContentFactory
@@ -49,6 +50,9 @@ class MyToolWindowFactory : ToolWindowFactory {
     companion object {
         private const val PORT = 12396
         private const val HOST = "127.0.0.1"
+
+        // 所有 JBCefBrowser 共享同一个 JBCefClient，从而共享渲染进程和 localStorage
+        private val sharedJBCefClient by lazy { JBCefApp.getInstance().createClient() }
 
         private val serverRunning = AtomicBoolean(false)
         private val serverProcess = AtomicReference<ProcessHandler?>(null)
@@ -771,7 +775,8 @@ class MyToolWindowFactory : ToolWindowFactory {
 
     class BrowserPanel(private val host: String, private val port: Int) : JPanel() {
         private var browser: JBCefBrowser? = null
-        private val sharedClient = JBCefApp.getInstance().createClient()
+        // 共享的 JBCefClient，所有 BrowserPanel 实例共享同一个渲染进程，localStorage 也因此共享
+        private val sharedClient: JBCefClient = sharedJBCefClient
         private var startButtonPanel: JPanel? = null
         private var startCallback: (() -> Unit)? = null
 
@@ -851,58 +856,59 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         // 【七】创建浏览器 Tab 并加载 URL
         fun createMainTab(url: String, projectPath: String): JBCefBrowser {
-            browser?.cefBrowser?.stopLoad()
-            browser?.dispose()
-            removeAll()
-            val createdBrowser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
-            this.browser = createdBrowser
-            add(createdBrowser.component, java.awt.BorderLayout.CENTER)
-            sharedClient.addLifeSpanHandler(ExternalLinkLifeSpanHandler(), createdBrowser.cefBrowser)
-            sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
-            sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
-                override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
-                    thisLogger().info("onLoadEnd called, projectPath: $projectPath")
-                    // 使用 Java executeJavaScript 执行，绕过 CSP
-                    val escapedProjectPath = projectPath.replace("\\", "\\\\").replace("'", "\\'")
-                    val js = """
-                        (function() {
-                            try {
-                                var serverKey = 'opencode.global.dat:server';
-                                var raw = localStorage.getItem(serverKey);
-                                var store = raw ? JSON.parse(raw) : { list: [], projects: {}, lastProject: {} };
-                                store.list = store.list || [];
-                                store.projects = store.projects || {};
-                                store.lastProject = store.lastProject || {};
-                                var origin = location.origin;
-                                var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
-                                var serverKeyName = isLocal ? 'local' : origin;
-                                var projectPath = '$escapedProjectPath';
-                                store.projects[serverKeyName] = (store.projects[serverKeyName] || []).filter(function(p) { return p.worktree !== projectPath; });
-                                if (!store.list.includes(origin)) store.list.push(origin);
-                                store.projects[serverKeyName].push({ worktree: projectPath, expanded: true });
-                                store.lastProject[serverKeyName] = projectPath;
-                                localStorage.setItem(serverKey, JSON.stringify(store));
-                            } catch(e) {
-                                console.error('opencode localStorage error: ' + e.message);
-                            }
-                        })();
-                    """.trimIndent()
-                    cefBrowser?.executeJavaScript(js, "", 0)
-                }
-            }, createdBrowser.cefBrowser)
-            sharedClient.addDisplayHandler(object : org.cef.handler.CefDisplayHandlerAdapter() {
-                override fun onConsoleMessage(
-                    browser: CefBrowser?,
-                    level: org.cef.CefSettings.LogSeverity?,
-                    message: String?,
-                    source: String?,
-                    line: Int
-                ): Boolean {
-                    thisLogger().info("[JCEF Console] $message (source: $source:$line)")
-                    return false
-                }
-            }, createdBrowser.cefBrowser)
-            return createdBrowser
+            if (browser == null) {
+                val createdBrowser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
+                this.browser = createdBrowser
+                add(createdBrowser.component, java.awt.BorderLayout.CENTER)
+                sharedClient.addLifeSpanHandler(ExternalLinkLifeSpanHandler(), createdBrowser.cefBrowser)
+                sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
+                sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
+                    override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
+                        thisLogger().info("onLoadEnd called, projectPath: $projectPath")
+                        val escapedProjectPath = projectPath.replace("\\", "\\\\").replace("'", "\\'")
+                        val js = """
+                            (function() {
+                                try {
+                                    var serverKey = 'opencode.global.dat:server';
+                                    var raw = localStorage.getItem(serverKey);
+                                    var store = raw ? JSON.parse(raw) : { list: [], projects: {}, lastProject: {} };
+                                    store.list = store.list || [];
+                                    store.projects = store.projects || {};
+                                    store.lastProject = store.lastProject || {};
+                                    var origin = location.origin;
+                                    var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
+                                    var serverKeyName = isLocal ? 'local' : origin;
+                                    var projectPath = '$escapedProjectPath';
+                                    store.projects[serverKeyName] = (store.projects[serverKeyName] || []).filter(function(p) { return p.worktree !== projectPath; });
+                                    if (!store.list.includes(origin)) store.list.push(origin);
+                                    store.projects[serverKeyName].push({ worktree: projectPath, expanded: true });
+                                    store.lastProject[serverKeyName] = projectPath;
+                                    localStorage.setItem(serverKey, JSON.stringify(store));
+                                } catch(e) {
+                                    console.error('opencode localStorage error: ' + e.message);
+                                }
+                            })();
+                        """.trimIndent()
+                        cefBrowser?.executeJavaScript(js, "", 0)
+                    }
+                }, createdBrowser.cefBrowser)
+                sharedClient.addDisplayHandler(object : org.cef.handler.CefDisplayHandlerAdapter() {
+                    override fun onConsoleMessage(
+                        browser: CefBrowser?,
+                        level: org.cef.CefSettings.LogSeverity?,
+                        message: String?,
+                        source: String?,
+                        line: Int
+                    ): Boolean {
+                        thisLogger().info("[JCEF Console] $message (source: $source:$line)")
+                        return false
+                    }
+                }, createdBrowser.cefBrowser)
+                return createdBrowser
+            } else {
+                browser?.loadURL(url)
+                return browser!!
+            }
         }
 
         fun getBrowser(): JBCefBrowser? = browser
