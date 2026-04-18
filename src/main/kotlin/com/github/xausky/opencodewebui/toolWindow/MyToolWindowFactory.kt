@@ -109,24 +109,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        // 新增：全局健康状态（由健康检查线程写入）
-        private val serverHealthy = AtomicBoolean(false)
-
-        // 新增：启动全局健康检查（IDEA启动时调用）
-        fun startGlobalHealthCheck() {
-            Thread({
-                while (true) {
-                    val healthy = OpenCodeApi.isServerHealthySync()
-                    serverHealthy.set(healthy)
-                    thisLogger().info("Global health check: $healthy")
-                    Thread.sleep(5000)
-                }
-            }).start()
-        }
-
-        // 供工具窗口读取
-        fun isServerHealthy() = serverHealthy.get()
-
         /**
          * 获取完整的环境变量
          *
@@ -453,22 +435,24 @@ class MyToolWindowFactory : ToolWindowFactory {
             myToolWindowInstance = this
         }
 
-        private fun isServerHealthy(): Boolean = serverHealthy.get()
-
         private var isShowingStartButton = false
+        private var lastHealthState: Boolean? = null
 
         private fun startHealthMonitoring() {
             Thread({
                 while (true) {
                     Thread.sleep(2000)
-                    val healthy = serverHealthy.get()
-                    if (!healthy && !isShowingStartButton && mainBrowser != null) {
-                        ApplicationManager.getApplication().invokeLater {
-                            showServerNotRunning()
-                        }
-                    } else if (healthy && isShowingStartButton) {
-                        ApplicationManager.getApplication().invokeLater {
-                            loadProjectPage()
+                    val healthy = OpenCodeApi.isServerHealthySync()
+                    if (healthy != lastHealthState) {
+                        lastHealthState = healthy
+                        if (!healthy && !isShowingStartButton && mainBrowser != null) {
+                            ApplicationManager.getApplication().invokeLater {
+                                showServerNotRunning()
+                            }
+                        } else if (healthy && isShowingStartButton) {
+                            ApplicationManager.getApplication().invokeLater {
+                                loadProjectPage()
+                            }
                         }
                     }
                 }
@@ -476,7 +460,8 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         private fun isServerRunning(): Boolean {
-            return if (isServerHealthy()) {
+            val healthy = OpenCodeApi.isServerHealthySync()
+            return if (healthy) {
                 serverRunning.set(true)
                 true
             } else {
@@ -486,10 +471,10 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         fun checkAndLoadContent() {
-            // 先同步检查一次服务器状态，避免后台线程尚未更新状态的时序问题
-            serverHealthy.set(OpenCodeApi.isServerHealthySync())
+            val healthy = OpenCodeApi.isServerHealthySync()
+            lastHealthState = healthy
             startHealthMonitoring()
-            if (isServerHealthy()) {
+            if (healthy) {
                 loadProjectPage()
             } else {
                 showServerNotRunning()
@@ -660,7 +645,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         private fun checkAndPerformUpgrade() {
-            if (!isServerHealthy()) return
+            if (!OpenCodeApi.isServerHealthySync()) return
             OpenCodeApi.checkAndPerformUpgrade { result ->
                 if (result.success) {
                     thisLogger().info("OpenCode upgraded successfully: ${result.message}")
