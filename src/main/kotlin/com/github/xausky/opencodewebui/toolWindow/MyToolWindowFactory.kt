@@ -618,6 +618,12 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
 
         private fun startOpenCodeServer() {
+            // 先检查 server 是否已经启动，如果已经启动则直接加载页面
+            if (OpenCodeApi.isServerHealthySync()) {
+                onServerStarted()
+                return
+            }
+
             val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
                 override fun run(indicator: ProgressIndicator) {
                     try {
