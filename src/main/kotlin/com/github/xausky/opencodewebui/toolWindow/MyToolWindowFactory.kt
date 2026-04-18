@@ -656,12 +656,15 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private fun startOpenCodeProcess(): ProcessHandler {
             val command = getOpenCodeCommand()
+            val homeDir = System.getProperty("user.home", System.getenv("HOME") ?: "/tmp")
             val commandLine = GeneralCommandLine(command)
+            commandLine.setWorkDirectory(homeDir)
             val fullEnv = getFullEnvironment()
 
             commandLine.environment.clear()
             commandLine.environment.putAll(fullEnv)
 
+            thisLogger().info("[startOpenCodeProcess] Working directory: $homeDir, project path: ${project.basePath}")
             return ProcessHandlerFactory.getInstance().createProcessHandler(commandLine)
         }
 
