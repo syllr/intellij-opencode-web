@@ -635,7 +635,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                         if (healthy) {
                             onServerStarted()
                         } else {
-                            onServerStarted()
+                            onServerStartFailed(Exception("Server not healthy after 30s"))
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
