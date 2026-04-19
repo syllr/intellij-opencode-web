@@ -11,8 +11,6 @@ class ToggleOpenCodeAction : AnAction() {
         val project = e.project ?: return
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb") ?: return
         
-        thisLogger().info("ToggleOpenCodeAction triggered")
-        
         if (toolWindow.isVisible) {
             toolWindow.hide()
         } else {
