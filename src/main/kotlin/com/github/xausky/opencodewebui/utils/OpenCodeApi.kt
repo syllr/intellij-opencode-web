@@ -3,7 +3,7 @@ package com.github.xausky.opencodewebui.utils
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import java.net.HttpURLConnection
-import java.net.URL
+import java.net.URI
 import java.net.URLEncoder
 
 object OpenCodeApi {
@@ -49,7 +49,7 @@ object OpenCodeApi {
         var connection: HttpURLConnection? = null
         return try {
             val url = "http://$HOST:$PORT/global/health"
-            connection = URL(url).openConnection() as HttpURLConnection
+            connection = URI.create(url).toURL().openConnection() as HttpURLConnection
             connection.connectTimeout = CONNECT_TIMEOUT
             connection.readTimeout = READ_TIMEOUT
 
@@ -87,7 +87,7 @@ object OpenCodeApi {
         return try {
             val encodedPath = URLEncoder.encode(projectPath, "UTF-8")
             val url = "http://$HOST:$PORT/session?directory=$encodedPath"
-            connection = URL(url).openConnection() as HttpURLConnection
+            connection = URI.create(url).toURL().openConnection() as HttpURLConnection
             connection.connectTimeout = CONNECT_TIMEOUT
             connection.readTimeout = READ_TIMEOUT
 
@@ -129,7 +129,7 @@ object OpenCodeApi {
         var connection: HttpURLConnection? = null
         return try {
             val url = "http://$HOST:$PORT/global/upgrade"
-            connection = URL(url).openConnection() as HttpURLConnection
+            connection = URI.create(url).toURL().openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.connectTimeout = 30000
             connection.readTimeout = 30000
@@ -165,7 +165,7 @@ object OpenCodeApi {
     fun isServerHealthySync(): Boolean {
         var connection: HttpURLConnection? = null
         return try {
-            val url = URL("http://$HOST:$PORT/global/health")
+            val url = URI.create("http://$HOST:$PORT/global/health").toURL()
             connection = url.openConnection() as HttpURLConnection
             connection.connectTimeout = 2000
             connection.readTimeout = 2000

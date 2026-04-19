@@ -1,0 +1,23 @@
+{
+  "active_plan": "/Users/yutao/worktree/intellij-opencode-web-1.0.13/.sisyphus/plans/copy-link-feature.md",
+  "started_at": "2026-04-19T02:13:03.313Z",
+  "session_ids": [
+    "ses_25c7cb78affeThB9b2UFd3Phy1"
+  ],
+  "session_origins": {
+    "ses_25c7cb78affeThB9b2UFd3Phy1": "direct"
+  },
+  "plan_name": "copy-link-feature",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "修复 \"Open in Browser\" 功能",
+      "session_id": "ses_25c7c1389ffev1FhlH1zgZyYwr",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-19T02:14:49.811Z"
+    }
+  }
+}

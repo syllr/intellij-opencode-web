@@ -1,0 +1,28 @@
+Privacy Policy
+
+Last updated: April 19, 2026
+
+This plugin ("OpenCode Web UI") stores local data on your device to provide its functionality.
+
+Data Stored
+-----------
+- Project paths and session IDs are stored in a local SQLite database
+- This data is stored locally on your machine only
+- No personal data is transmitted to external servers
+
+Local Storage Usage
+-------------------
+- The plugin uses local SQLite database to maintain session information
+- Project paths are used to synchronize the OpenCode web interface with your current project
+- Session IDs are used to restore your previous work context
+
+Data Security
+-------------
+- All data remains on your local machine
+- No data is shared with third parties
+- No telemetry or analytics data is collected
+
+Contact
+-------
+For privacy concerns, please contact:
+Email: shenyuanlaolarou@users.noreply.github.com

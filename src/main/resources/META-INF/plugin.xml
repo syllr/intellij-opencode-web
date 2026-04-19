@@ -2,7 +2,7 @@
 <idea-plugin>
     <id>com.shenyuanlaolarou.opencodewebui</id>
     <name>opencode-web-ui</name>
-    <vendor email="" url="https://github.com/syllr/intellij-opencode-web">shenyuanlaolarou (forked from xausky)</vendor>
+    <vendor email="shenyuanlaolarou@users.noreply.github.com" url="https://github.com/syllr/intellij-opencode-web">shenyuanlaolarou</vendor>
 
     <depends>com.intellij.modules.platform</depends>
 

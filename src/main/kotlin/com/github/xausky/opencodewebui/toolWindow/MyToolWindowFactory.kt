@@ -4,6 +4,7 @@ import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.application.ApplicationManager
@@ -22,6 +23,8 @@ import org.cef.handler.CefLifeSpanHandlerAdapter
 import org.cef.callback.CefContextMenuParams
 import org.cef.callback.CefMenuModel
 import java.awt.Component
+import java.awt.datatransfer.StringSelection
+import java.awt.Toolkit
 import java.io.File
 import java.awt.event.KeyEvent
 import java.awt.event.WindowAdapter
@@ -44,8 +47,22 @@ import com.intellij.execution.process.ProcessHandler
 
 /**
  * OpenCode Web UI 工具窗口工厂类
+ *
+ * 【重要】实现 DumbAware 接口：
+ * IntelliJ 在 "dumb mode"（索引更新期间）会禁用需要智能功能的组件，默认情况下
+ * 所有 ToolWindow 都会受到影响，显示 "This view is not available until indexes are built"。
+ *
+ * 实现 DumbAware 接口可以告知 IntelliJ：这个工具窗口不依赖于项目索引，
+ * 在索引更新期间也可以正常使用。OpenCode 是纯浏览器 UI，不需要索引，
+ * 因此实现此接口可以避免索引期间的覆盖层提示。
+ *
+ * 【API 警告说明】：
+ * @Suppress("DEPRECATION", "EXPERIMENTAL_API_USAGE") 用于抑制 ToolWindowFactory
+ * 接口的 deprecated/experimental 方法警告。这些警告来自 IntelliJ 框架本身，
+ * 不是我们代码的问题 - 官方 SDK 示例同样使用相同模式。
  */
-class MyToolWindowFactory : ToolWindowFactory {
+@Suppress("DEPRECATION", "EXPERIMENTAL_API_USAGE")
+class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
     companion object {
         private const val PORT = 12396
@@ -418,7 +435,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         }
     }
 
-    override fun shouldBeAvailable(project: Project) = true
+    override suspend fun isApplicableAsync(project: Project) = true
 
     inner class MyToolWindow(toolWindow: ToolWindow) {
 
@@ -747,6 +764,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             private const val COPY_LINK_COMMAND_ID = 26500
         private const val REFRESH_COMMAND_ID = 26501
         private const val SHUTDOWN_COMMAND_ID = 26502
+        private const val COPY_LINK_AS_PROMPT_COMMAND_ID = 26503
         }
 
         init {
@@ -939,6 +957,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                 val linkUrl = params.linkUrl
                 if (!linkUrl.isNullOrEmpty()) {
                     model.addItem(COPY_LINK_COMMAND_ID, "Open in Browser")
+                    model.addItem(COPY_LINK_AS_PROMPT_COMMAND_ID, "Copy Link")
                 }
                 model.addItem(SHUTDOWN_COMMAND_ID, "Shutdown Server")
             }
@@ -956,8 +975,16 @@ class MyToolWindowFactory : ToolWindowFactory {
                 }
                 if (commandId == COPY_LINK_COMMAND_ID) {
                     val linkUrl = params.linkUrl
-                    if (!linkUrl.isNullOrEmpty() && isExternalUrl(linkUrl)) {
+                    if (!linkUrl.isNullOrEmpty()) {
                         BrowserUtil.browse(java.net.URI(linkUrl))
+                    }
+                    return true
+                }
+                if (commandId == COPY_LINK_AS_PROMPT_COMMAND_ID) {
+                    val linkUrl = params.linkUrl
+                    if (!linkUrl.isNullOrEmpty()) {
+                        val selection = StringSelection(linkUrl)
+                        Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
                     }
                     return true
                 }

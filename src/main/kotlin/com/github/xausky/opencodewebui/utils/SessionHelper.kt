@@ -1,42 +1,36 @@
 package com.github.xausky.opencodewebui.utils
 
 import com.intellij.openapi.diagnostic.thisLogger
-import java.io.File
-import java.sql.DriverManager
+import java.net.HttpURLConnection
+import java.net.URI
+import java.net.URLEncoder
 
 object SessionHelper {
+    private const val HOST = "127.0.0.1"
+    private const val PORT = 12396
+
     fun getLatestSessionId(projectPath: String): String? {
-        val homeDir = System.getenv("HOME") ?: return null
-        val dbPath = File(homeDir, ".local/share/opencode/opencode.db")
+        var connection: HttpURLConnection? = null
+        return try {
+            val encodedPath = URLEncoder.encode(projectPath, "UTF-8")
+            val url = URI.create("http://$HOST:$PORT/session?directory=$encodedPath").toURL()
+            connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 2000
+            connection.readTimeout = 2000
 
-        if (!dbPath.exists()) {
-            return null
-        }
-
-        try {
-            Class.forName("org.sqlite.JDBC")
-            DriverManager.getConnection("jdbc:sqlite:${dbPath.absolutePath}").use { conn ->
-                val sql = """
-                    SELECT id FROM session
-                    WHERE directory = ?
-                    ORDER BY time_created DESC
-                    LIMIT 1
-                """.trimIndent()
-
-                conn.prepareStatement(sql).use { stmt ->
-                    stmt.setString(1, projectPath)
-                    val rs = stmt.executeQuery()
-
-                    if (rs.next()) {
-                        val sessionId = rs.getString("id")
-                        return sessionId
-                    }
+            if (connection.responseCode == 200) {
+                connection.inputStream.bufferedReader().use { reader ->
+                    val response = reader.readText()
+                    Regex(""""id"\s*:\s*"([^"]+)"""").find(response)?.groupValues?.get(1)
                 }
+            } else {
+                null
             }
         } catch (e: Exception) {
-            thisLogger().warn("Failed to query OpenCode session: ${e.message}")
+            thisLogger().warn("Failed to query OpenCode session via HTTP: ${e.message}")
+            null
+        } finally {
+            connection?.disconnect()
         }
-
-        return null
     }
 }
