@@ -8,3 +8,5 @@ build
 cert/
 .run/
 local.properties
+.opencode/
+.opencode.json
