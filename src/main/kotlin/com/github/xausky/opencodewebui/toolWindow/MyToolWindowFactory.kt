@@ -88,11 +88,13 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 serverProcess.get()?.let { handler ->
                     if (!handler.isProcessTerminated) {
                         handler.destroyProcess()
-                        thisLogger().info("OpenCode server stopped (via ProcessHandler)")
+                        thisLogger().info("OpenCode server process stopped (via ProcessHandler)")
                     }
                 }
 
-                killProcessByPort(PORT)
+                // 注意：不再调用 killProcessByPort(PORT)
+                // 因为其他 IDE 可能还在使用同一个 OpenCode server
+                // 用户可以通过右键菜单 "Shutdown OpenCode" 来显式停止服务器
 
                 serverRunning.set(false)
                 serverProcess.set(null)
