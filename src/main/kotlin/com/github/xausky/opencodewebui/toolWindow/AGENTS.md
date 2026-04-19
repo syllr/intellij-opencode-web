@@ -3,19 +3,20 @@
 **Parent:** ../../AGENTS.md
 
 ## 概述
-核心 JCEF 浏览器 + OpenCode 服务器管理（507行，单文件）。
+核心 JCEF 浏览器 + OpenCode 服务器管理（989行，单文件）。
 
 ## 结构
 ```
 toolWindow/
-└── MyToolWindowFactory.kt    # 所有核心逻辑在此文件
+├── MyToolWindowFactory.kt    # 所有核心逻辑
+└── OpenCodeApi.kt            # HTTP API 调用
 ```
 
 ## 关键位置
 | 任务 | 位置 | 备注 |
 |------|------|------|
 | 服务器启动/停止 | MyToolWindowFactory.kt | startServer(), stopServer() |
-| 健康检查 | MyToolWindowFactory.kt | 30秒间隔，自动重启 |
+| 健康检查 | OpenCodeApi.kt | 端口连通性 + HTTP 双检查 |
 | JCEF 设置 | MyToolWindowFactory.kt | JBCefBrowser 初始化 |
 | 键盘处理 | MyToolWindowFactory.kt | Emacs 快捷键 + ESC 修复 |
 | 状态 | companion object | AtomicReference/AtomicBoolean 线程安全 |
@@ -23,11 +24,13 @@ toolWindow/
 ## 关键常量
 - `PORT = 12396`
 - `HOST = "127.0.0.1"`
+- 健康检查超时：8秒
 
 ## 已修复的反模式
 - ✅ 静态变量改为 AtomicReference/AtomicBoolean（线程安全）
 - ✅ JBCefBrowser 通过 Disposer 管理生命周期
-- ⚠️ 单个 507 行文件处理所有逻辑（仍可拆分）
+- ✅ SQLite JDBC 已移除，改用 HTTP API
+- ⚠️ 单个 989 行文件处理所有逻辑（仍可拆分）
 - ⚠️ 端口硬编码（不可配置）
 
 ## JCEF 参考资料

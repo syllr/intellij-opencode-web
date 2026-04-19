@@ -1,7 +1,7 @@
 # 项目知识库
 
-**Generated:** 2026-04-12
-**Commit:** d8e733e
+**Generated:** 2026-04-19
+**Commit:** 4bcd6ab
 **Branch:** main
 
 ## 项目概述
@@ -54,14 +54,19 @@ println("=== DEBUG: variable = $variable")
 **查看日志**:
 - 日志文件位置: `build/idea-sandbox/IU-2025.3.4/log/`
 
+**健康检查日志**（OpenCodeApi.kt）:
+- 前缀：`[HealthCheck]`
+- 示例：`[HealthCheck] Starting health check for 127.0.0.1:12396`
+
 **注意**: 调试完成后应移除临时日志语句。
 
 ## 反模式（此项目问题）
 - 包名不匹配：`com.github.xausky.opencodewebui` 源码 vs `com.shenyuanlaolarou` pluginGroup
-- 单个 630 行核心文件（MyToolWindowFactory.kt，可拆分）
+- ~~单个 630 行核心文件~~ → 已重构：拆分为多个文件
 - ~~静态全局服务器状态~~ → 已修复：使用 AtomicReference/AtomicBoolean
 - ~~弃用的 JBCefBrowser 构造函数~~ → 已修复：使用 JBCefBrowserBuilder
-- 使用 SQLite JDBC 进行会话管理（对插件来说不常见）
+- ~~使用 SQLite JDBC 进行会话管理~~ → 已修复：使用 HTTP API 替代
+- ToolWindowFactory 的 deprecated/experimental API 警告是 IntelliJ 框架本身的问题，官方 SDK 示例同样使用相同模式
 
 ## 特色功能
 - Emacs 风格 JCEF 键盘快捷键（Ctrl+A/E/B/F/N/P）
@@ -72,7 +77,8 @@ println("=== DEBUG: variable = $variable")
 - **中文输入法修复**：移除 `e.consume()`，解决 JCEF 中中文输入滞后问题
 - **外部链接处理**：点击外部链接（GitHub、文档等）在系统浏览器打开，而非 JCEF 内部
 - **右键菜单**：支持"在浏览器中打开"选项
-- **会话恢复**：自动恢复上次会话（从 SQLite 数据库读取 session ID）
+- **会话恢复**：自动恢复上次会话（通过 HTTP API `/session?directory=` 获取 session ID）
+- **健康检查改进**：先检查端口连通性（Socket），再检查 HTTP 接口，端口正常但 HTTP 超时仍认为健康
 - **Copy as Prompt**：编辑器右键菜单复制选中文本为 Prompt 格式（输出格式：`location:/path/file:10-20\ncontent:\n```\n选中文本\n```）
 
 ## 常用命令

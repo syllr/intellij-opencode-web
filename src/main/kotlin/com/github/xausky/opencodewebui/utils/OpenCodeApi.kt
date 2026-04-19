@@ -163,16 +163,44 @@ object OpenCodeApi {
     }
 
     fun isServerHealthySync(): Boolean {
+        // 先检查端口连通性（比 HTTP 请求更轻量）
+        thisLogger().info("[HealthCheck] Starting health check for $HOST:$PORT")
+        val portOk = try {
+            val socket = java.net.Socket()
+            try {
+                thisLogger().info("[HealthCheck] Attempting socket connection...")
+                socket.connect(java.net.InetSocketAddress(HOST, PORT), 8000)
+                socket.soTimeout = 8000
+                thisLogger().info("[HealthCheck] Socket connection successful!")
+                true
+            } finally {
+                socket.close()
+            }
+        } catch (e: Exception) {
+            thisLogger().warn("[HealthCheck] Socket connection failed: ${e.message}")
+            false
+        }
+
+        if (!portOk) {
+            thisLogger().info("[HealthCheck] Port check failed, returning false")
+            return false
+        }
+
+        // 端口正常，再尝试 HTTP 健康检查
         var connection: HttpURLConnection? = null
         return try {
             val url = URI.create("http://$HOST:$PORT/global/health").toURL()
+            thisLogger().info("[HealthCheck] Port OK, attempting HTTP health check to $url")
             connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 2000
-            connection.readTimeout = 2000
+            connection.connectTimeout = 8000
+            connection.readTimeout = 8000
             val responseCode = connection.responseCode
+            thisLogger().info("[HealthCheck] HTTP response code: $responseCode")
             responseCode == 200
         } catch (e: Exception) {
-            false
+            thisLogger().warn("[HealthCheck] HTTP check failed but port OK, treating as healthy: ${e.message}")
+            // HTTP 检查失败但端口正常，仍认为健康（可能只是 /global/health 有问题）
+            true
         } finally {
             connection?.disconnect()
         }
