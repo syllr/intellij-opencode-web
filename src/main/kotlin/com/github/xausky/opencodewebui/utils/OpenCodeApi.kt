@@ -1,5 +1,7 @@
 package com.github.xausky.opencodewebui.utils
 
+import com.github.xausky.opencodewebui.OPENCODE_HOST
+import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import java.net.HttpURLConnection
@@ -7,8 +9,6 @@ import java.net.URI
 import java.net.URLEncoder
 
 object OpenCodeApi {
-    private const val HOST = "127.0.0.1"
-    private const val PORT = 12396
     private const val CONNECT_TIMEOUT = 30000
     private const val READ_TIMEOUT = 30000
     private const val MAX_RETRIES = 3
@@ -48,7 +48,7 @@ object OpenCodeApi {
     private fun fetchHealth(): HealthStatus {
         var connection: HttpURLConnection? = null
         return try {
-            val url = "http://$HOST:$PORT/global/health"
+            val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/global/health"
             connection = URI.create(url).toURL().openConnection() as HttpURLConnection
             connection.connectTimeout = CONNECT_TIMEOUT
             connection.readTimeout = READ_TIMEOUT
@@ -86,7 +86,7 @@ object OpenCodeApi {
         var connection: HttpURLConnection? = null
         return try {
             val encodedPath = URLEncoder.encode(projectPath, "UTF-8")
-            val url = "http://$HOST:$PORT/session?directory=$encodedPath"
+            val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/session?directory=$encodedPath"
             connection = URI.create(url).toURL().openConnection() as HttpURLConnection
             connection.connectTimeout = CONNECT_TIMEOUT
             connection.readTimeout = READ_TIMEOUT
@@ -128,7 +128,7 @@ object OpenCodeApi {
     private fun fetchUpgrade(): UpgradeResult {
         var connection: HttpURLConnection? = null
         return try {
-            val url = "http://$HOST:$PORT/global/upgrade"
+            val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/global/upgrade"
             connection = URI.create(url).toURL().openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.connectTimeout = 30000
@@ -167,7 +167,7 @@ object OpenCodeApi {
         val portOk = try {
             val socket = java.net.Socket()
             try {
-                socket.connect(java.net.InetSocketAddress(HOST, PORT), 8000)
+                socket.connect(java.net.InetSocketAddress(OPENCODE_HOST, OPENCODE_PORT), 8000)
                 socket.soTimeout = 8000
                 true
             } finally {
@@ -184,7 +184,7 @@ object OpenCodeApi {
         // 端口正常，再尝试 HTTP 健康检查
         var connection: HttpURLConnection? = null
         return try {
-            val url = URI.create("http://$HOST:$PORT/global/health").toURL()
+            val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/health").toURL()
             connection = url.openConnection() as HttpURLConnection
             connection.connectTimeout = 8000
             connection.readTimeout = 8000

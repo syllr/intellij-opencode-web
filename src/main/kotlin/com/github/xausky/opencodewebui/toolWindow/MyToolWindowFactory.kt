@@ -1,5 +1,7 @@
 package com.github.xausky.opencodewebui.toolWindow
 
+import com.github.xausky.opencodewebui.OPENCODE_HOST
+import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.openapi.diagnostic.thisLogger
@@ -68,10 +70,9 @@ import com.intellij.notification.NotificationType
 class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
     companion object {
-        private const val PORT = 12396
-        private const val HOST = "127.0.0.1"
+        private const val PORT = OPENCODE_PORT
+        private const val HOST = OPENCODE_HOST
 
-        // 所有 JBCefBrowser 共享同一个 JBCefClient，从而共享渲染进程和 localStorage
         private val sharedJBCefClient by lazy { JBCefApp.getInstance().createClient() }
 
         private val serverRunning = AtomicBoolean(false)
