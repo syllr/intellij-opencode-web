@@ -44,6 +44,9 @@ import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.OSProcessHandler
 import com.intellij.execution.process.ProcessHandlerFactory
 import com.intellij.execution.process.ProcessHandler
+import com.intellij.notification.Notification
+import com.intellij.notification.NotificationGroup
+import com.intellij.notification.NotificationType
 
 /**
  * OpenCode Web UI 工具窗口工厂类
@@ -727,9 +730,26 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         private fun findOpenCodePath(): String {
-            listOf("/opt/homebrew/bin/opencode", "/usr/local/bin/opencode")
-                .forEach { if (java.io.File(it).exists()) return it }
-            return "opencode"
+            // 使用 OpenCodePathFinder 查找路径
+            val candidatePaths = OpenCodePathFinder.getCandidatePaths()
+            return try {
+                OpenCodePathFinder.findOpenCodePath(candidatePaths)
+            } catch (e: IllegalStateException) {
+                // 通知用户并终止
+                notifyOpenCodeNotFound()
+                throw e
+            }
+        }
+
+        private fun notifyOpenCodeNotFound() {
+            ApplicationManager.getApplication().invokeLater {
+                Notification(
+                    "OpenCodeWeb.notifications",
+                    "无法启动 OpenCode 服务器",
+                    "未找到 opencode 可执行文件。请确保 OpenCode 已正确安装。",
+                    NotificationType.ERROR
+                ).notify(project)
+            }
         }
 
         private fun showErrorInBrowser() {
