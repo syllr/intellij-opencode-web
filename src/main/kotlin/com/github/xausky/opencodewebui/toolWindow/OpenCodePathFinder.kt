@@ -33,11 +33,13 @@ object OpenCodePathFinder {
         val candidatePaths = mutableListOf<String>()
         val home = System.getProperty("user.home")
 
-        candidatePaths.addAll(listOf(
-            "/opt/homebrew/bin/opencode",
-            "/usr/local/bin/opencode",
-            "/usr/bin/opencode"
-        ))
+        candidatePaths.addAll(
+            listOf(
+                "/opt/homebrew/bin/opencode",
+                "/usr/local/bin/opencode",
+                "/usr/bin/opencode"
+            )
+        )
 
         val nvmDirs = listOf(
             java.io.File(NVM_HOMEBREW_PATH),
@@ -217,19 +219,24 @@ object OpenCodePathFinder {
                 configFiles.add("$home/.zprofile")
                 configFiles.add("$home/.zshenv")
             }
+
             shell.contains("bash") -> {
                 configFiles.add("$home/.bashrc")
                 configFiles.add("$home/.bash_profile")
             }
+
             shell.contains("fish") -> {
                 configFiles.add("$home/.config/fish/config.fish")
             }
+
             shell.contains("csh") -> {
                 configFiles.add("$home/.cshrc")
             }
+
             shell.contains("ksh") -> {
                 configFiles.add("$home/.kshrc")
             }
+
             else -> {
                 configFiles.add("$home/.bashrc")
                 configFiles.add("$home/.zshrc")
@@ -292,6 +299,7 @@ object OpenCodePathFinder {
                                 val pyenvBin = "$home/.pyenv/bin"
                                 if (java.io.File(pyenvBin).exists()) paths.add(pyenvBin)
                             }
+
                             cmd.contains("rbenv init") -> {
                                 val rbenvBin = "$home/.rbenv/bin"
                                 if (java.io.File(rbenvBin).exists()) paths.add(rbenvBin)

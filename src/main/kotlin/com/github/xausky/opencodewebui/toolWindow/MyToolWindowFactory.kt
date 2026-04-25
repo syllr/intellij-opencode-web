@@ -4,51 +4,36 @@ import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.github.xausky.opencodewebui.utils.SessionHelper
+import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.progress.ProgressManager
-import com.intellij.openapi.progress.Task.Backgroundable
-import com.intellij.ui.jcef.JBCefBrowser
-import com.intellij.ui.jcef.JBCefClient
-import com.intellij.ui.jcef.JBCefApp
-import com.intellij.ui.jcef.JBCefBrowserBuilder
 import com.intellij.ui.content.ContentFactory
-import com.intellij.ide.BrowserUtil
+import com.intellij.ui.jcef.JBCefApp
+import com.intellij.ui.jcef.JBCefBrowser
+import com.intellij.ui.jcef.JBCefBrowserBuilder
+import com.intellij.ui.jcef.JBCefClient
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
-import org.cef.handler.CefLifeSpanHandlerAdapter
 import org.cef.callback.CefContextMenuParams
 import org.cef.callback.CefMenuModel
 import java.awt.Component
-import java.awt.datatransfer.StringSelection
 import java.awt.Toolkit
-import java.io.File
+import java.awt.datatransfer.StringSelection
 import java.awt.event.KeyEvent
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
-import javax.swing.JPanel
 import java.nio.charset.StandardCharsets
-import java.util.Base64
+import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
-import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
+import javax.swing.JPanel
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
-import com.intellij.execution.configurations.GeneralCommandLine
-import com.intellij.execution.process.OSProcessHandler
-import com.intellij.execution.process.ProcessHandlerFactory
-import com.intellij.execution.process.ProcessHandler
-import com.intellij.notification.Notification
-import com.intellij.notification.NotificationGroup
-import com.intellij.notification.NotificationType
 
 /**
  * OpenCode Web UI 工具窗口工厂类
@@ -121,7 +106,8 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
             toolWindow.contentManager.addContent(content)
 
-            toolWindow.contentManager.addContentManagerListener(object : com.intellij.ui.content.ContentManagerListener {
+            toolWindow.contentManager.addContentManagerListener(object :
+                com.intellij.ui.content.ContentManagerListener {
                 override fun selectionChanged(event: com.intellij.ui.content.ContentManagerEvent) {
                     if (event.content === content) {
                         myToolWindow.requestBrowserFocus()
@@ -397,6 +383,7 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
     class BrowserPanel(private val host: String, private val port: Int) : JPanel() {
         private var browser: JBCefBrowser? = null
+
         // 共享的 JBCefClient，所有 BrowserPanel 实例共享同一个渲染进程，localStorage 也因此共享
         private val sharedClient: JBCefClient = sharedJBCefClient
         private var startButtonPanel: JPanel? = null
@@ -404,9 +391,9 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         companion object {
             private const val COPY_LINK_COMMAND_ID = 26500
-        private const val REFRESH_COMMAND_ID = 26501
-        private const val SHUTDOWN_COMMAND_ID = 26502
-        private const val COPY_LINK_AS_PROMPT_COMMAND_ID = 26503
+            private const val REFRESH_COMMAND_ID = 26501
+            private const val SHUTDOWN_COMMAND_ID = 26502
+            private const val COPY_LINK_AS_PROMPT_COMMAND_ID = 26503
         }
 
         init {

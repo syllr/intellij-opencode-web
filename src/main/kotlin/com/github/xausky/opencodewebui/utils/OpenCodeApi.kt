@@ -14,24 +14,6 @@ object OpenCodeApi {
     private const val MAX_RETRIES = 3
     private const val RETRY_DELAY_MS = 2000L
 
-    fun getLatestSessionId(projectPath: String, callback: (String?) -> Unit) {
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val result = fetchSessionIdWithRetry(projectPath)
-            ApplicationManager.getApplication().invokeLater {
-                callback(result)
-            }
-        }
-    }
-
-    fun checkHealth(callback: (HealthStatus) -> Unit) {
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val result = fetchHealthWithRetry()
-            ApplicationManager.getApplication().invokeLater {
-                callback(result)
-            }
-        }
-    }
-
     data class HealthStatus(val healthy: Boolean, val version: String?)
 
     private fun fetchHealthWithRetry(): HealthStatus {
@@ -112,54 +94,6 @@ object OpenCodeApi {
         val pattern = Regex(""""id"\s*:\s*"([^"]+)"""")
         val match = pattern.find(json)
         return match?.groupValues?.get(1)
-    }
-
-    fun checkAndPerformUpgrade(callback: (UpgradeResult) -> Unit) {
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val result = fetchUpgrade()
-            ApplicationManager.getApplication().invokeLater {
-                callback(result)
-            }
-        }
-    }
-
-    data class UpgradeResult(val success: Boolean, val newVersion: String?, val message: String?)
-
-    private fun fetchUpgrade(): UpgradeResult {
-        var connection: HttpURLConnection? = null
-        return try {
-            val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/global/upgrade"
-            connection = URI.create(url).toURL().openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 30000
-            connection.readTimeout = 30000
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.doOutput = true
-            connection.outputStream.use { os ->
-                os.write("{}".toByteArray())
-            }
-
-            if (connection.responseCode == 200) {
-                connection.inputStream.bufferedReader().use { reader ->
-                    val response = reader.readText()
-                    val success = response.contains("\"success\": true") || response.contains("\"success\":true")
-                    val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(response)?.groupValues?.get(1)
-                    val error = Regex(""""error"\s*:\s*"([^"]+)"""").find(response)?.groupValues?.get(1)
-                    if (success) {
-                        UpgradeResult(true, version, "Updated to version $version")
-                    } else {
-                        UpgradeResult(false, null, error ?: "Update failed")
-                    }
-                }
-            } else {
-                UpgradeResult(false, null, "HTTP ${connection.responseCode}")
-            }
-        } catch (e: Exception) {
-            thisLogger().warn("Upgrade check failed: ${e.message}")
-            UpgradeResult(false, null, e.message)
-        } finally {
-            connection?.disconnect()
-        }
     }
 
     fun isServerHealthySync(): Boolean {
