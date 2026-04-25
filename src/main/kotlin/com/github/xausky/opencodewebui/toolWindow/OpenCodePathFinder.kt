@@ -17,25 +17,27 @@ object OpenCodePathFinder {
      */
     fun getCandidatePaths(): List<String> {
         val candidatePaths = mutableListOf<String>()
-        // 硬编码路径
         candidatePaths.addAll(listOf(
             "/opt/homebrew/bin/opencode",
             "/usr/local/bin/opencode",
             "/usr/bin/opencode"
         ))
-        // NVM 多版本路径
         val nvmBase = "/opt/homebrew/opt/nvm/versions/node"
         val nvmDir = java.io.File(nvmBase)
+        println("[OpenCodePathFinder] 检查 NVM 目录: $nvmBase, exists=${nvmDir.exists()}")
         if (nvmDir.exists()) {
             nvmDir.listFiles()
                 ?.filter { it.isDirectory && it.name.startsWith("v") }
                 ?.forEach { versionDir ->
                     val opencodePath = java.io.File(versionDir, "bin/opencode")
+                    println("[OpenCodePathFinder] 检查版本目录: ${versionDir.absolutePath}, opencode exists=${opencodePath.exists()}")
                     if (opencodePath.exists()) {
                         candidatePaths.add(opencodePath.absolutePath)
+                        println("[OpenCodePathFinder] 添加 NVM opencode 路径: ${opencodePath.absolutePath}")
                     }
                 }
         }
+        println("[OpenCodePathFinder] 最终候选路径: $candidatePaths")
         return candidatePaths
     }
 
@@ -62,27 +64,36 @@ object OpenCodePathFinder {
             }
         }
     ): String {
-        // 1. 过滤存在的路径
+        println("[OpenCodePathFinder] findOpenCodePath 开始")
         val existingPaths = existingPathsFilter(candidatePaths)
+        println("[OpenCodePathFinder] 存在的路径: $existingPaths")
 
         if (existingPaths.isEmpty()) {
+            println("[OpenCodePathFinder] 没有找到任何 opencode 路径，抛出异常")
             throw IllegalStateException("OpenCode not found")
         }
 
         if (existingPaths.size == 1) {
+            println("[OpenCodePathFinder] 只有一个路径，直接返回: ${existingPaths[0]}")
             return existingPaths[0]
         }
 
-        // 2. 多路径时选择版本最高的
+        println("[OpenCodePathFinder] 多路径，执行 --version 获取版本...")
         val versionedPaths = existingPaths.mapNotNull { path ->
+            println("[OpenCodePathFinder] 执行: $path --version")
             val result = executor(path)
             if (result != null) {
+                println("[OpenCodePathFinder] $path 版本: ${result.output}")
                 Pair(result.output, path)
-            } else null
+            } else {
+                println("[OpenCodePathFinder] $path 执行失败")
+                null
+            }
         }
 
-        return versionedPaths.maxByOrNull { parseOpenCodeVersion(it.first) }?.second
-            ?: existingPaths.first()
+        val selected = versionedPaths.maxByOrNull { parseOpenCodeVersion(it.first) }?.second
+        println("[OpenCodePathFinder] 选择版本最高的路径: $selected")
+        return selected ?: existingPaths.first()
     }
 
     /**

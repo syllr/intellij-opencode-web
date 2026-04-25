@@ -730,12 +730,15 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         private fun findOpenCodePath(): String {
-            // 使用 OpenCodePathFinder 查找路径
+            thisLogger().info("[findOpenCodePath] 开始查找 opencode 路径...")
             val candidatePaths = OpenCodePathFinder.getCandidatePaths()
+            thisLogger().info("[findOpenCodePath] 候选路径: $candidatePaths")
             return try {
-                OpenCodePathFinder.findOpenCodePath(candidatePaths)
+                val result = OpenCodePathFinder.findOpenCodePath(candidatePaths)
+                thisLogger().info("[findOpenCodePath] 找到 opencode 路径: $result")
+                result
             } catch (e: IllegalStateException) {
-                // 通知用户并终止
+                thisLogger().error("[findOpenCodePath] 未找到 opencode: ${e.message}")
                 notifyOpenCodeNotFound()
                 throw e
             }
