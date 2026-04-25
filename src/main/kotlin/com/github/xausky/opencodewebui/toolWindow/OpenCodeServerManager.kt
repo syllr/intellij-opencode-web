@@ -114,9 +114,14 @@ object OpenCodeServerManager {
         return ProcessHandlerFactory.getInstance().createProcessHandler(commandLine)
     }
 
+    // 原来的代码,我注释了
+//    private fun getOpenCodeCommand(): List<String> {
+//        val path = findOpenCodePath()
+//        return listOf(path, "serve", "--hostname", HOST, "--port", PORT.toString())
+//    }
+
     private fun getOpenCodeCommand(): List<String> {
-        val path = findOpenCodePath()
-        return listOf(path, "serve", "--hostname", HOST, "--port", PORT.toString())
+        return listOf("/bin/zsh", "-c", "opencode")
     }
 
     private fun findOpenCodePath(): String {
