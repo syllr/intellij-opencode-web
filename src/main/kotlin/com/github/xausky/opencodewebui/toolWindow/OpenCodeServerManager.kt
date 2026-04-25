@@ -19,7 +19,6 @@ object OpenCodeServerManager {
 
     private val serverRunning = AtomicBoolean(false)
     private val serverProcess = AtomicReference<ProcessHandler?>(null)
-    private var opencodeBinDir: String? = null
 
     fun isServerRunning(): Boolean = serverRunning.get()
 
@@ -105,44 +104,14 @@ object OpenCodeServerManager {
         val homeDir = System.getProperty("user.home", System.getenv("HOME") ?: "/tmp")
         val commandLine = GeneralCommandLine(command)
         commandLine.setWorkDirectory(homeDir)
-        val fullEnv = OpenCodePathFinder.getFullEnvironment(opencodeBinDir)
-
-        commandLine.environment.clear()
-        commandLine.environment.putAll(fullEnv)
-
         thisLogger().info("[startOpenCodeProcess] Working directory: $homeDir")
         return ProcessHandlerFactory.getInstance().createProcessHandler(commandLine)
     }
 
-    // 原来的代码,我注释了
-//    private fun getOpenCodeCommand(): List<String> {
-//        val path = findOpenCodePath()
-//        return listOf(path, "serve", "--hostname", HOST, "--port", PORT.toString())
-//    }
-
     private fun getOpenCodeCommand(): List<String> {
-        return listOf("/bin/zsh", "-c", "opencode")
-    }
-
-    private fun findOpenCodePath(): String {
-        thisLogger().info("[findOpenCodePath] 开始查找 opencode 路径...")
-        val candidatePaths = OpenCodePathFinder.getCandidatePaths()
-        thisLogger().info("[findOpenCodePath] 候选路径: $candidatePaths")
-        return try {
-            val result = OpenCodePathFinder.findOpenCodePath(candidatePaths)
-            appendNvmBinPath(result)
-            thisLogger().info("[findOpenCodePath] 找到 opencode 路径: $result")
-            result
-        } catch (e: IllegalStateException) {
-            thisLogger().error("[findOpenCodePath] 未找到 opencode: ${e.message}")
-            throw e
-        }
-    }
-
-    private fun appendNvmBinPath(opencodePath: String) {
-        if (OpenCodePathFinder.isNvmPath(opencodePath)) {
-            opencodeBinDir = OpenCodePathFinder.extractBinDir(opencodePath)
-            thisLogger().info("[appendNvmBinPath] 设置 opencode bin 目录: $opencodeBinDir")
-        }
+        // 使用 zsh login mode (-l) 启动 opencode
+        // -l 会加载用户的 .zshrc，确保 PATH 包含 Homebrew/NVM 等路径
+        // 这样 opencode 命令才能被正确找到
+        return listOf("/bin/zsh", "-l", "-c", "opencode serve --hostname $HOST --port $PORT")
     }
 }
