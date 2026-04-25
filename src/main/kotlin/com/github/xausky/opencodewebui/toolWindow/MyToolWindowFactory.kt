@@ -75,8 +75,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         private val sharedJBCefClient by lazy { JBCefApp.getInstance().createClient() }
 
-        private val serverRunning = AtomicBoolean(false)
-        private val serverProcess = AtomicReference<ProcessHandler?>(null)
         private var checkScheduledFuture: ScheduledFuture<*>? = null
         private var myToolWindowInstance: MyToolWindow? = null
 
@@ -88,310 +86,13 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             try {
                 checkScheduledFuture?.cancel(true)
                 checkScheduledFuture = null
-
-                // 通过端口号强制关闭进程（确保 IDEA 重启后仍能关闭）
-                killProcessByPort(PORT)
-
-                serverRunning.set(false)
-                serverProcess.set(null)
+                OpenCodeServerManager.stopServer()
+                OpenCodeServerManager.killProcessByPort(PORT)
             } catch (e: Exception) {
                 thisLogger().error("Error stopping OpenCode server: ${e.message}")
             }
         }
 
-        private fun killProcessByPort(port: Int) {
-            try {
-                val os = System.getProperty("os.name").lowercase()
-                val command = when {
-                    os.contains("mac") || os.contains("nix") || os.contains("nux") ->
-                        listOf("sh", "-c", "lsof -i :$port -t | xargs kill -9 2>/dev/null || true")
-                    os.contains("win") ->
-                        listOf("cmd", "/c", "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :$port ^| findstr LISTENING') do taskkill /F /PID %a")
-                    else -> {
-                        thisLogger().warn("Unsupported OS for killProcessByPort: $os")
-                        return
-                    }
-                }
-
-                val process = ProcessBuilder(command).start()
-                process.waitFor(5, TimeUnit.SECONDS)
-                thisLogger().info("Attempted to kill process on port $port")
-            } catch (e: Exception) {
-                thisLogger().error("Error killing process by port: ${e.message}")
-            }
-        }
-
-        /**
-         * 获取完整的环境变量
-         *
-         * 问题背景：
-         * macOS GUI 应用由 launchd 启动，不会加载用户的 shell 配置文件（~/.bashrc, ~/.zshrc 等）
-         * 导致 System.getenv() 获取的环境变量不完整，缺少 PATH、Go、Bun、Python 等工具路径
-         *
-         * 解决方案：
-         * 通过三种机制构建完整的环境变量：
-         * 1. 默认 macOS 路径（无条件添加）
-         * 2. 工具路径检测（仅当目录存在时添加）
-         * 3. Shell 配置解析（bashrc/zshrc 等）
-         *
-         * 测试说明：
-         * ⚠️ ./gradlew runIde 无法复现此问题！
-         * 因为通过终端启动的 GUI 应用会继承终端的完整环境变量。
-         * 必须手动 buildPlugin 然后安装到 IDEA/GoLand 中测试：
-         * 1. ./gradlew buildPlugin
-         * 2. 在 IDEA/GoLand 中通过 File -> Settings -> Plugins -> Install Plugin from Disk
-         * 3. 重启 IDE 并打开 OpenCode 工具窗口
-         */
-        private fun getFullEnvironment(): Map<String, String> {
-            val env = System.getenv().toMutableMap()
-            val home = env["HOME"] ?: System.getProperty("user.home")
-            val currentPath = env["PATH"] ?: ""
-
-            // 收集所有检测到的路径
-            val allPaths = mutableListOf<String>()
-
-            // A. 添加默认 macOS 路径（无条件）
-            // 这些是 macOS 系统基础路径，即使不存在也添加
-            val defaultPaths = listOf(
-                "/usr/bin", "/bin", "/usr/sbin", "/sbin",
-                "/usr/local/bin",
-                "/opt/homebrew/bin", "/opt/homebrew/sbin",
-                "/opt/local/bin", "/opt/local/sbin"
-            )
-            allPaths.addAll(defaultPaths)
-
-            // B. 检测工具路径（仅当目录存在）
-            // 检测常见开发工具的安装路径，如 Cargo, Go, Bun, Deno, NVM 等
-            val detectedPaths = detectToolPaths(home)
-            allPaths.addAll(detectedPaths)
-
-            // C. 从 shell 配置解析路径
-            // 解析 ~/.bashrc, ~/.zshrc 等配置文件中的 PATH 修改
-            val shellPaths = parseShellConfigPaths(home)
-            allPaths.addAll(shellPaths)
-
-            // 去重并过滤存在的路径
-            val uniquePaths = allPaths.distinct().filter { java.io.File(it).exists() }
-
-            // 构建新的 PATH，保留原始 PATH 中的自定义路径
-            val existingPaths = currentPath.split(":").filter { path ->
-                // 保留不在默认列表中的原始路径
-                !defaultPaths.contains(path) && !uniquePaths.contains(path)
-            }
-
-            val newPath = (uniquePaths + existingPaths).joinToString(":")
-            env["PATH"] = newPath
-
-            return env
-        }
-
-        /**
-         * 检测常见工具的安装路径
-         */
-        private fun detectToolPaths(home: String): List<String> {
-            val paths = mutableListOf<String>()
-
-            // Cargo
-            val cargoBin = "$home/.cargo/bin"
-            if (java.io.File(cargoBin).exists()) paths.add(cargoBin)
-
-            // Go (gopath style)
-            val gBin = "$home/.g/bin"
-            if (java.io.File(gBin).exists()) paths.add(gBin)
-
-            // Go installation
-            for (goPath in listOf("$home/.g/go", "$home/go")) {
-                val goBinPath = "$goPath/bin"
-                if (java.io.File(goBinPath).exists()) {
-                    paths.add(goBinPath)
-                    break
-                }
-            }
-
-            // Local bin
-            val localBin = "$home/.local/bin"
-            if (java.io.File(localBin).exists()) paths.add(localBin)
-
-            // Bun
-            val bunBin = "$home/.bun/bin"
-            if (java.io.File(bunBin).exists()) paths.add(bunBin)
-
-            // Deno
-            val denoBin = "$home/.deno/bin"
-            if (java.io.File(denoBin).exists()) paths.add(denoBin)
-
-            // NVM versions
-            val nvmVersionsDir = java.io.File("$home/.nvm/versions/node")
-            if (nvmVersionsDir.exists()) {
-                nvmVersionsDir.listFiles()?.forEach { versionDir ->
-                    val nvmBin = "${versionDir.absolutePath}/bin"
-                    if (java.io.File(nvmBin).exists()) paths.add(nvmBin)
-                }
-            }
-
-            // Pyenv
-            val pyenvBin = "$home/.pyenv/bin"
-            if (java.io.File(pyenvBin).exists()) paths.add(pyenvBin)
-
-            // RBenv
-            val rbenvBin = "$home/.rbenv/bin"
-            if (java.io.File(rbenvBin).exists()) paths.add(rbenvBin)
-
-            // Yarn
-            val yarnBin = "$home/.yarn/bin"
-            if (java.io.File(yarnBin).exists()) paths.add(yarnBin)
-
-            // Codeium/Windsurf
-            val codeiumBin = "$home/.codeium/windsurf/bin"
-            if (java.io.File(codeiumBin).exists()) paths.add(codeiumBin)
-
-            return paths
-        }
-
-        /**
-         * 从 shell 配置文件解析 PATH
-         */
-        private fun parseShellConfigPaths(home: String): List<String> {
-            val paths = mutableSetOf<String>()
-            val visitedFiles = mutableSetOf<String>()
-            val depth = 0
-
-            // 默认解析的配置文件
-            val configFiles = mutableListOf<String>()
-
-            // 根据 $SHELL 类型添加对应的配置文件
-            val shell = System.getenv("SHELL") ?: ""
-            when {
-                shell.contains("zsh") -> {
-                    configFiles.add("$home/.zshrc")
-                    configFiles.add("$home/.zprofile")
-                    configFiles.add("$home/.zshenv")
-                }
-                shell.contains("bash") -> {
-                    configFiles.add("$home/.bashrc")
-                    configFiles.add("$home/.bash_profile")
-                }
-                shell.contains("fish") -> {
-                    configFiles.add("$home/.config/fish/config.fish")
-                }
-                shell.contains("csh") -> {
-                    configFiles.add("$home/.cshrc")
-                }
-                shell.contains("ksh") -> {
-                    configFiles.add("$home/.kshrc")
-                }
-                else -> {
-                    // 默认尝试 bash 和 zsh
-                    configFiles.add("$home/.bashrc")
-                    configFiles.add("$home/.zshrc")
-                }
-            }
-
-            for (configFile in configFiles) {
-                parseConfigFile(configFile, home, paths, visitedFiles, depth)
-            }
-
-            return paths.toList()
-        }
-
-        /**
-         * 递归解析配置文件，提取 PATH 修改
-         */
-        private fun parseConfigFile(
-            filePath: String,
-            home: String,
-            paths: MutableSet<String>,
-            visitedFiles: MutableSet<String>,
-            depth: Int
-        ) {
-            val maxDepth = 5
-            if (depth >= maxDepth) return
-
-            val file = java.io.File(filePath)
-            if (!file.exists() || !file.isFile || !file.canRead()) return
-
-            // 避免循环引用
-            val canonicalPath = try {
-                file.canonicalPath
-            } catch (e: Exception) {
-                return
-            }
-            if (visitedFiles.contains(canonicalPath)) return
-            visitedFiles.add(canonicalPath)
-
-            try {
-                file.readLines().forEach { line ->
-                    val trimmedLine = line.trim()
-
-                    // 跳过注释和空行
-                    if (trimmedLine.isEmpty() || trimmedLine.startsWith("#")) return@forEach
-
-                    // 处理 export PATH=$PATH:xxx 格式
-                    if (trimmedLine.startsWith("export PATH=") || trimmedLine.startsWith("PATH=")) {
-                        val pathMatch = Regex("""PATH=["']?([^"'`\n]+)["']?""").find(trimmedLine)
-                        if (pathMatch != null) {
-                            parsePathString(pathMatch.groupValues[1], home, paths)
-                        }
-                    }
-
-                    // 处理 source xxx 或 . xxx 格式
-                    val sourceMatch = Regex("""^\s*(?:source|\.)\s+["']?([^"'\n]+)["']?""").find(trimmedLine)
-                    if (sourceMatch != null) {
-                        val sourcedFile = sourceMatch.groupValues[1]
-                        val expandedFile = sourcedFile.replace("~", home)
-                        parseConfigFile(expandedFile, home, paths, visitedFiles, depth + 1)
-                    }
-
-                    // 处理 eval "$(...)" 格式（如 pyenv init, nvm use, etc.）
-                    if (trimmedLine.contains("eval \"\$(") || trimmedLine.contains("eval $(")) {
-                        val evalMatch = Regex("""eval\s+\$?\("([^)]+)"\)""").find(trimmedLine)
-                        if (evalMatch != null) {
-                            val cmd = evalMatch.groupValues[1]
-                            when {
-                                cmd.contains("pyenv init") -> {
-                                    val pyenvBin = "$home/.pyenv/bin"
-                                    if (java.io.File(pyenvBin).exists()) paths.add(pyenvBin)
-                                }
-                                cmd.contains("rbenv init") -> {
-                                    val rbenvBin = "$home/.rbenv/bin"
-                                    if (java.io.File(rbenvBin).exists()) paths.add(rbenvBin)
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                // 忽略解析错误
-            }
-        }
-
-        /**
-         * 解析 PATH 字符串，提取各个路径
-         */
-        private fun parsePathString(pathStr: String, home: String, paths: MutableSet<String>) {
-            val parts = pathStr.split(":")
-            for (part in parts) {
-                var expandedPart = part
-                    .replace("~", home)
-                    .replace("\$HOME", home)
-                    .replace("\${HOME}", home)
-
-                // 移除可能的引号
-                expandedPart = expandedPart.trim('"', '\'', '`')
-
-                // 跳过包含变量引用的部分（如 $PATH, ${PATH}）
-                if (expandedPart.contains("\$") && !expandedPart.startsWith("/") && !expandedPart.startsWith("~")) {
-                    continue
-                }
-
-                if (expandedPart.isNotEmpty() && !expandedPart.contains("\$")) {
-                    val file = java.io.File(expandedPart)
-                    if (file.exists() && file.isDirectory) {
-                        paths.add(expandedPart)
-                    }
-                }
-            }
-        }
     }
 
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
@@ -478,14 +179,7 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         private fun isServerRunning(): Boolean {
-            val healthy = OpenCodeApi.isServerHealthySync()
-            return if (healthy) {
-                serverRunning.set(true)
-                true
-            } else {
-                serverRunning.set(false)
-                false
-            }
+            return OpenCodeServerManager.isServerRunning()
         }
 
         fun checkAndLoadContent() {
@@ -500,7 +194,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         private fun showServerNotRunning() {
-            serverRunning.set(false)
             mainBrowser = null
             isShowingStartButton = true
             browserPanel.disposeBrowser()
@@ -640,57 +333,19 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         private fun startOpenCodeServer() {
-            // 先检查 server 是否已经启动，如果已经启动则直接加载页面
-            if (OpenCodeApi.isServerHealthySync()) {
-                onServerStarted()
-                return
-            }
-
-            val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
-                override fun run(indicator: ProgressIndicator) {
-                    try {
-                        val handler = startOpenCodeProcess()
-                        serverProcess.set(handler)
-
-                        val healthy = OpenCodeApi.waitForServerHealthy(30000)
-
-                        if (healthy) {
-                            onServerStarted()
-                        } else {
-                            onServerStartFailed(Exception("Server not healthy after 30s"))
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        thisLogger().error("[startOpenCodeServer] Exception: ${e.message}", e)
-                        onServerStartFailed(e)
-                    }
-                }
-            }
-            ProgressManager.getInstance().run(task)
-        }
-
-        private fun startOpenCodeProcess(): ProcessHandler {
-            val command = getOpenCodeCommand()
-            val homeDir = System.getProperty("user.home", System.getenv("HOME") ?: "/tmp")
-            val commandLine = GeneralCommandLine(command)
-            commandLine.setWorkDirectory(homeDir)
-            val fullEnv = getFullEnvironment()
-
-            commandLine.environment.clear()
-            commandLine.environment.putAll(fullEnv)
-
-            thisLogger().info("[startOpenCodeProcess] Working directory: $homeDir, project path: ${project.basePath}")
-            return ProcessHandlerFactory.getInstance().createProcessHandler(commandLine)
+            OpenCodeServerManager.startServer(
+                project = project,
+                onStarted = { onServerStarted() },
+                onFailed = { e -> onServerStartFailed(e) }
+            )
         }
 
         private fun onServerStarted() {
-            serverRunning.set(true)
             ApplicationManager.getApplication().invokeLater { loadProjectPage() }
         }
 
         private fun onServerStartFailed(e: Exception) {
             thisLogger().error("Error starting OpenCode server: ${e.message}")
-            serverRunning.set(false)
             ApplicationManager.getApplication().invokeLater { showErrorInBrowser() }
         }
 
@@ -722,37 +377,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 "http://$HOST:$PORT/$encodedPath/session/$sessionId"
             } else {
                 "http://$HOST:$PORT/$encodedPath"
-            }
-        }
-
-        private fun getOpenCodeCommand(): List<String> {
-            val path = findOpenCodePath()
-            return listOf(path, "serve", "--hostname", HOST, "--port", PORT.toString())
-        }
-
-        private fun findOpenCodePath(): String {
-            thisLogger().info("[findOpenCodePath] 开始查找 opencode 路径...")
-            val candidatePaths = OpenCodePathFinder.getCandidatePaths()
-            thisLogger().info("[findOpenCodePath] 候选路径: $candidatePaths")
-            return try {
-                val result = OpenCodePathFinder.findOpenCodePath(candidatePaths)
-                thisLogger().info("[findOpenCodePath] 找到 opencode 路径: $result")
-                result
-            } catch (e: IllegalStateException) {
-                thisLogger().error("[findOpenCodePath] 未找到 opencode: ${e.message}")
-                notifyOpenCodeNotFound()
-                throw e
-            }
-        }
-
-        private fun notifyOpenCodeNotFound() {
-            ApplicationManager.getApplication().invokeLater {
-                Notification(
-                    "OpenCodeWeb.notifications",
-                    "无法启动 OpenCode 服务器",
-                    "未找到 opencode 可执行文件。请确保 OpenCode 已正确安装。",
-                    NotificationType.ERROR
-                ).notify(project)
             }
         }
 
@@ -861,7 +485,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 val createdBrowser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
                 this.browser = createdBrowser
                 add(createdBrowser.component, java.awt.BorderLayout.CENTER)
-                sharedClient.addLifeSpanHandler(ExternalLinkLifeSpanHandler(), createdBrowser.cefBrowser)
                 sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
                 sharedClient.addLoadHandler(object : org.cef.handler.CefLoadHandlerAdapter() {
                     override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
@@ -919,44 +542,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             browser?.dispose()
             removeAll()
             browser = null
-        }
-
-        private inner class ExternalLinkLifeSpanHandler : CefLifeSpanHandlerAdapter() {
-            override fun onBeforePopup(
-                browser: CefBrowser,
-                frame: CefFrame,
-                target_url: String,
-                target_frame_name: String
-            ): Boolean {
-                if (isExternalUrl(target_url)) {
-                    ApplicationManager.getApplication().invokeLater {
-                        BrowserUtil.browse(java.net.URI(target_url))
-                    }
-                    return true
-                }
-                return false
-            }
-        }
-
-        private fun isExternalUrl(url: String?): Boolean {
-            if (url == null) return false
-            return try {
-                val uri = java.net.URI(url)
-                val host = uri.host ?: return false
-                val scheme = uri.scheme ?: return false
-
-                if (scheme !in listOf("http", "https")) return false
-
-                if (host == "localhost" || host == "127.0.0.1" ||
-                    host.startsWith("192.168.") || host.startsWith("10.") ||
-                    host == "0.0.0.0" || host == this@BrowserPanel.host) {
-                    return false
-                }
-
-                true
-            } catch (e: Exception) {
-                false
-            }
         }
 
         private inner class LinkContextMenuHandler : org.cef.handler.CefContextMenuHandlerAdapter() {
