@@ -1,87 +1,79 @@
-# 项目知识库
+# PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-04-19
-**Commit:** 4bcd6ab
+**Generated:** 2026-04-27
+**Commit:** c96e033
 **Branch:** main
 
-## 项目概述
-JetBrains IntelliJ Platform 插件，用于 OpenCode Web UI 集成（fork版本，包含 Emacs 快捷键、自动重启、ESC 修复）。
+## OVERVIEW
+IntelliJ Platform 插件，为 OpenCode Web UI 提供 JetBrains IDE 集成（fork 版本）。
 
-## 项目结构
+## STRUCTURE
 ```
 intellij-opencode-web/
 ├── src/main/kotlin/com/github/xausky/opencodewebui/
-│   ├── toolWindow/          # 核心 JCEF + 服务器管理
-│   ├── actions/             # IDE actions（重启、切换、快捷键）
-│   ├── services/            # 平台服务
-│   ├── listeners/           # 生命周期监听器
-│   ├── startup/             # 启动活动
-│   └── utils/               # Session 辅助工具
-├── src/main/resources/       # 图标、plugin.xml、消息
-├── .github/workflows/        # CI/CD（构建、发布、UI测试）
-└── build.gradle.kts         # Gradle 配置
+│   ├── toolWindow/      # JCEF + 服务器管理
+│   ├── actions/         # IDE actions（重启、快捷键、Copy as Prompt）
+│   ├── gutter/          # 行标记（Prompt 评论）
+│   ├── services/        # 平台服务
+│   ├── listeners/       # 生命周期监听器
+│   ├── startup/        # 启动活动
+│   └── utils/          # Session 辅助工具
+├── src/main/resources/  # 图标、plugin.xml、消息
+├── .github/workflows/   # CI/CD（构建、发布、UI测试）
+└── build.gradle.kts     # Gradle 配置
 ```
 
-## 关键位置
-| 任务 | 位置 | 备注 |
-|------|------|------|
+## WHERE TO LOOK
+| Task | Location | Notes |
+|------|----------|-------|
 | 核心逻辑 | toolWindow/MyToolWindowFactory.kt | JCEF + 服务器管理 |
-| IDE actions | actions/ | RestartServer、PassToJcef、CopyAsPrompt |
+| IDE Actions | actions/ | RestartServer、PassToJcef、CopyAsPrompt |
+| Gutter Icons | gutter/ | PromptLineMarkerProvider、PromptCommentDialog |
 | CI/CD | .github/workflows/ | 构建、发布、UI测试 |
 | 构建配置 | build.gradle.kts, gradle.properties | 依赖、版本 |
-| 测试 | src/test/ | 单元测试 |
-| Action 注册 | plugin.xml | Action 的 add-to-group 配置 |
-| **IntelliJ Platform 参考** | `references/intellij-platform/` | 官方文档、Group ID、Action ID |
+| 测试 | src/test/ | 单元测试 + 集成测试 |
+| **IntelliJ 参考** | `references/intellij-platform/` | 官方文档 |
 
-## 代码规范
+## CODE MAP
+
+| Symbol | Type | Location | Role |
+|--------|------|----------|------|
+| MyToolWindowFactory | ToolWindowFactory | toolWindow/ | JCEF 浏览器 + 服务器管理 |
+| OpenCodeServerManager | Object | toolWindow/ | 服务器生命周期管理 |
+| OpenCodeApi | Class | toolWindow/ | HTTP API 调用 |
+| SessionHelper | Object | utils/ | 会话恢复 |
+| PromptLineMarkerProvider | LineMarkerProvider | gutter/ | 行标记图标 |
+| PromptCommentDialog | DialogWrapper | gutter/ | 评论对话框 |
+| PassToJcefAction | AnAction | actions/ | 快捷键传递 |
+| CopyAsPromptAction | AnAction | actions/ | 复制为 Prompt |
+| MyStartupActivity | StartupActivity | startup/ | 启动时注册 Disposable |
+
+## CONVENTIONS
 - Gradle 版本目录 (`gradle/libs.versions.toml`)
-- IntelliJ Platform 最佳实践
-- JDK 21, Kotlin 2.3.0
+- JDK 21, Kotlin 2.3.20
 - Qodana + Kover 代码质量
-- 插件描述从 `README.md` 的 `<!-- Plugin description -->` 提取
-- SemVer 版本格式，支持预发布标签
-- **Git 提交规则**: Agent 禁止自动提交 git，必须等待用户显式调用才能提交
-- **发布规则**: Agent 禁止自动发布插件（publishPlugin），必须等待用户显式调用才能发布
+- SemVer 版本格式
+- **包名不匹配**: 源码 `com.github.xausky.opencodewebui` vs `pluginGroup = com.shenyuanlaolarou`（已知问题，暂未修复）
+- **Git 提交**: Agent 禁止自动提交，必须用户显式调用
+- **发布**: Agent 禁止自动发布，必须用户显式调用
 
-## 调试日志
-IntelliJ 插件日志通过 `thisLogger().info/warn/error()` 输出到 IDE 日志窗口。
-
-**控制台打印（推荐用于快速调试）**:
-```kotlin
-println("=== DEBUG: variable = $variable")
-```
-
-**查看日志**:
-- 日志文件位置: `build/idea-sandbox/IU-2025.3.4/log/`
-
-**健康检查日志**（OpenCodeApi.kt）:
-- 前缀：`[HealthCheck]`
-- 示例：`[HealthCheck] Starting health check for 127.0.0.1:12396`
-
-**注意**: 调试完成后应移除临时日志语句。
-
-## 反模式（此项目问题）
-- 包名不匹配：`com.github.xausky.opencodewebui` 源码 vs `com.shenyuanlaolarou` pluginGroup
-- ~~单个 630 行核心文件~~ → 已重构：拆分为多个文件
+## ANTI-PATTERNS (THIS PROJECT)
 - ~~静态全局服务器状态~~ → 已修复：使用 AtomicReference/AtomicBoolean
-- ~~弃用的 JBCefBrowser 构造函数~~ → 已修复：使用 JBCefBrowserBuilder
-- ~~使用 SQLite JDBC 进行会话管理~~ → 已修复：使用 HTTP API 替代
-- ToolWindowFactory 的 deprecated/experimental API 警告是 IntelliJ 框架本身的问题，官方 SDK 示例同样使用相同模式
+- ~~弃用的 JBCefBrowser~~ → 已修复：使用 JBCefBrowserBuilder
+- ~~SQLite JDBC 会话管理~~ → 已修复：使用 HTTP API
+- ~~单个大文件~~ → 已修复：拆分为多个文件
 
-## 特色功能
-- Emacs 风格 JCEF 键盘快捷键（Ctrl+A/E/B/F/N/P）
+## UNIQUE STYLES
+- Emacs 风格 JCEF 键盘快捷键
 - 首次打开工具窗口时自动重启服务器
 - ESC 键焦点修复（JCEF）
-- 通过 Find Action 手动重启（Cmd+Shift+A）
-- 端口 12396（非标准 10086）
-- **中文输入法修复**：移除 `e.consume()`，解决 JCEF 中中文输入滞后问题
-- **外部链接处理**：点击外部链接（GitHub、文档等）在系统浏览器打开，而非 JCEF 内部
-- **右键菜单**：支持"在浏览器中打开"选项
-- **会话恢复**：自动恢复上次会话（通过 HTTP API `/session?directory=` 获取 session ID）
-- **健康检查改进**：先检查端口连通性（Socket），再检查 HTTP 接口，端口正常但 HTTP 超时仍认为健康
-- **Copy as Prompt**：编辑器右键菜单复制选中文本为 Prompt 格式（输出格式：`location:/path/file:10-20\ncontent:\n```\n选中文本\n```）
+- 端口 12396（非标准）
+- 中文输入法修复：移除 `e.consume()`
+- 外部链接在系统浏览器打开
+- 会话恢复（通过 HTTP API）
+- **Copy as Prompt**：复制选中文本为 Prompt 格式
 
-## 常用命令
+## COMMANDS
 ```bash
 ./gradlew buildPlugin          # 构建插件
 ./gradlew check                 # 测试 + Qodana
@@ -91,95 +83,15 @@ println("=== DEBUG: variable = $variable")
 ./gradlew qodana                # 代码质量检查
 ```
 
-## 发布插件
-```bash
-# 1. 升级版本号（gradle.properties 中的 pluginVersion）
-
-# 2. 发布（token 从 local.properties 读取，或直接设置环境变量）
-source local.properties && ./gradlew publishPlugin
-
-# 或直接使用环境变量
-export PUBLISH_TOKEN="your-jetbrains-marketplace-token" && ./gradlew publishPlugin
-```
-
-**Token 位置**: `local.properties`（已加入 .gitignore，不会上传到 Git）
-
-**Token 获取方式**：
-1. 登录 [JetBrains Marketplace](https://plugins.jetbrains.com/)
-2. 进入插件管理页面 → Access Tokens
-3. 创建一个新的 Publishing token
-4. 保存到 `local.properties`（格式：`export PUBLISH_TOKEN="your-token"`）
-
-## 备注
-- Fork 自 xausky/intellij-opencode-web-ui 的增强版本
+## NOTES
+- Fork 自 xausky/intellij-opencode-web-ui
 - 插件 ID: `com.shenyuanlaolarou.opencodewebui`
+- 调试日志: `thisLogger().info/warn/error()`
+- 日志文件: `build/idea-sandbox/IU-2025.3.4/log/`
 
-## OpenCode Commands
-
-在 OpenCode 中使用 `/publish` 命令发布插件：
-
-```bash
-# 或者手动执行
-./gradlew buildPlugin && ./gradlew publishPlugin
-```
-
-## 参考资料
-
-### IntelliJ Platform 插件开发
-| 资源 | URL | 类型 |
-|------|-----|------|
-| **DevGuide（官方）** | https://plugins.jetbrains.com/docs/intellij/ | ⭐ 官方 |
-| **插件模板** | https://github.com/JetBrains/intellij-platform-plugin-template | ⭐ 官方 |
-| **SDK 代码示例** | https://github.com/JetBrains/intellij-sdk-code-samples | ⭐ 官方 |
-| **SDK 文档源码** | https://github.com/JetBrains/intellij-sdk-docs | ⭐ 官方 |
-| **Gradle 插件** | https://github.com/JetBrains/gradle-intellij-plugin | ⭐ 官方 |
-| **Marketplace** | https://plugins.jetbrains.com/ | ⭐ 官方 |
-
-### JCEF 框架
-| 资源 | URL | 类型 |
-|------|-----|------|
-| **JCEF 官方文档** | https://chromiumembedded.github.io/java-cef/ | ⭐ 官方 |
-| **JCEF GitHub** | https://github.com/chromiumembedded/java-cef | ⭐ 官方 |
-| **CEF 父项目** | https://github.com/chromiumembedded/cef | ⭐ 官方 |
-
-### JCEF 在 IntelliJ Platform 中的使用
-| 资源 | URL | 类型 |
-|------|-----|------|
-| **JCEF in IntelliJ（官方）** | https://plugins.jetbrains.com/docs/intellij/embedded-browser-jcef.html | ⭐ 官方 |
-| **IntelliJ JCEF 源码** | https://github.com/JetBrains/intellij-community/tree/master/platform/ui.jcef/jcef | ⭐ 官方 |
-| **CefKeyboardHandler** | https://github.com/chromiumembedded/java-cef/blob/master/java/org/cef/handler/CefKeyboardHandler.java | ⭐ 官方 |
-| **JBCefBrowserBuilder** | https://github.com/JetBrains/intellij-community/blob/master/platform/ui.jcef/jcef/src/JBCefBrowserBuilder.java | ⭐ 官方 |
-
-### 关键文档页面
-| 主题 | URL |
-|------|-----|
-| ToolWindow | https://plugins.jetbrains.com/docs/intellij/tool-window.html |
-| Actions | https://plugins.jetbrains.com/docs/intellij/working-with-actions.html |
-| Services | https://plugins.jetbrains.com/docs/intellij/plugin-services.html |
-| 插件测试 | https://plugins.jetbrains.com/docs/intellij/testing.html |
-| 插件签名 | https://plugins.jetbrains.com/docs/intellij/plugin-signing.html |
-| 发布 | https://plugins.jetbrains.com/docs/intellij/publishing.html |
-
-### 示例项目
-| 项目 | URL |
-|------|-----|
-| **sample-intellij-idea-plugin** | https://github.com/ilkeratik/sample-intellij-idea-plugin |
-| **intellij-ui-dataviz** | https://github.com/JetBrains/intellij-ui-dataviz |
-
-### OpenCode 项目（本地源码）
-| 资源 | 位置 |
-|------|------|
-| **OpenCode 源码** | `/Users/yutao/GolandProjects/opencode` |
-| **核心引擎** | `packages/opencode/src/` |
-| **Web 前端** | `packages/web/src/` |
-| **IDE 集成** | `packages/opencode/src/ide/` |
-| **Agent 配置** | `.opencode/agent/` |
-| **命令定义** | `.opencode/command/` |
-
-### OpenCode 官方资源
-| 资源 | URL |
-|------|-----|
-| **官网** | https://opencode.ai |
-| **官方文档** | https://opencode.ai/docs |
-| **GitHub** | https://github.com/anomalyco/opencode |
-| **Discord** | https://discord.gg/opencode |
+## REFERENCES
+| Resource | URL |
+|----------|-----|
+| DevGuide | https://plugins.jetbrains.com/docs/intellij/ |
+| JCEF Docs | https://chromiumembedded.github.io/java-cef/ |
+| Platform Samples | https://github.com/JetBrains/intellij-sdk-code-samples |
