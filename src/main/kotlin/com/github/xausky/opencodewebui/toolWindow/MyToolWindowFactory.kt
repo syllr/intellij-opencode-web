@@ -164,10 +164,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             }).start()
         }
 
-        private fun isServerRunning(): Boolean {
-            return OpenCodeServerManager.isServerRunning()
-        }
-
         fun checkAndLoadContent() {
             val healthy = OpenCodeApi.isServerHealthySync()
             lastHealthState = healthy
@@ -353,16 +349,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 setupBrowserComponent(mainBrowser!!)
             } else {
                 mainBrowser?.loadURL(url)
-            }
-        }
-
-        private fun buildProjectUrl(projectPath: String, sessionId: String?): String {
-            val encodedPath = Base64.getEncoder()
-                .encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-            return if (sessionId != null) {
-                "http://$HOST:$PORT/$encodedPath/session/$sessionId"
-            } else {
-                "http://$HOST:$PORT/$encodedPath"
             }
         }
 
