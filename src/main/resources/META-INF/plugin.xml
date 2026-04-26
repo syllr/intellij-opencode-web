@@ -33,10 +33,13 @@
             <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="$Paste"/>
             <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="$Copy"/>
         </action>
+
     </actions>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow factoryClass="com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
+        <toolWindow factoryClass="com.github.xausky.opencodewebui.toolWindow.PromptToolWindowFactory" id="PromptEditor" anchor="left" icon="/icons/prompt.svg" displayName="Prompt" side="toolWindowBottom"/>
+        <lineMarkerProvider implementation="com.github.xausky.opencodewebui.gutter.PromptLineMarkerProvider"/>
         <postStartupActivity implementation="com.github.xausky.opencodewebui.startup.MyStartupActivity"/>
         <notificationGroup id="OpenCodeWeb.notifications" displayType="BALLOON"/>
     </extensions>

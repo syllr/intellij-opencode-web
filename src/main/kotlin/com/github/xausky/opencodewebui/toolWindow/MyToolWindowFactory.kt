@@ -32,6 +32,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.JSplitPane
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 
