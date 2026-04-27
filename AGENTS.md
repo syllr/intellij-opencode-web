@@ -47,6 +47,8 @@ intellij-opencode-web/
 | PassToJcefAction | AnAction | actions/ | 快捷键传递 |
 | CopyAsPromptAction | AnAction | actions/ | 复制为 Prompt |
 | MyStartupActivity | StartupActivity | startup/ | 启动时注册 Disposable |
+| PromptToolWindowFactory | ToolWindowFactory | toolWindow/ | Prompt 编辑器工具窗口 |
+| PromptToolWindowPanel | JPanel | toolWindow/ | Prompt 编辑器面板 |
 
 ## CONVENTIONS
 - Gradle 版本目录 (`gradle/libs.versions.toml`)
@@ -62,6 +64,12 @@ intellij-opencode-web/
 - ~~弃用的 JBCefBrowser~~ → 已修复：使用 JBCefBrowserBuilder
 - ~~SQLite JDBC 会话管理~~ → 已修复：使用 HTTP API
 - ~~单个大文件~~ → 已修复：拆分为多个文件
+
+## TOOLWINDOW 配置说明
+- **PromptEditor** 工具窗口通过 `secondary="true"` 和 `order="after Bookmarks"` 配置显示在左侧边栏下方
+- IntelliJ 的 `secondary` 属性控制工具窗口显示在主组（上方）还是辅助组（下方）
+- `side_tool="true"` 是 IntelliJ 运行时状态，由 IDE 根据 `secondary` 属性和用户拖动操作写入配置文件
+- 如果 `secondary` 不生效，用户手动拖动后 IDE 会写入 `side_tool="true"` 到 workspace.xml
 
 ## UNIQUE STYLES
 - Emacs 风格 JCEF 键盘快捷键
