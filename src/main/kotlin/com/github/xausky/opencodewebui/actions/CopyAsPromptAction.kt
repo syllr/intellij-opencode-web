@@ -10,6 +10,15 @@ import com.intellij.psi.PsiFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 
+/**
+ * 格式化选中文本为 prompt 格式
+ * 输出格式：
+ * location:<文件路径>:<行号>
+ * content:
+ * ```
+ * <选中的代码>
+ * ```
+ */
 fun formatAsPrompt(filePath: String, startLine: Int, endLine: Int, selectedText: String): String {
     val lineRange = if (startLine == endLine) "$startLine" else "$startLine-$endLine"
     return "location:$filePath:$lineRange\ncontent:\n```\n$selectedText\n```"
@@ -31,7 +40,7 @@ class CopyAsPromptAction : AnAction() {
         val document = editor.document
         val startOffset = selectionModel.selectionStart
         val endOffset = selectionModel.selectionEnd
-        
+
         val startLine = document.getLineNumber(startOffset) + 1
         val endLine = document.getLineNumber(endOffset) + 1
 
@@ -41,6 +50,7 @@ class CopyAsPromptAction : AnAction() {
         clipboard.setContents(StringSelection(formattedContent), null)
     }
 
+    // 只有在编辑器有选中文本时才启用
     override fun update(e: AnActionEvent) {
         val editor: Editor? = e.getData(CommonDataKeys.EDITOR)
         if (editor == null) {
@@ -49,9 +59,9 @@ class CopyAsPromptAction : AnAction() {
         }
 
         val selectionModel = editor.selectionModel
-        val hasSelection = selectionModel.hasSelection() && 
+        val hasSelection = selectionModel.hasSelection() &&
                           !selectionModel.selectedText.isNullOrBlank()
-        
+
         e.presentation.isEnabled = hasSelection
     }
 }

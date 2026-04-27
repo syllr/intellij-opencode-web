@@ -25,6 +25,7 @@ class PromptToolWindowPanel(
         lineWrap = true
         wrapStyleWord = true
         rows = 12
+        // 支持 Shift+Enter 换行（与 Enter 效果相同）
         addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
                 if (e.keyCode == KeyEvent.VK_ENTER && e.modifiersEx == KeyEvent.SHIFT_DOWN_MASK) {
@@ -60,6 +61,7 @@ class PromptToolWindowPanel(
         }
         add(buttonPanel, BorderLayout.SOUTH)
 
+        // 监听文本变化，启用/禁用按钮
         textArea.document.addUndoableEditListener {
             val hasText = textArea.text.isNotBlank()
             sendButton.isEnabled = hasText
@@ -70,6 +72,8 @@ class PromptToolWindowPanel(
         copyButton.addActionListener { copyToClipboard() }
     }
 
+    // 追加文本到文本框
+    // 空内容直接添加，有内容时前面空一行分隔
     fun appendText(text: String) {
         val currentText = textArea.text
         val newText = if (currentText.isEmpty()) {
@@ -81,10 +85,12 @@ class PromptToolWindowPanel(
         textArea.caretPosition = textArea.document.length
     }
 
+    // 请求文本框焦点
     fun requestTextAreaFocus() {
         textArea.requestFocus()
     }
 
+    // 发送 prompt 到 OpenCode
     private fun sendPrompt() {
         val text = textArea.text.trim()
         if (text.isEmpty()) return
@@ -122,6 +128,7 @@ class PromptToolWindowPanel(
         }.start()
     }
 
+    // 复制内容到剪贴板
     private fun copyToClipboard() {
         val text = textArea.text.trim()
         if (text.isNotEmpty()) {
