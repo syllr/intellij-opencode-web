@@ -12,13 +12,12 @@ class AddToPromptAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project: Project = e.project ?: return
-        val editor: Editor = e.getData(CommonDataKeys.EDITOR) ?: return
+        val editor: Editor? = e.getData(CommonDataKeys.EDITOR)
 
-        val selectionModel = editor.selectionModel
-        val selectedText = selectionModel.selectedText
+        val selectedText = editor?.selectionModel?.selectedText
 
         if (selectedText.isNullOrBlank()) {
-            com.github.xausky.opencodewebui.toolWindow.PromptToolWindowFactory.toggleToolWindowVisibility(project)
+            com.github.xausky.opencodewebui.toolWindow.PromptToolWindowFactory.toggleToolWindowAndFocus(project)
             return
         }
 
@@ -26,8 +25,8 @@ class AddToPromptAction : AnAction() {
         val filePath = psiFile.virtualFile?.path ?: return
 
         val document = editor.document
-        val startOffset = selectionModel.selectionStart
-        val endOffset = selectionModel.selectionEnd
+        val startOffset = editor.selectionModel.selectionStart
+        val endOffset = editor.selectionModel.selectionEnd
 
         val startLine = document.getLineNumber(startOffset) + 1
         val endLine = document.getLineNumber(endOffset) + 1
@@ -38,12 +37,11 @@ class AddToPromptAction : AnAction() {
         val panel = com.github.xausky.opencodewebui.toolWindow.PromptToolWindowFactory.getPanel(project)
         if (panel != null) {
             panel.appendText(contentWithBlankLine)
-            com.github.xausky.opencodewebui.toolWindow.PromptToolWindowFactory.getOrActivateToolWindow(project)
+            com.github.xausky.opencodewebui.toolWindow.PromptToolWindowFactory.getOrActivateToolWindowWithFocus(project)
         }
     }
 
     override fun update(e: AnActionEvent) {
-        val editor: Editor? = e.getData(CommonDataKeys.EDITOR)
-        e.presentation.isEnabled = editor != null
+        e.presentation.isEnabled = e.project != null
     }
 }

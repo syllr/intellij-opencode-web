@@ -20,6 +20,13 @@ class PromptToolWindowFactory : ToolWindowFactory, DumbAware {
             toolWindow.activate(null)
         }
 
+        fun getOrActivateToolWindowWithFocus(project: Project) {
+            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            val toolWindow = toolWindowManager.getToolWindow(TOOL_WINDOW_ID) ?: return
+            toolWindow.activate(null)
+            panelMap[project]?.requestTextAreaFocus()
+        }
+
         fun toggleToolWindowVisibility(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             val toolWindow = toolWindowManager.getToolWindow(TOOL_WINDOW_ID) ?: return
@@ -27,6 +34,17 @@ class PromptToolWindowFactory : ToolWindowFactory, DumbAware {
                 toolWindow.hide(null)
             } else {
                 toolWindow.show()
+            }
+        }
+
+        fun toggleToolWindowAndFocus(project: Project) {
+            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            val toolWindow = toolWindowManager.getToolWindow(TOOL_WINDOW_ID) ?: return
+            if (toolWindow.isVisible) {
+                toolWindow.hide(null)
+            } else {
+                toolWindow.show()
+                panelMap[project]?.requestTextAreaFocus()
             }
         }
     }

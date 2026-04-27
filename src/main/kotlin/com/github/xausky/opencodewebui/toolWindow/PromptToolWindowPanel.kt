@@ -75,10 +75,14 @@ class PromptToolWindowPanel(
         val newText = if (currentText.isEmpty()) {
             "$text\n"
         } else {
-            "$currentText\n$text\n"
+            "$currentText\n\n$text\n"
         }
         textArea.text = newText
         textArea.caretPosition = textArea.document.length
+    }
+
+    fun requestTextAreaFocus() {
+        textArea.requestFocus()
     }
 
     private fun sendPrompt() {
