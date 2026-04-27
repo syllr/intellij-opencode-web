@@ -7,15 +7,14 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.JScrollPane
 import javax.swing.JTextArea
-import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
-import javax.swing.text.DefaultEditorKit
 
 class PromptToolWindowPanel(
     private val project: com.intellij.openapi.project.Project,
@@ -26,9 +25,17 @@ class PromptToolWindowPanel(
         lineWrap = true
         wrapStyleWord = true
         rows = 12
-        val inputMap = getInputMap(javax.swing.JComponent.WHEN_FOCUSED)
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), DefaultEditorKit.insertBreakAction)
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, KeyEvent.SHIFT_DOWN_MASK), DefaultEditorKit.insertBreakAction)
+        addKeyListener(object : KeyAdapter() {
+            override fun keyPressed(e: KeyEvent) {
+                if (e.keyCode == KeyEvent.VK_ENTER && e.modifiersEx == KeyEvent.SHIFT_DOWN_MASK) {
+                    val caret = caretPosition
+                    val text = this@apply.text
+                    this@apply.text = text.substring(0, caret) + "\n" + text.substring(caret)
+                    this@apply.caretPosition = caret + 1
+                    e.consume()
+                }
+            }
+        })
     }
 
     private val sendButton = JButton("发送到 OpenCode").apply {
