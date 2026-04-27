@@ -7,12 +7,15 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.awt.event.KeyEvent
 import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.JScrollPane
 import javax.swing.JTextArea
+import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
+import javax.swing.text.DefaultEditorKit
 
 class PromptToolWindowPanel(
     private val project: com.intellij.openapi.project.Project,
@@ -23,6 +26,9 @@ class PromptToolWindowPanel(
         lineWrap = true
         wrapStyleWord = true
         rows = 12
+        val inputMap = getInputMap(javax.swing.JComponent.WHEN_FOCUSED)
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), DefaultEditorKit.insertBreakAction)
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, KeyEvent.SHIFT_DOWN_MASK), DefaultEditorKit.insertBreakAction)
     }
 
     private val sendButton = JButton("发送到 OpenCode").apply {
@@ -59,11 +65,12 @@ class PromptToolWindowPanel(
 
     fun appendText(text: String) {
         val currentText = textArea.text
-        textArea.text = if (currentText.isEmpty()) {
-            text
+        val newText = if (currentText.isEmpty()) {
+            "$text\n"
         } else {
-            "$currentText\n$text"
+            "$currentText\n$text\n"
         }
+        textArea.text = newText
         textArea.caretPosition = textArea.document.length
     }
 

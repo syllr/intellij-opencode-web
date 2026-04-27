@@ -10,8 +10,25 @@ class PromptToolWindowFactory : ToolWindowFactory, DumbAware {
 
     companion object {
         private val panelMap = mutableMapOf<Project, PromptToolWindowPanel>()
+        private const val TOOL_WINDOW_ID = "PromptEditor"
 
         fun getPanel(project: Project): PromptToolWindowPanel? = panelMap[project]
+
+        fun getOrActivateToolWindow(project: Project) {
+            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            val toolWindow = toolWindowManager.getToolWindow(TOOL_WINDOW_ID) ?: return
+            toolWindow.activate(null)
+        }
+
+        fun toggleToolWindowVisibility(project: Project) {
+            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            val toolWindow = toolWindowManager.getToolWindow(TOOL_WINDOW_ID) ?: return
+            if (toolWindow.isVisible) {
+                toolWindow.hide(null)
+            } else {
+                toolWindow.show()
+            }
+        }
     }
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {

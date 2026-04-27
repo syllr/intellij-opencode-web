@@ -34,6 +34,15 @@
             <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="$Copy"/>
         </action>
 
+        <!-- Add to Prompt - 添加到 Prompt 编辑器 -->
+        <action id="com.shenyuanlaolarou.opencodewebui.AddToPrompt"
+                class="com.github.xausky.opencodewebui.actions.AddToPromptAction"
+                text="Add to Prompt"
+                description="Add selected text to Prompt editor">
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"/>
+            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"/>
+        </action>
+
     </actions>
 
     <extensions defaultExtensionNs="com.intellij">
