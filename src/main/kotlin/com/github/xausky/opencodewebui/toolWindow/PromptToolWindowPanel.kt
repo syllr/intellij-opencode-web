@@ -3,19 +3,16 @@ package com.github.xausky.opencodewebui.toolWindow
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.github.xausky.opencodewebui.utils.PromptEditorService
 import java.awt.BorderLayout
-import java.awt.Color
+import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
-import java.awt.Font
 import javax.swing.JButton
-import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JScrollPane
 import javax.swing.JTextArea
 import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
-import javax.swing.plaf.basic.BasicButtonUI
 
 class PromptToolWindowPanel(
     private val project: com.intellij.openapi.project.Project,
@@ -25,65 +22,26 @@ class PromptToolWindowPanel(
     private val textArea = JTextArea().apply {
         lineWrap = true
         wrapStyleWord = true
-        rows = 10
-        background = Color(60, 63, 65)
-        foreground = Color(169, 183, 198)
-        caretColor = Color(187, 187, 187)
-        selectedTextColor = Color(50, 53, 55)
-        selectionColor = Color(75, 110, 175)
-        border = EmptyBorder(8, 8, 8, 8)
-        font = Font("Menlo", Font.PLAIN, 14)
+        rows = 12
     }
 
     private val sendButton = JButton("发送到 OpenCode").apply {
         isEnabled = false
-        background = Color(0, 120, 212)
-        foreground = Color.WHITE
-        isOpaque = true
-        isContentAreaFilled = true
-        border = EmptyBorder(8, 20, 8, 20)
-        font = Font("Helvetica", Font.PLAIN, 13)
-        ui = BasicButtonUI()
     }
 
     private val copyButton = JButton("复制").apply {
         isEnabled = false
-        background = Color(97, 97, 97)
-        foreground = Color.WHITE
-        isOpaque = true
-        isContentAreaFilled = true
-        border = EmptyBorder(8, 16, 8, 16)
-        font = Font("Helvetica", Font.PLAIN, 13)
-        ui = BasicButtonUI()
     }
 
     init {
-        layout = BorderLayout(0, 0)
-        background = Color(43, 43, 43)
-        isOpaque = true
-        minimumSize = java.awt.Dimension(250, 200)
+        layout = BorderLayout(8, 8)
+        border = EmptyBorder(12, 12, 8, 12)
+        minimumSize = Dimension(250, 200)
 
-        val topPanel = JPanel(BorderLayout()).apply {
-            background = Color(43, 43, 43)
-            isOpaque = true
-            border = EmptyBorder(12, 12, 12, 12)
-            add(JLabel("Prompt").apply {
-                font = Font("Helvetica", Font.PLAIN, 14)
-                foreground = Color(169, 183, 198)
-            }, BorderLayout.WEST)
-        }
-        add(topPanel, BorderLayout.NORTH)
-
-        val scrollPane = JScrollPane(textArea).apply {
-            background = Color(43, 43, 43)
-            border = EmptyBorder(0, 8, 0, 8)
-            viewport.background = Color(43, 43, 43)
-        }
+        val scrollPane = JScrollPane(textArea)
         add(scrollPane, BorderLayout.CENTER)
 
-        val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 8)).apply {
-            background = Color(43, 43, 43)
-            isOpaque = true
+        val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0)).apply {
             add(copyButton)
             add(sendButton)
         }
