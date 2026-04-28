@@ -1,13 +1,10 @@
 package com.github.xausky.opencodewebui.toolWindow
 
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
-import com.github.xausky.opencodewebui.utils.PromptEditorService
 import com.intellij.notification.Notification
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.ui.ComboBox
-import com.intellij.ui.AnimatedIcon
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
@@ -15,7 +12,6 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
-import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -24,11 +20,7 @@ import javax.swing.JTextArea
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
-import javax.swing.event.PopupMenuEvent
-import javax.swing.event.PopupMenuListener
-import com.github.xausky.opencodewebui.utils.PromptEditorService.Session
 
-// ServerState enum for state machine management
 private enum class ServerState {
     NOT_STARTED,
     STARTING,
@@ -67,28 +59,27 @@ class PromptToolWindowPanel(
         isEnabled = false
     }
 
-    private val loadingLabel = JLabel(AnimatedIcon.Default()).apply {
+    private val loadingLabel = JLabel().apply {
         verticalAlignment = SwingConstants.CENTER
         isVisible = false
     }
 
-    private val sessionComboBoxPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-        isOpaque = false
-    }
-
-    private val sessionComboBox = ComboBox<Session>().apply {
-        preferredSize = Dimension(300, 30)
-        maximumRowCount = 10
-        addPopupMenuListener(object : PopupMenuListener {
-            override fun popupMenuWillBecomeVisible(e: PopupMenuEvent?) {
-                refreshSessions()
-            }
-            override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent?) {}
-            override fun popupMenuCanceled(e: PopupMenuEvent?) {}
-        })
-    }
-
     private var currentState = if (OpenCodeServerManager.isServerRunning()) ServerState.RUNNING else ServerState.NOT_STARTED
+
+    private val stateListener: (Boolean) -> Unit = { running ->
+        SwingUtilities.invokeLater {
+            if (running) {
+                currentState = ServerState.RUNNING
+                sendButton.text = "发送到 OpenCode"
+                sendButton.isEnabled = true
+            } else {
+                currentState = ServerState.NOT_STARTED
+                sendButton.text = "启动服务"
+                sendButton.isEnabled = true
+            }
+            thisLogger().info("PromptToolWindowPanel: server state changed to $currentState")
+        }
+    }
 
     init {
         thisLogger().info("PromptToolWindowPanel init: currentState: $currentState")
@@ -96,9 +87,9 @@ class PromptToolWindowPanel(
         border = EmptyBorder(12, 12, 8, 12)
         minimumSize = Dimension(250, 200)
 
-        sessionComboBoxPanel.add(sessionComboBox)
-        sessionComboBoxPanel.add(loadingLabel)
-        add(sessionComboBoxPanel, BorderLayout.NORTH)
+        OpenCodeServerManager.addStateListener(stateListener)
+
+        add(loadingLabel, BorderLayout.NORTH)
         val scrollPane = JScrollPane(textArea)
         add(scrollPane, BorderLayout.CENTER)
 
@@ -115,24 +106,6 @@ class PromptToolWindowPanel(
 
         sendButton.addActionListener { sendPrompt() }
         copyButton.addActionListener { copyToClipboard() }
-
-        val projectPath = project.basePath
-        if (projectPath != null) {
-            Thread {
-                val sessions = PromptEditorService.getSessions(projectPath)
-                    .filter { !it.isArchived }
-                    .sortedByDescending { it.createdAt }
-                SwingUtilities.invokeLater {
-                    sessions.forEach {
-                        sessionComboBox.addItem(it)
-                    }
-                    if (sessions.isNotEmpty()) {
-                        sessionComboBox.selectedItem = sessions.first()
-                    }
-                    sendButton.isEnabled = sessionComboBox.selectedItem != null
-                }
-            }.start()
-        }
     }
 
     fun appendText(text: String) {
@@ -153,19 +126,22 @@ class PromptToolWindowPanel(
     private fun sendPrompt() {
         val text = textArea.text.trim()
         thisLogger().info("sendPrompt(): called, text length: ${text.length}, currentState: $currentState")
-        if (text.isEmpty()) return
 
         val projectPath = project.basePath ?: return
 
         when (currentState) {
             ServerState.NOT_STARTED -> {
-                thisLogger().info("sendPrompt(): state NOT_STARTED, starting service and send")
+                thisLogger().info("sendPrompt(): state NOT_STARTED, starting service")
                 startServerAndSend(text, projectPath)
             }
             ServerState.STARTING -> {
                 thisLogger().info("sendPrompt(): state STARTING, ignoring duplicate click")
             }
             ServerState.RUNNING -> {
+                if (text.isEmpty()) {
+                    thisLogger().info("sendPrompt(): state RUNNING, but text is empty, ignoring")
+                    return
+                }
                 thisLogger().info("sendPrompt(): state RUNNING, doSend()")
                 doSend(text, projectPath)
             }
@@ -194,7 +170,9 @@ class PromptToolWindowPanel(
                     sendButton.text = "发送到 OpenCode"
                     sendButton.isEnabled = true
                 }
-                doSend(text, projectPath)
+                if (text.isNotEmpty()) {
+                    doSend(text, projectPath)
+                }
             },
             onFailed = { e ->
                 thisLogger().info("startServerAndSend(): onFailed: ${e.message}")
@@ -240,16 +218,6 @@ class PromptToolWindowPanel(
             sendButton.isEnabled = false
             sendButton.text = "发送中..."
         }
-
-        val selectedSession = sessionComboBox.selectedItem as? Session ?: run {
-            showNotification("请先选择一个会话")
-            SwingUtilities.invokeLater {
-                sendButton.text = "发送到 OpenCode"
-                sendButton.isEnabled = true
-            }
-            return
-        }
-        thisLogger().info("doSend(): sending, selectedSession: ${selectedSession?.id}")
 
         Thread {
             sendViaJCEF(text)
@@ -340,74 +308,5 @@ class PromptToolWindowPanel(
                 }
             }.start()
         }
-    }
-
-    private fun refreshSessions() {
-        thisLogger().info("refreshSessions(): called, currentState: $currentState")
-        val projectPath = project.basePath ?: return
-
-        if (currentState == ServerState.NOT_STARTED) {
-            thisLogger().info("refreshSessions(): service not started, starting...")
-            loadingLabel.isVisible = true
-            currentState = ServerState.STARTING
-            OpenCodeServerManager.startServer(
-                project,
-                onStarted = {
-                    thisLogger().info("refreshSessions(): service started successfully")
-                    currentState = ServerState.RUNNING
-                    SwingUtilities.invokeLater {
-                        sendButton.text = "发送到 OpenCode"
-                        sendButton.isEnabled = true
-                        loadingLabel.isVisible = false
-                    }
-                    doRefreshSessions(projectPath)
-                },
-                onFailed = { e ->
-                    thisLogger().info("refreshSessions(): service start failed: ${e.message}")
-                    currentState = ServerState.NOT_STARTED
-                    SwingUtilities.invokeLater {
-                        loadingLabel.isVisible = false
-                    }
-                    showNotification("启动服务失败: ${e.message ?: "未知错误"}")
-                }
-            )
-            return
-        }
-
-        if (currentState == ServerState.RUNNING) {
-            doRefreshSessions(projectPath)
-        }
-    }
-
-    private fun doRefreshSessions(projectPath: String) {
-        thisLogger().info("refreshSessions(): loading sessions...")
-        Thread {
-            val currentSelected = sessionComboBox.selectedItem as? PromptEditorService.Session
-            val sessions = PromptEditorService.getSessions(projectPath)
-                .filter { !it.isArchived }
-                .sortedWith(compareByDescending<PromptEditorService.Session> {
-                    currentSelected != null && it.id == currentSelected.id
-                }.thenByDescending {
-                    it.createdAt?.toLongOrNull() ?: 0
-                })
-            
-            thisLogger().info("refreshSessions(): loaded ${sessions.size} sessions")
-            
-            SwingUtilities.invokeLater {
-                val previousSelected = sessionComboBox.selectedItem
-                sessionComboBox.removeAllItems()
-                sessions.forEach {
-                    sessionComboBox.addItem(it)
-                }
-                if (sessions.isNotEmpty()) {
-                    if (previousSelected != null && sessions.contains(previousSelected)) {
-                        sessionComboBox.selectedItem = previousSelected
-                    } else {
-                        sessionComboBox.selectedItem = sessions.first()
-                    }
-                }
-                sendButton.isEnabled = sessionComboBox.selectedItem != null
-            }
-        }.start()
     }
 }

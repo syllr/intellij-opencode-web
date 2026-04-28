@@ -19,8 +19,28 @@ object OpenCodeServerManager {
 
     private val serverRunning = AtomicBoolean(false)
     private val serverProcess = AtomicReference<ProcessHandler?>(null)
+    private val stateListeners = mutableListOf<(Boolean) -> Unit>()
 
     fun isServerRunning(): Boolean = serverRunning.get()
+
+    fun addStateListener(listener: (Boolean) -> Unit) {
+        synchronized(stateListeners) {
+            stateListeners.add(listener)
+        }
+    }
+
+    fun removeStateListener(listener: (Boolean) -> Unit) {
+        synchronized(stateListeners) {
+            stateListeners.remove(listener)
+        }
+    }
+
+    private fun notifyStateListeners(running: Boolean) {
+        serverRunning.set(running)
+        synchronized(stateListeners) {
+            stateListeners.forEach { it(running) }
+        }
+    }
 
     fun startServer(
         project: com.intellij.openapi.project.Project,
@@ -28,7 +48,7 @@ object OpenCodeServerManager {
         onFailed: (Exception) -> Unit
     ) {
         if (OpenCodeApi.isServerHealthySync()) {
-            serverRunning.set(true)
+            notifyStateListeners(true)
             onStarted()
             return
         }
@@ -42,7 +62,7 @@ object OpenCodeServerManager {
                     val healthy = OpenCodeApi.waitForServerHealthy(30000)
 
                     if (healthy) {
-                        serverRunning.set(true)
+                        notifyStateListeners(true)
                         onStarted()
                     } else {
                         onFailed(Exception("Server not healthy after 30s"))
@@ -65,7 +85,7 @@ object OpenCodeServerManager {
                 }
             }
             serverProcess.set(null)
-            serverRunning.set(false)
+            notifyStateListeners(false)
         } catch (e: Exception) {
             thisLogger().error("Error stopping OpenCode server: ${e.message}")
         }
