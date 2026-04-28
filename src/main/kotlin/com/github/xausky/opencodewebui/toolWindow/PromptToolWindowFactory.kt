@@ -12,6 +12,23 @@ class PromptToolWindowFactory : ToolWindowFactory, DumbAware {
         private val panelMap = mutableMapOf<Project, PromptToolWindowPanel>()
         private const val TOOL_WINDOW_ID = "PromptEditor"
 
+        // 确保 panel 被创建，即使工具窗口还没打开过
+        fun getOrCreatePanel(project: Project): PromptToolWindowPanel {
+            return panelMap[project] ?: run {
+                val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+                val toolWindow = toolWindowManager.getToolWindow(TOOL_WINDOW_ID) ?: throw IllegalStateException("ToolWindow $TOOL_WINDOW_ID not found")
+                // 触发内容创建
+                if (toolWindow.contentManager.contents.isEmpty()) {
+                    val contentFactory = ContentFactory.getInstance()
+                    val panel = PromptToolWindowPanel(project)
+                    panelMap[project] = panel
+                    val content = contentFactory.createContent(panel, null, false)
+                    toolWindow.contentManager.addContent(content)
+                }
+                panelMap[project]!!
+            }
+        }
+
         fun getPanel(project: Project): PromptToolWindowPanel? = panelMap[project]
 
         // 激活工具窗口

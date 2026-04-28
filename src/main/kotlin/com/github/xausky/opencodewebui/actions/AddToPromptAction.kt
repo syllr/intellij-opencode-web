@@ -23,29 +23,37 @@ class AddToPromptAction : AnAction(), DumbAware {
         var selStart: Int
         var selEnd: Int
 
+        thisLogger().info("[AddToPromptAction] actionPerformed() called")
+
         // 优先尝试从 IdeaVim visual mode 获取选中文本
         // 因为在 IdeaVim 的 visual mode 下按快捷键触发 action 时，
         // IdeaVim 会先退出 visual mode 清除 selection，导致标准 API 拿不到文本
         if (isIdeaVimInstalled()) {
             editor = e.getData(CommonDataKeys.EDITOR)
+            thisLogger().info("[AddToPromptAction] IdeaVim installed, editor=$editor")
             val result = getIdeaVimVisualSelection(editor)
+            thisLogger().info("[AddToPromptAction] getIdeaVimVisualSelection() result=$result")
             if (result != null) {
                 selectedText = result.first
                 selStart = result.second
                 selEnd = result.third
+                thisLogger().info("[AddToPromptAction] Got from IdeaVim: text len=${selectedText.length}, range=$selStart-$selEnd")
             } else {
                 selectedText = editor?.selectionModel?.selectedText
                 selStart = editor?.selectionModel?.selectionStart ?: -1
                 selEnd = editor?.selectionModel?.selectionEnd ?: -1
+                thisLogger().info("[AddToPromptAction] Got from standard: text=$selectedText, range=$selStart-$selEnd")
             }
         } else {
             editor = e.getData(CommonDataKeys.EDITOR)
             selectedText = editor?.selectionModel?.selectedText
             selStart = editor?.selectionModel?.selectionStart ?: -1
             selEnd = editor?.selectionModel?.selectionEnd ?: -1
+            thisLogger().info("[AddToPromptAction] IdeaVim not installed, got from standard: text=$selectedText, range=$selStart-$selEnd")
         }
 
         if (selectedText.isNullOrBlank() || selStart < 0 || selEnd <= selStart) {
+            thisLogger().info("[AddToPromptAction] No valid selection, toggling tool window")
             PromptToolWindowFactory.toggleToolWindowAndFocus(project)
             return
         }
@@ -59,11 +67,10 @@ class AddToPromptAction : AnAction(), DumbAware {
 
         val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText)
 
-        val panel = PromptToolWindowFactory.getPanel(project)
-        if (panel != null) {
-            panel.appendText(formattedContent)
-            PromptToolWindowFactory.getOrActivateToolWindowWithFocus(project)
-        }
+        val panel = PromptToolWindowFactory.getOrCreatePanel(project)
+        thisLogger().info("[AddToPromptAction] Got panel: $panel, appending content")
+        panel.appendText(formattedContent)
+        PromptToolWindowFactory.getOrActivateToolWindowWithFocus(project)
     }
 
     override fun update(e: AnActionEvent) {
