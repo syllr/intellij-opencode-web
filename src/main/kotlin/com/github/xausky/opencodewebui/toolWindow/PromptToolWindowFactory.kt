@@ -54,17 +54,12 @@ class PromptToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val promptPanel = PromptToolWindowPanel(project) { openMainWindow(project) }
+        val promptPanel = PromptToolWindowPanel(project) {
+            MyToolWindowFactory.refreshBrowser()
+        }
         panelMap[project] = promptPanel
         val content = ContentFactory.getInstance().createContent(promptPanel, null, false)
         toolWindow.contentManager.addContent(content)
-    }
-
-    // 发送成功后打开主窗口
-    private fun openMainWindow(project: Project) {
-        val tw = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            .getToolWindow("OpenCodeWeb") ?: return
-        tw.activate(null)
     }
 
     override suspend fun isApplicableAsync(project: Project) = true

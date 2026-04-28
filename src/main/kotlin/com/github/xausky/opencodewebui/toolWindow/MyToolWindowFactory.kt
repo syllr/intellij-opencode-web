@@ -68,6 +68,17 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             Thread(r, "OpenCode-Server-Checker")
         }
 
+        fun refreshBrowser() {
+            myToolWindowInstance?.refresh()
+        }
+
+        /**
+         * 获取主浏览器实例，用于在其他组件中执行 JavaScript
+         */
+        fun getMainBrowser(): JBCefBrowser? {
+            return myToolWindowInstance?.getBrowser()
+        }
+
         fun stopServer() {
             try {
                 checkScheduledFuture?.cancel(true)
@@ -198,6 +209,12 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         fun getContent() = browserPanel
+
+        fun getBrowser() = browserPanel.getBrowser()
+
+        fun refresh() {
+            mainBrowser?.cefBrowser?.reload()
+        }
 
         fun setupBrowserKeyboardHandling() {
             val panel = browserPanel

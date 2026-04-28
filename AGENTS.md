@@ -46,6 +46,7 @@ intellij-opencode-web/
 | PromptCommentDialog | DialogWrapper | gutter/ | 评论对话框 |
 | PassToJcefAction | AnAction | actions/ | 快捷键传递 |
 | CopyAsPromptAction | AnAction | actions/ | 复制为 Prompt |
+| AddToPromptAction | AnAction | actions/ | 添加到 Prompt 编辑器 |
 | MyStartupActivity | StartupActivity | startup/ | 启动时注册 Disposable |
 | PromptToolWindowFactory | ToolWindowFactory | toolWindow/ | Prompt 编辑器工具窗口 |
 | PromptToolWindowPanel | JPanel | toolWindow/ | Prompt 编辑器面板 |
@@ -64,6 +65,7 @@ intellij-opencode-web/
 - ~~弃用的 JBCefBrowser~~ → 已修复：使用 JBCefBrowserBuilder
 - ~~SQLite JDBC 会话管理~~ → 已修复：使用 HTTP API
 - ~~单个大文件~~ → 已修复：拆分为多个文件
+- ~~正则表达式解析 HTTP 响应体~~ → 已修复：统一使用 Gson 解析 JSON 响应。所有 HTTP API 返回的 body 必须通过 Gson 或类似的 JSON 解析器处理，禁止使用 `Regex` / `Pattern` / 字符串操作来提取 JSON 字段
 
 ## TOOLWINDOW 配置说明
 - **PromptEditor** 工具窗口通过 `secondary="true"` 和 `order="after Bookmarks"` 配置显示在左侧边栏下方
@@ -80,6 +82,15 @@ intellij-opencode-web/
 - 外部链接在系统浏览器打开
 - 会话恢复（通过 HTTP API）
 - **Copy as Prompt**：复制选中文本为 Prompt 格式
+- **Add to Prompt**：选中代码后添加到 PromptEditor，支持快捷键
+- **PromptEditor 自动启动**：点击发送时如果服务未启动会自动启动
+
+## TOOLWINDOW 配置说明
+- **PromptEditor** 工具窗口通过 `secondary="true"` 和 `order="after Bookmarks"` 配置显示在左侧边栏下方
+- IntelliJ 的 `secondary` 属性控制工具窗口显示在主组（上方）还是辅助组（下方）
+- `side_tool="true"` 是 IntelliJ 运行时状态，由 IDE 根据 `secondary` 属性和用户拖动操作写入配置文件
+- 如果 `secondary` 不生效，用户手动拖动后 IDE 会写入 `side_tool="true"` 到 workspace.xml
+- **PromptEditor 发送逻辑**：服务未启动时自动启动服务后发送，服务崩溃时自动重连
 
 ## COMMANDS
 ```bash

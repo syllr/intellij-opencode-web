@@ -3,6 +3,8 @@ package com.github.xausky.opencodewebui.utils
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.intellij.openapi.diagnostic.thisLogger
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URI
@@ -14,16 +16,20 @@ import java.net.URLEncoder
  */
 object PromptEditorService {
 
+    private val gson = Gson()
+
     /**
      * 会话数据类
      */
     data class Session(
         val id: String,
         val directory: String,
+        val name: String,
         val createdAt: String? = null,
         val archivedAt: String? = null
     ) {
         val isArchived: Boolean = archivedAt != null
+        override fun toString(): String = name
     }
 
     /**
@@ -40,13 +46,19 @@ object PromptEditorService {
             connection.connectTimeout = 2000
             connection.readTimeout = 2000
 
-            if (connection.responseCode == 200) {
+            val responseCode = connection.responseCode
+            thisLogger().info("[PromptEditorService] 请求会话列表: URL=$url, HTTP=$responseCode")
+
+            if (responseCode == 200) {
                 connection.inputStream.bufferedReader().use { reader ->
                     val response = reader.readText()
-                    parseSessions(response).filter { !it.isArchived }
+                    thisLogger().info("[PromptEditorService] 响应内容: $response")
+                    val sessions = parseSessions(response)
+                    thisLogger().info("[PromptEditorService] 解析出 ${sessions.size} 个会话")
+                    sessions
                 }
             } else {
-                thisLogger().warn("[PromptEditorService] 获取会话失败: HTTP ${connection.responseCode}")
+                thisLogger().warn("[PromptEditorService] 获取会话失败: HTTP $responseCode")
                 emptyList()
             }
         } catch (e: Exception) {
@@ -98,15 +110,16 @@ object PromptEditorService {
     fun sendMessage(sessionId: String, text: String): Boolean {
         var connection: HttpURLConnection? = null
         return try {
-            val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/session/$sessionId/message").toURL()
+            val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/session/$sessionId/prompt_async").toURL()
             connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 2000
-            connection.readTimeout = 2000
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.doOutput = true
 
-            val requestBody = """{"parts": [{"type": "text", "text": "$text"}]}"""
+            val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
+            val requestBody = """{"parts": [{"type": "text", "text": "$escapedText"}]}"""
 
             OutputStreamWriter(connection.outputStream).use { writer ->
                 writer.write(requestBody)
@@ -114,14 +127,18 @@ object PromptEditorService {
             }
 
             val responseCode = connection.responseCode
-            if (responseCode == 200) {
+            if (responseCode == 204) {
+                thisLogger().info("[PromptEditorService] 消息发送成功 (promptAsync)")
                 true
             } else {
-                thisLogger().warn("[PromptEditorService] 发送消息失败: HTTP $responseCode")
+                connection.errorStream?.bufferedReader()?.use { reader ->
+                    val error = reader.readText()
+                    thisLogger().warn("[PromptEditorService] 发送消息失败: HTTP $responseCode, $error")
+                }
                 false
             }
         } catch (e: Exception) {
-            thisLogger().warn("[PromptEditorService] 发送消息异常: ${e.message}")
+            thisLogger().warn("[PromptEditorService] 发送消息异常: ${e.message}", e)
             false
         } finally {
             connection?.disconnect()
@@ -149,25 +166,33 @@ object PromptEditorService {
      */
     private fun parseSessions(response: String): List<Session> {
         return try {
-            val sessionRegex = Regex("""\{"id"\s*:\s*"([^"]+)",\s*"directory"\s*:\s*"([^"]*)",\s*"time"\s*:\s*\{([^}]*)\}\}""")
-            sessionRegex.findAll(response).map { match ->
-                val id = match.groupValues[1]
-                val directory = match.groupValues[2]
-                val timeContent = match.groupValues[3]
-
-                val createdRegex = Regex(""""created"\s*:\s*"([^"]*)"""").find(timeContent)
-                val archivedRegex = Regex(""""archived"\s*:\s*"([^"]*)"""").find(timeContent)
-
-                Session(
-                    id = id,
-                    directory = directory,
-                    createdAt = createdRegex?.groupValues?.get(1),
-                    archivedAt = archivedRegex?.groupValues?.get(1)
-                )
-            }.toList()
+            val type = object : TypeToken<List<SessionResponse>>() {}.type
+            val sessions: List<SessionResponse> = gson.fromJson(response, type)
+            sessions.map { it.toSession() }
         } catch (e: Exception) {
             thisLogger().warn("[PromptEditorService] 解析会话响应失败: ${e.message}")
             emptyList()
         }
+    }
+
+    private data class SessionResponse(
+        val id: String,
+        val directory: String,
+        val title: String? = null,
+        val name: String? = null,
+        val time: TimeData
+    ) {
+        data class TimeData(
+            val created: Long,
+            val archived: Long? = null
+        )
+
+        fun toSession() = Session(
+            id = id,
+            directory = directory,
+            name = title ?: name ?: "Session ${id.take(8)}",
+            createdAt = time.created.toString(),
+            archivedAt = time.archived?.toString()
+        )
     }
 }
