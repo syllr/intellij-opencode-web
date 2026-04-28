@@ -60,7 +60,7 @@ class CopyAsPromptAction : AnAction() {
 
         val selectionModel = editor.selectionModel
         val hasSelection = selectionModel.hasSelection() &&
-                          !selectionModel.selectedText.isNullOrBlank()
+                !selectionModel.selectedText.isNullOrBlank()
 
         e.presentation.isEnabled = hasSelection
     }

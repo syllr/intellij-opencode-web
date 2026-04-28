@@ -58,6 +58,20 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     companion object {
         private const val PORT = OPENCODE_PORT
         private const val HOST = OPENCODE_HOST
+        private const val OPCODE_WEB_TOOL_WINDOW_ID = "OpenCodeWeb"
+
+        fun openOpenCodeWebToolWindow(project: Project) {
+            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            val toolWindow = toolWindowManager.getToolWindow(OPCODE_WEB_TOOL_WINDOW_ID) ?: return
+            thisLogger().info("[Lifecycle] openOpenCodeWebToolWindow: activating tool window '$OPCODE_WEB_TOOL_WINDOW_ID', myToolWindowInstance=${myToolWindowInstance != null}")
+            toolWindow.activate(null)
+        }
+
+        fun isWebPageReady(): Boolean {
+            val browser = getMainBrowser() ?: return false
+            val cefBrowser = browser.cefBrowser ?: return false
+            return true
+        }
 
         private val sharedJBCefClient by lazy { JBCefApp.getInstance().createClient() }
 
@@ -95,25 +109,12 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
     // 调用此函数 → 创建 MyToolWindow → setupBrowserKeyboardHandling → checkAndLoadContent → startPeriodicCheck → startPeriodicUpdateCheck
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        if (!JBCefApp.isSupported()) {
-            thisLogger().warn("JCEF is not supported in this environment, browser functionality disabled")
-            val errorHtml = """
-                <html>
-                <body style="background-color: #2B2B2B; color: #A9B7C6; font-family: sans-serif; padding: 20px;">
-                    <h2>JCEF is not supported in this environment</h2>
-                    <p>Please use a supported IntelliJ-based IDE with JCEF enabled.</p>
-                </body>
-                </html>
-            """.trimIndent()
-            ApplicationManager.getApplication().invokeLater {
-                val content = ContentFactory.getInstance().createContent(
-                    JBCefBrowser().apply { loadHTML(errorHtml) }.component, null, false
-                )
-                toolWindow.contentManager.addContent(content)
-            }
-            return
-        }
+        thisLogger().info("[Lifecycle] createToolWindowContent called, project=${project.name}")
+        val contentManager = toolWindow.contentManager
+
+        // 创建 MyToolWindow，触发 init 块设置 myToolWindowInstance
         val myToolWindow = MyToolWindow(toolWindow)
+        thisLogger().info("[Lifecycle] MyToolWindow instance created, myToolWindowInstance set")
         ApplicationManager.getApplication().invokeLater {
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
             toolWindow.contentManager.addContent(content)
@@ -362,8 +363,11 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             }
             thisLogger().info("Loading page: $url")
             browserPanel.hideStartButton()
+            val startTime = System.currentTimeMillis()
             if (mainBrowser == null) {
+                thisLogger().info("[Lifecycle] loadProjectPage: mainBrowser is null, creating new browser")
                 mainBrowser = browserPanel.createMainTab(url, projectPath)
+                thisLogger().info("[Lifecycle] loadProjectPage: new browser created in ${System.currentTimeMillis() - startTime}ms")
                 setupBrowserComponent(mainBrowser!!)
             } else {
                 mainBrowser?.loadURL(url)
@@ -472,6 +476,7 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         // 【七】创建浏览器 Tab 并加载 URL
         fun createMainTab(url: String, projectPath: String): JBCefBrowser {
+            thisLogger().info("[Lifecycle] createMainTab: browser is ${if (browser == null) "null (creating new)" else "existing (will reuse)"}, url=$url")
             if (browser == null) {
                 val createdBrowser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
                 this.browser = createdBrowser
@@ -515,7 +520,21 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                         source: String?,
                         line: Int
                     ): Boolean {
-                        thisLogger().info("[JCEF Console] $message (source: $source:$line)")
+                        val levelStr = when (level) {
+                            org.cef.CefSettings.LogSeverity.LOGSEVERITY_ERROR -> "ERROR"
+                            org.cef.CefSettings.LogSeverity.LOGSEVERITY_WARNING -> "WARN"
+                            org.cef.CefSettings.LogSeverity.LOGSEVERITY_INFO -> "INFO"
+                            org.cef.CefSettings.LogSeverity.LOGSEVERITY_VERBOSE -> "VERBOSE"
+                            org.cef.CefSettings.LogSeverity.LOGSEVERITY_DISABLE -> "DISABLE"
+                            else -> "UNKNOWN"
+                        }
+                        if (message?.contains("[OpenCode Plugin]") == true) {
+                            thisLogger().info("═══════════════════════════════════════════════════════════════")
+                            thisLogger().info("[JCEF Console] [$levelStr] $message (source: $source:$line)")
+                            thisLogger().info("═══════════════════════════════════════════════════════════════")
+                        } else {
+                            thisLogger().info("[JCEF Console] [$levelStr] $message (source: $source:$line)")
+                        }
                         return false
                     }
                 }, createdBrowser.cefBrowser)

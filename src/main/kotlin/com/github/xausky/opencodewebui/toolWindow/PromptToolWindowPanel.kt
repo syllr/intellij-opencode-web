@@ -4,7 +4,9 @@ import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.intellij.notification.Notification
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import java.util.concurrent.Executors
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
@@ -22,6 +24,7 @@ import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
+import java.util.concurrent.ScheduledFuture
 
 private enum class ServerState {
     NOT_STARTED,
@@ -31,7 +34,7 @@ private enum class ServerState {
 
 class PromptToolWindowPanel(
     private val project: com.intellij.openapi.project.Project,
-) : JPanel() {
+) : JPanel(), Disposable {
 
     private val textArea = JTextArea().apply {
         lineWrap = true
@@ -50,9 +53,7 @@ class PromptToolWindowPanel(
         })
     }
 
-    private val sendButton = JButton(
-        if (OpenCodeServerManager.isServerRunning()) "发送到 OpenCode" else "启动服务"
-    ).apply {
+    private val sendButton = JButton("启动服务").apply {
         isEnabled = false
     }
 
@@ -65,11 +66,16 @@ class PromptToolWindowPanel(
         isVisible = false
     }
 
-    private var currentState = if (OpenCodeServerManager.isServerRunning()) ServerState.RUNNING else ServerState.NOT_STARTED
+    private var currentState = ServerState.NOT_STARTED
 
     private fun updateButtonEnabled() {
         val hasText = textArea.text.isNotBlank()
-        sendButton.isEnabled = hasText
+        if (currentState == ServerState.NOT_STARTED) {
+            // 服务未启动时，按钮总是可用
+            sendButton.isEnabled = true
+        } else {
+            sendButton.isEnabled = hasText
+        }
     }
 
     private val stateListener: (Boolean) -> Unit = { running ->
@@ -85,6 +91,11 @@ class PromptToolWindowPanel(
             thisLogger().info("PromptToolWindowPanel: server state changed to $currentState")
         }
     }
+
+    private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "OpenCode-Prompt-Server-Checker")
+    }
+    private var checkScheduledFuture: ScheduledFuture<*>? = null
 
     init {
         thisLogger().info("PromptToolWindowPanel init: currentState: $currentState")
@@ -117,6 +128,30 @@ class PromptToolWindowPanel(
 
         sendButton.addActionListener { sendPrompt() }
         copyButton.addActionListener { copyToClipboard() }
+
+        // 启动定期检查，确保即使服务是通过 OpenCode Web 页面启动的，我们也能检测到
+        startPeriodicCheck()
+    }
+
+    private fun startPeriodicCheck() {
+        checkScheduledFuture?.cancel(false)
+        checkScheduledFuture = scheduler.scheduleWithFixedDelay({
+            val serverHealthy = com.github.xausky.opencodewebui.utils.OpenCodeApi.isServerHealthySync()
+            val browser = MyToolWindowFactory.getMainBrowser()
+            val hasBrowser = browser != null
+            val hasCefBrowser = browser?.cefBrowser != null
+
+            // 只有服务器健康 + 浏览器已创建 + cefBrowser 不为空，才算准备好
+            val fullyReady = serverHealthy && hasBrowser && hasCefBrowser
+
+            if (fullyReady && currentState != ServerState.RUNNING) {
+                thisLogger().info("PromptToolWindowPanel: detected fully ready (server healthy + browser ready)")
+                stateListener(true)
+            } else if (!serverHealthy && currentState != ServerState.NOT_STARTED) {
+                thisLogger().info("PromptToolWindowPanel: detected server is not running via periodic check")
+                stateListener(false)
+            }
+        }, 0, 2, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     fun appendText(text: String) {
@@ -142,8 +177,8 @@ class PromptToolWindowPanel(
 
         when (currentState) {
             ServerState.NOT_STARTED -> {
-                thisLogger().info("sendPrompt(): state NOT_STARTED, starting service")
-                startServerAndSend(text, projectPath)
+                thisLogger().info("sendPrompt(): state NOT_STARTED, opening OpenCode Web tool window")
+                MyToolWindowFactory.openOpenCodeWebToolWindow(project)
             }
             ServerState.STARTING -> {
                 thisLogger().info("sendPrompt(): state STARTING, ignoring duplicate click")
@@ -153,49 +188,28 @@ class PromptToolWindowPanel(
                     thisLogger().info("sendPrompt(): state RUNNING, but text is empty, ignoring")
                     return
                 }
-                thisLogger().info("sendPrompt(): state RUNNING, doSend()")
-                doSend(text, projectPath)
-            }
-        }
-    }
-
-    private fun startServerAndSend(text: String, projectPath: String) {
-        thisLogger().info("startServerAndSend(): called")
-        if (currentState == ServerState.STARTING) {
-            thisLogger().info("startServerAndSend(): already STARTING, ignoring")
-            return
-        }
-
-        thisLogger().info("startServerAndSend(): state NOT_STARTED → STARTING")
-        currentState = ServerState.STARTING
-        SwingUtilities.invokeLater {
-            sendButton.isEnabled = false
-            sendButton.text = "启动服务..."
-        }
-        OpenCodeServerManager.startServer(
-            project,
-            onStarted = {
-                thisLogger().info("startServerAndSend(): onStarted")
-                currentState = ServerState.RUNNING
-                SwingUtilities.invokeLater {
-                    sendButton.text = "发送到 OpenCode"
-                    sendButton.isEnabled = true
-                }
-                if (text.isNotEmpty()) {
+                thisLogger().info("sendPrompt(): state RUNNING, opening OpenCode Web first")
+                MyToolWindowFactory.openOpenCodeWebToolWindow(project)
+                
+                // 等待浏览器准备好，最多等待10秒
+                Thread {
+                    for (i in 1..20) {
+                        Thread.sleep(500)
+                        val browser = MyToolWindowFactory.getMainBrowser()
+                        if (browser != null && browser.cefBrowser != null) {
+                            thisLogger().info("sendPrompt(): browser ready after ${i * 500}ms, calling doSend()")
+                            doSend(text, projectPath)
+                            return@Thread
+                        }
+                    }
+                    thisLogger().warn("sendPrompt(): browser not ready after 10s, calling doSend() anyway")
                     doSend(text, projectPath)
-                }
-            },
-            onFailed = { e ->
-                thisLogger().info("startServerAndSend(): onFailed: ${e.message}")
-                currentState = ServerState.NOT_STARTED
-                SwingUtilities.invokeLater {
-                    sendButton.text = "启动服务"
-                    sendButton.isEnabled = true
-                }
-                showNotification("启动服务失败: ${e.message ?: "未知错误"}")
+                }.start()
             }
-        )
+        }
     }
+
+
 
     private fun doSend(text: String, projectPath: String) {
         thisLogger().info("doSend(): called")
@@ -248,49 +262,106 @@ class PromptToolWindowPanel(
     }
 
     private fun sendViaJCEF(text: String) {
-        val browser = MyToolWindowFactory.getMainBrowser() ?: run {
-            thisLogger().warn("sendViaJCEF(): main browser not available")
-            return
+        thisLogger().info("sendViaJCEF(): start")
+
+        // 注意: openOpenCodeWebToolWindow() 已经在 sendPrompt() 中调用过了
+        // 这里不能再调用，因为 sendViaJCEF 可能在后台线程执行
+        // 而 toolWindow.activate(null) 必须在 EDT 线程执行
+
+        // 等待浏览器准备好，最多等待10秒
+        for (i in 1..20) {
+            val browser = MyToolWindowFactory.getMainBrowser()
+            if (browser != null && browser.cefBrowser != null) {
+                thisLogger().info("sendViaJCEF(): browser ready after ${i * 500}ms")
+                executeSendViaJCEF(browser.cefBrowser!!, text)
+                return
+            }
+            thisLogger().info("sendViaJCEF(): waiting for browser... attempt $i/20")
+            Thread.sleep(500)
         }
 
-        val cefBrowser = browser.cefBrowser ?: run {
-            thisLogger().warn("sendViaJCEF(): cefBrowser is null")
-            return
+        thisLogger().warn("sendViaJCEF(): browser not ready after 10s, trying anyway")
+        val browser = MyToolWindowFactory.getMainBrowser()
+        if (browser != null && browser.cefBrowser != null) {
+            executeSendViaJCEF(browser.cefBrowser!!, text)
+        } else {
+            thisLogger().error("sendViaJCEF(): browser still not available")
         }
+    }
+
+    private fun executeSendViaJCEF(cefBrowser: org.cef.browser.CefBrowser, text: String) {
+        thisLogger().info("executeSendViaJCEF(): executing JS")
 
         val escapedText = text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
         val js = """
             (function() {
-                var editor = document.querySelector('[role="textbox"][contenteditable="true"]');
-                if (!editor) {
-                    console.error('[OpenCode Plugin] Prompt input not found');
-                    return;
+                console.log('[OpenCode Plugin] JS injected successfully, starting...');
+
+                var attempt = 0;
+                function trySend() {
+                    console.log('[OpenCode Plugin] trySend() attempt ' + attempt);
+
+                    var editor = document.querySelector('[role="textbox"][contenteditable="true"]');
+                    if (!editor) {
+                        console.log('[OpenCode Plugin] Prompt input not found in DOM');
+
+                        if (attempt < 50) {
+                            attempt++;
+                            console.log('[OpenCode Plugin] Will retry in 100ms');
+                            setTimeout(trySend, 100);
+                        } else {
+                            console.error('[OpenCode Plugin] Prompt input not found after 50 attempts');
+                        }
+                        return;
+                    }
+
+                    console.log('[OpenCode Plugin] Prompt input found, element:', editor);
+                    console.log('[OpenCode Plugin] Setting text:', '$escapedText');
+                    editor.innerText = '$escapedText';
+
+                    console.log('[OpenCode Plugin] Triggering input event');
+                    var inputEvent = new Event('input', { bubbles: true, cancelable: true });
+                    editor.dispatchEvent(inputEvent);
+
+                    console.log('[OpenCode Plugin] Triggering keydown event (Enter)');
+                    var enterEvent = new KeyboardEvent('keydown', {
+                        bubbles: true,
+                        cancelable: true,
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13,
+                        shiftKey: false,
+                        ctrlKey: false,
+                        altKey: false,
+                        metaKey: false
+                    });
+                    editor.dispatchEvent(enterEvent);
+
+                    console.log('[OpenCode Plugin] Trying to find send button');
+                    var sendButton = document.querySelector('button[aria-label*="send" i]')
+                        || document.querySelector('button[aria-label*="发送" i]')
+                        || document.querySelector('button[type="submit"]')
+                        || document.querySelector('button');
+                    if (sendButton) {
+                        console.log('[OpenCode Plugin] Found send button, clicking it');
+                        sendButton.click();
+                    } else {
+                        console.warn('[OpenCode Plugin] Could not find send button');
+                    }
                 }
-                editor.textContent = '$escapedText';
-                var inputEvent = new Event('input', { bubbles: true, cancelable: true });
-                editor.dispatchEvent(inputEvent);
-                var enterEvent = new KeyboardEvent('keydown', {
-                    bubbles: true,
-                    cancelable: true,
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    shiftKey: false,
-                    ctrlKey: false,
-                    altKey: false,
-                    metaKey: false
-                });
-                editor.dispatchEvent(enterEvent);
+
+                console.log('[OpenCode Plugin] Waiting a bit for page to be ready');
+                setTimeout(trySend, 200);
             })()
         """.trimIndent()
 
-        thisLogger().info("sendViaJCEF(): executing JS injection")
+        thisLogger().info("executeSendViaJCEF(): executing JS injection")
         try {
             cefBrowser.executeJavaScript(js, "", 0)
-            thisLogger().info("sendViaJCEF(): JS injection executed")
+            thisLogger().info("executeSendViaJCEF(): JS injection executed")
         } catch (e: Exception) {
-            thisLogger().warn("sendViaJCEF(): JS injection failed: ${e.message}")
+            thisLogger().warn("executeSendViaJCEF(): JS injection failed: ${e.message}")
         }
     }
 
@@ -323,38 +394,69 @@ class PromptToolWindowPanel(
     }
 
     private fun appendToJCEF(text: String) {
-        val browser = MyToolWindowFactory.getMainBrowser() ?: run {
-            thisLogger().warn("appendToJCEF(): main browser not available")
-            return
-        }
-        val cefBrowser = browser.cefBrowser ?: run {
-            thisLogger().warn("appendToJCEF(): cefBrowser is null")
-            return
+        // 注意: openOpenCodeWebToolWindow() 可能会从后台线程被调用
+        // 所以不在 appendToJCEF 中调用它
+
+        for (i in 1..20) {
+            val browser = MyToolWindowFactory.getMainBrowser()
+            if (browser != null && browser.cefBrowser != null) {
+                thisLogger().info("appendToJCEF(): browser ready after ${i * 500}ms")
+                executeAppendToJCEF(browser.cefBrowser!!, text)
+                return
+            }
+            thisLogger().info("appendToJCEF(): waiting for browser... attempt $i/20")
+            Thread.sleep(500)
         }
 
+        thisLogger().warn("appendToJCEF(): browser not ready after 10s")
+    }
+
+    private fun executeAppendToJCEF(cefBrowser: org.cef.browser.CefBrowser, text: String) {
         val escapedText = text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
         val js = """
             (function() {
-                var editor = document.querySelector('[role="textbox"][contenteditable="true"]');
-                if (!editor) return;
-                var text = '$escapedText';
-                var current = editor.textContent || '';
-                if (current.trim().length > 0) {
-                    editor.textContent = current + '\n' + text;
-                } else {
-                    editor.textContent = text;
+                var attempt = 0;
+                function tryAppend() {
+                    var editor = document.querySelector('[role="textbox"][contenteditable="true"]');
+                    if (!editor) {
+                        if (attempt < 30) {
+                            attempt++;
+                            console.log('[OpenCode Plugin] Prompt input not found, retrying... attempt ' + attempt);
+                            setTimeout(tryAppend, 100);
+                        } else {
+                            console.error('[OpenCode Plugin] Prompt input not found after 30 attempts');
+                        }
+                        return;
+                    }
+                    console.log('[OpenCode Plugin] Prompt input found, appending text');
+                    var text = '$escapedText';
+                    var current = editor.innerText || '';
+                    if (current.trim().length > 0) {
+                        editor.innerText = current + '\n' + text;
+                    } else {
+                        editor.innerText = text;
+                    }
+                    ['input', 'change', 'keyup', 'keydown'].forEach(function(eventType) {
+                        var event = new Event(eventType, { bubbles: true, cancelable: true });
+                        editor.dispatchEvent(event);
+                    });
                 }
-                var inputEvent = new Event('input', { bubbles: true, cancelable: true });
-                editor.dispatchEvent(inputEvent);
+                tryAppend();
             })()
         """.trimIndent()
 
-        thisLogger().info("appendToJCEF(): executing JS injection")
+        thisLogger().info("executeAppendToJCEF(): executing JS injection")
         try {
             cefBrowser.executeJavaScript(js, "", 0)
-            thisLogger().info("appendToJCEF(): JS injection executed")
+            thisLogger().info("executeAppendToJCEF(): JS injection executed")
         } catch (e: Exception) {
-            thisLogger().warn("appendToJCEF(): JS injection failed: ${e.message}")
+            thisLogger().warn("executeAppendToJCEF(): JS injection failed: ${e.message}")
         }
+    }
+
+    override fun dispose() {
+        OpenCodeServerManager.removeStateListener(stateListener)
+        checkScheduledFuture?.cancel(false)
+        scheduler.shutdown()
     }
 }

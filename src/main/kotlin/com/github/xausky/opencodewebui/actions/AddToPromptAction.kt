@@ -71,6 +71,13 @@ class AddToPromptAction : AnAction(), DumbAware {
         thisLogger().info("[AddToPromptAction] Got panel: $panel, appending content")
         panel.appendText(formattedContent)
         PromptToolWindowFactory.getOrActivateToolWindowWithFocus(project)
+
+        // 清除选中
+        if (isIdeaVimInstalled() && isInVisualMode(editor)) {
+            exitVisualMode(editor)
+        } else {
+            editor.caretModel.primaryCaret.removeSelection()
+        }
     }
 
     override fun update(e: AnActionEvent) {
@@ -138,6 +145,55 @@ class AddToPromptAction : AnAction(), DumbAware {
         } catch (e: Exception) {
             thisLogger().warn("[AddToPromptAction] IdeaVim reflection failed: ${e.message}")
             null
+        }
+    }
+
+    @Suppress("SwallowedException", "TooGenericExceptionCaught")
+    private fun isInVisualMode(editor: Editor?): Boolean {
+        if (editor == null) return false
+        return try {
+            val vimPluginClass = Class.forName("com.maddyhome.idea.vim.VimPlugin")
+            val isEnabled = vimPluginClass.getMethod("isEnabled").invoke(null) as Boolean
+            if (!isEnabled) return false
+
+            val instance = vimPluginClass.getMethod("getInstance").invoke(null)
+            val injector = try {
+                instance::class.java.getMethod("getInjector").invoke(instance)
+            } catch (_: NoSuchMethodException) {
+                val field = instance::class.java.getDeclaredField("injector")
+                field.isAccessible = true
+                field.get(instance)
+            } ?: return false
+
+            val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
+            val mode = vimState::class.java.getMethod("getMode").invoke(vimState)
+            mode::class.java.name.contains("VISUAL", ignoreCase = true)
+        } catch (e: Exception) {
+            thisLogger().warn("[AddToPromptAction] isInVisualMode failed: ${e.message}")
+            false
+        }
+    }
+
+    @Suppress("SwallowedException", "TooGenericExceptionCaught")
+    private fun exitVisualMode(editor: Editor?) {
+        if (editor == null) return
+        try {
+            val vimPluginClass = Class.forName("com.maddyhome.idea.vim.VimPlugin")
+            val instance = vimPluginClass.getMethod("getInstance").invoke(null)
+            val injector = try {
+                instance::class.java.getMethod("getInjector").invoke(instance)
+            } catch (_: NoSuchMethodException) {
+                val field = instance::class.java.getDeclaredField("injector")
+                field.isAccessible = true
+                field.get(instance)
+            } ?: return
+
+            val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
+            val exitMethod = vimState::class.java.getMethod("exitVisualMode")
+            exitMethod.invoke(vimState)
+            thisLogger().info("[AddToPromptAction] Exited visual mode via reflection")
+        } catch (e: Exception) {
+            thisLogger().warn("[AddToPromptAction] exitVisualMode failed: ${e.message}")
         }
     }
 }
