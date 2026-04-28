@@ -54,9 +54,7 @@ class PromptToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val promptPanel = PromptToolWindowPanel(project) {
-            MyToolWindowFactory.refreshBrowser()
-        }
+        val promptPanel = PromptToolWindowPanel(project)
         panelMap[project] = promptPanel
         val content = ContentFactory.getInstance().createContent(promptPanel, null, false)
         toolWindow.contentManager.addContent(content)

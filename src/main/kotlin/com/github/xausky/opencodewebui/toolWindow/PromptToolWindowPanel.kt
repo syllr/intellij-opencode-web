@@ -20,6 +20,8 @@ import javax.swing.JTextArea
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 
 private enum class ServerState {
     NOT_STARTED,
@@ -29,7 +31,6 @@ private enum class ServerState {
 
 class PromptToolWindowPanel(
     private val project: com.intellij.openapi.project.Project,
-    private val onSendSuccess: () -> Unit = {}
 ) : JPanel() {
 
     private val textArea = JTextArea().apply {
@@ -52,7 +53,7 @@ class PromptToolWindowPanel(
     private val sendButton = JButton(
         if (OpenCodeServerManager.isServerRunning()) "发送到 OpenCode" else "启动服务"
     ).apply {
-        isEnabled = true
+        isEnabled = false
     }
 
     private val copyButton = JButton("复制").apply {
@@ -66,17 +67,21 @@ class PromptToolWindowPanel(
 
     private var currentState = if (OpenCodeServerManager.isServerRunning()) ServerState.RUNNING else ServerState.NOT_STARTED
 
+    private fun updateButtonEnabled() {
+        val hasText = textArea.text.isNotBlank()
+        sendButton.isEnabled = hasText
+    }
+
     private val stateListener: (Boolean) -> Unit = { running ->
         SwingUtilities.invokeLater {
             if (running) {
                 currentState = ServerState.RUNNING
                 sendButton.text = "发送到 OpenCode"
-                sendButton.isEnabled = true
             } else {
                 currentState = ServerState.NOT_STARTED
                 sendButton.text = "启动服务"
-                sendButton.isEnabled = true
             }
+            updateButtonEnabled()
             thisLogger().info("PromptToolWindowPanel: server state changed to $currentState")
         }
     }
@@ -98,6 +103,12 @@ class PromptToolWindowPanel(
             add(sendButton)
         }
         add(buttonPanel, BorderLayout.SOUTH)
+
+        textArea.document.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent) = updateButtonEnabled()
+            override fun removeUpdate(e: DocumentEvent) = updateButtonEnabled()
+            override fun changedUpdate(e: DocumentEvent) = updateButtonEnabled()
+        })
 
         textArea.document.addUndoableEditListener {
             val hasText = textArea.text.isNotBlank()
@@ -225,7 +236,6 @@ class PromptToolWindowPanel(
                 thisLogger().info("doSend(): sent via JCEF")
                 textArea.text = ""
                 sendButton.text = "已发送!"
-                onSendSuccess()
                 Thread {
                     Thread.sleep(1500)
                     SwingUtilities.invokeLater {
@@ -297,16 +307,54 @@ class PromptToolWindowPanel(
 
     private fun copyToClipboard() {
         val text = textArea.text.trim()
-        if (text.isNotEmpty()) {
-            val selection = StringSelection(text)
-            Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
-            copyButton.text = "已复制!"
-            Thread {
-                Thread.sleep(1500)
-                SwingUtilities.invokeLater {
-                    copyButton.text = "复制"
+        if (text.isEmpty()) return
+
+        val selection = StringSelection(text)
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
+        appendToJCEF(text)
+        textArea.text = ""
+        copyButton.text = "已复制!"
+        Thread {
+            Thread.sleep(1500)
+            SwingUtilities.invokeLater {
+                copyButton.text = "复制"
+            }
+        }.start()
+    }
+
+    private fun appendToJCEF(text: String) {
+        val browser = MyToolWindowFactory.getMainBrowser() ?: run {
+            thisLogger().warn("appendToJCEF(): main browser not available")
+            return
+        }
+        val cefBrowser = browser.cefBrowser ?: run {
+            thisLogger().warn("appendToJCEF(): cefBrowser is null")
+            return
+        }
+
+        val escapedText = text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
+        val js = """
+            (function() {
+                var editor = document.querySelector('[role="textbox"][contenteditable="true"]');
+                if (!editor) return;
+                var text = '$escapedText';
+                var current = editor.textContent || '';
+                if (current.trim().length > 0) {
+                    editor.textContent = current + '\n' + text;
+                } else {
+                    editor.textContent = text;
                 }
-            }.start()
+                var inputEvent = new Event('input', { bubbles: true, cancelable: true });
+                editor.dispatchEvent(inputEvent);
+            })()
+        """.trimIndent()
+
+        thisLogger().info("appendToJCEF(): executing JS injection")
+        try {
+            cefBrowser.executeJavaScript(js, "", 0)
+            thisLogger().info("appendToJCEF(): JS injection executed")
+        } catch (e: Exception) {
+            thisLogger().warn("appendToJCEF(): JS injection failed: ${e.message}")
         }
     }
 }
