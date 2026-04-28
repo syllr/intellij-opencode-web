@@ -278,7 +278,8 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 KeyEvent.VK_E to KeyEvent.VK_END,
                 KeyEvent.VK_A to KeyEvent.VK_HOME,
                 KeyEvent.VK_B to KeyEvent.VK_LEFT,
-                KeyEvent.VK_F to KeyEvent.VK_RIGHT
+                KeyEvent.VK_F to KeyEvent.VK_RIGHT,
+                KeyEvent.VK_W to -1  // Ctrl+W：删除上一个单词（Option+Backspace on Mac）
             )
 
             component.addKeyListener(object : java.awt.event.KeyAdapter() {
@@ -293,7 +294,12 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 private fun handleEmacsKey(e: KeyEvent, mappings: Map<Int, Int>) {
                     if ((e.modifiersEx and KeyEvent.CTRL_DOWN_MASK) == 0) return
                     val targetKeyCode = mappings[e.keyCode] ?: return
-                    sendKeyEvent(component, e.id, targetKeyCode, 0)
+                    // Ctrl+W 特殊处理：删除上一个单词，在 Mac 下对应 Option+Backspace
+                    if (targetKeyCode == -1) {
+                        sendKeyEvent(component, e.id, KeyEvent.VK_BACK_SPACE, KeyEvent.ALT_DOWN_MASK)
+                    } else {
+                        sendKeyEvent(component, e.id, targetKeyCode, 0)
+                    }
                     e.consume()
                 }
             })
