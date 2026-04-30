@@ -98,7 +98,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 checkScheduledFuture?.cancel(true)
                 checkScheduledFuture = null
                 OpenCodeServerManager.stopServer()
-                OpenCodeServerManager.killProcessByPort(PORT)
             } catch (e: Exception) {
                 thisLogger().error("Error stopping OpenCode server: ${e.message}")
             }

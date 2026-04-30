@@ -3,9 +3,6 @@ package com.github.xausky.opencodewebui.toolWindow
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
-import com.intellij.execution.configurations.GeneralCommandLine
-import com.intellij.execution.process.ProcessHandler
-import com.intellij.execution.process.ProcessHandlerFactory
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -18,7 +15,7 @@ object OpenCodeServerManager {
     private const val PORT = OPENCODE_PORT
 
     private val serverRunning = AtomicBoolean(false)
-    private val serverProcess = AtomicReference<ProcessHandler?>(null)
+    private val serverProcess = AtomicReference<Process?>(null)
     private val stateListeners = mutableListOf<(Boolean) -> Unit>()
 
     fun isServerRunning(): Boolean = serverRunning.get()
@@ -56,8 +53,8 @@ object OpenCodeServerManager {
         val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
             override fun run(indicator: ProgressIndicator) {
                 try {
-                    val handler = startOpenCodeProcess()
-                    serverProcess.set(handler)
+                    val process = startOpenCodeProcess()
+                    serverProcess.set(process)
 
                     val healthy = OpenCodeApi.waitForServerHealthy(30000)
 
@@ -65,6 +62,9 @@ object OpenCodeServerManager {
                         notifyStateListeners(true)
                         onStarted()
                     } else {
+                        // 健康检查超时，清理已启动的进程
+                        process.destroyForcibly()
+                        serverProcess.set(null)
                         onFailed(Exception("Server not healthy after 30s"))
                     }
                 } catch (e: Exception) {
@@ -79,9 +79,13 @@ object OpenCodeServerManager {
 
     fun stopServer() {
         try {
-            serverProcess.get()?.let { handler ->
-                if (!handler.isProcessTerminated) {
-                    handler.destroyProcess()
+            serverProcess.get()?.let { process ->
+                if (process.isAlive) {
+                    process.destroy()
+                    if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        process.destroyForcibly()
+                        process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+                    }
                 }
             }
             serverProcess.set(null)
@@ -91,41 +95,16 @@ object OpenCodeServerManager {
         }
     }
 
-    fun killProcessByPort(port: Int) {
-        try {
-            val os = System.getProperty("os.name").lowercase()
-            val command = when {
-                os.contains("mac") || os.contains("nix") || os.contains("nux") ->
-                    listOf("sh", "-c", "lsof -i :$port -t | xargs kill -9 2>/dev/null || true")
-
-                os.contains("win") ->
-                    listOf(
-                        "cmd",
-                        "/c",
-                        "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :$port ^| findstr LISTENING') do taskkill /F /PID %a"
-                    )
-
-                else -> {
-                    thisLogger().warn("Unsupported OS for killProcessByPort: $os")
-                    return
-                }
-            }
-
-            val process = ProcessBuilder(command).start()
-            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-            thisLogger().info("Attempted to kill process on port $port")
-        } catch (e: Exception) {
-            thisLogger().error("Error killing process by port: ${e.message}")
-        }
-    }
-
-    private fun startOpenCodeProcess(): ProcessHandler {
+    private fun startOpenCodeProcess(): Process {
         val command = getOpenCodeCommand()
         val homeDir = System.getProperty("user.home", System.getenv("HOME") ?: "/tmp")
-        val commandLine = GeneralCommandLine(command)
-        commandLine.setWorkDirectory(homeDir)
-        thisLogger().info("[startOpenCodeProcess] Working directory: $homeDir")
-        return ProcessHandlerFactory.getInstance().createProcessHandler(commandLine)
+        val processBuilder = ProcessBuilder(command)
+        processBuilder.directory(java.io.File(homeDir))
+        // 不要继承 IDE 的 stdout/stderr，否则 IDE 退出时子进程写入日志会收到 SIGPIPE
+        processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        processBuilder.redirectError(ProcessBuilder.Redirect.DISCARD)
+        thisLogger().info("[startOpenCodeProcess] Working directory: $homeDir, command: $command")
+        return processBuilder.start()
     }
 
     private fun getOpenCodeCommand(): List<String> {
