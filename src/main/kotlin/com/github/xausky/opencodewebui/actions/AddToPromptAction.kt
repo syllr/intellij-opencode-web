@@ -115,6 +115,13 @@ class AddToPromptAction : AnAction(), DumbAware {
                     } else {
                         editor.innerText = text;
                     }
+                    // 将光标移到末尾
+                    var range = document.createRange();
+                    range.selectNodeContents(editor);
+                    range.collapse(false);
+                    var sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
                     ['input', 'change', 'keyup', 'keydown'].forEach(function(eventType) {
                         editor.dispatchEvent(new Event(eventType, { bubbles: true, cancelable: true }));
                     });
