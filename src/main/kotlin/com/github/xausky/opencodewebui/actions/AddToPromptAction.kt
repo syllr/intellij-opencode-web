@@ -103,6 +103,8 @@ class AddToPromptAction : AnAction(), DumbAware {
                             val sessionUrl = buildSessionUrl(projectPath, sessionId)
                             thisLogger().info("[AddToPromptAction] 跳转到正确 session: $sessionUrl")
                             cefBrowser.loadURL(sessionUrl)
+                            Thread.sleep(1000)
+                            cefBrowser.reload()
                             // 等待页面加载完成再注入
                             Thread.sleep(3000)
                         }
