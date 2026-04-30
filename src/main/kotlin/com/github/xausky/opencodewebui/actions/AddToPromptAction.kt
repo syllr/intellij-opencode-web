@@ -110,10 +110,16 @@ class AddToPromptAction : AnAction(), DumbAware {
                     }
                     var text = '$escapedText';
                     var hasContent = editor.innerText.trim().length > 0;
-                    // 追加文本内容
-                    var textNode = document.createTextNode(text);
-                    editor.appendChild(textNode);
-                    // 追加 <br> 创建换行，再追加一个 <br> 创建光标空行
+                    if (hasContent) {
+                        // 已有内容，在新行追加
+                        var textNode = document.createTextNode('\n' + text);
+                        editor.appendChild(textNode);
+                    } else {
+                        // 空编辑器，先清除占位 <br> 再设置内容
+                        editor.innerHTML = '';
+                        editor.innerText = text;
+                    }
+                    // 追加一个 <br> 创建换行，再追加一个 <br> 创建光标空行
                     editor.appendChild(document.createElement('br'));
                     var cursorBr = document.createElement('br');
                     editor.appendChild(cursorBr);
