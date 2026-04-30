@@ -111,11 +111,11 @@ class AddToPromptAction : AnAction(), DumbAware {
                     var text = '$escapedText';
                     var current = editor.innerText || '';
                     if (current.trim().length > 0) {
-                        editor.innerText = current + '\n' + text;
+                        editor.innerText = current + '\n' + text + '\n';
                     } else {
-                        editor.innerText = text;
+                        editor.innerText = text + '\n';
                     }
-                    // 将光标移到末尾
+                    // 将光标移到末尾（新空行）
                     var range = document.createRange();
                     range.selectNodeContents(editor);
                     range.collapse(false);
