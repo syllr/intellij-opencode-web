@@ -58,7 +58,7 @@ class AddToPromptAction : AnAction(), DumbAware {
         val startLine = document.getLineNumber(selStart) + 1
         val endLine = document.getLineNumber(selEnd) + 1
 
-        val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText)
+        val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText) + "\n"
 
         // 直接追加到 OpenCode Web 输入框
         appendToOpenCodeWeb(project, formattedContent)
@@ -111,11 +111,11 @@ class AddToPromptAction : AnAction(), DumbAware {
                     var text = '$escapedText';
                     var current = editor.innerText || '';
                     if (current.trim().length > 0) {
-                        editor.innerText = current + '\n' + text + '\n';
+                        editor.innerText = current + '\n' + text;
                     } else {
-                        editor.innerText = text + '\n';
+                        editor.innerText = text;
                     }
-                    // 将光标移到末尾（新空行）
+                    // 将光标移到末尾
                     var range = document.createRange();
                     range.selectNodeContents(editor);
                     range.collapse(false);
