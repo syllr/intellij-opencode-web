@@ -1,6 +1,6 @@
 package com.github.xausky.opencodewebui.actions
 
-import com.github.xausky.opencodewebui.toolWindow.PromptToolWindowFactory
+import com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory
 import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -26,35 +26,28 @@ class AddToPromptAction : AnAction(), DumbAware {
         thisLogger().info("[AddToPromptAction] actionPerformed() called")
 
         // 优先尝试从 IdeaVim visual mode 获取选中文本
-        // 因为在 IdeaVim 的 visual mode 下按快捷键触发 action 时，
-        // IdeaVim 会先退出 visual mode 清除 selection，导致标准 API 拿不到文本
         if (isIdeaVimInstalled()) {
             editor = e.getData(CommonDataKeys.EDITOR)
-            thisLogger().info("[AddToPromptAction] IdeaVim installed, editor=$editor")
             val result = getIdeaVimVisualSelection(editor)
-            thisLogger().info("[AddToPromptAction] getIdeaVimVisualSelection() result=$result")
             if (result != null) {
                 selectedText = result.first
                 selStart = result.second
                 selEnd = result.third
-                thisLogger().info("[AddToPromptAction] Got from IdeaVim: text len=${selectedText.length}, range=$selStart-$selEnd")
             } else {
                 selectedText = editor?.selectionModel?.selectedText
                 selStart = editor?.selectionModel?.selectionStart ?: -1
                 selEnd = editor?.selectionModel?.selectionEnd ?: -1
-                thisLogger().info("[AddToPromptAction] Got from standard: text=$selectedText, range=$selStart-$selEnd")
             }
         } else {
             editor = e.getData(CommonDataKeys.EDITOR)
             selectedText = editor?.selectionModel?.selectedText
             selStart = editor?.selectionModel?.selectionStart ?: -1
             selEnd = editor?.selectionModel?.selectionEnd ?: -1
-            thisLogger().info("[AddToPromptAction] IdeaVim not installed, got from standard: text=$selectedText, range=$selStart-$selEnd")
         }
 
         if (selectedText.isNullOrBlank() || selStart < 0 || selEnd <= selStart) {
-            thisLogger().info("[AddToPromptAction] No valid selection, toggling tool window")
-            PromptToolWindowFactory.toggleToolWindowAndFocus(project)
+            thisLogger().info("[AddToPromptAction] No valid selection, opening OpenCode Web")
+            MyToolWindowFactory.openOpenCodeWebToolWindow(project)
             return
         }
 
@@ -67,10 +60,8 @@ class AddToPromptAction : AnAction(), DumbAware {
 
         val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText)
 
-        val panel = PromptToolWindowFactory.getOrCreatePanel(project)
-        thisLogger().info("[AddToPromptAction] Got panel: $panel, appending content")
-        panel.appendText(formattedContent)
-        PromptToolWindowFactory.getOrActivateToolWindowWithFocus(project)
+        // 直接追加到 OpenCode Web 输入框
+        appendToOpenCodeWeb(project, formattedContent)
 
         // 清除选中
         if (isIdeaVimInstalled() && isInVisualMode(editor)) {
@@ -83,6 +74,64 @@ class AddToPromptAction : AnAction(), DumbAware {
     override fun update(e: AnActionEvent) {
         e.presentation.isEnabled = e.project != null
     }
+
+    /**
+     * 将文本追加到 OpenCode Web 页面的输入框
+     */
+    private fun appendToOpenCodeWeb(project: Project, text: String) {
+        MyToolWindowFactory.openOpenCodeWebToolWindow(project)
+
+        for (i in 1..20) {
+            val browser = MyToolWindowFactory.getMainBrowser()
+            if (browser != null && browser.cefBrowser != null) {
+                thisLogger().info("[AddToPromptAction] browser ready after ${i * 500}ms")
+                executeAppend(browser.cefBrowser!!, text)
+                return
+            }
+            Thread.sleep(500)
+        }
+
+        thisLogger().warn("[AddToPromptAction] browser not ready after 10s")
+    }
+
+    private fun executeAppend(cefBrowser: org.cef.browser.CefBrowser, text: String) {
+        val escapedText = text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
+        val js = """
+            (function() {
+                var attempt = 0;
+                function tryAppend() {
+                    var editor = document.querySelector('[role="textbox"][contenteditable="true"]');
+                    if (!editor) {
+                        if (attempt < 30) {
+                            attempt++;
+                            setTimeout(tryAppend, 100);
+                        }
+                        return;
+                    }
+                    var text = '$escapedText';
+                    var current = editor.innerText || '';
+                    if (current.trim().length > 0) {
+                        editor.innerText = current + '\n' + text;
+                    } else {
+                        editor.innerText = text;
+                    }
+                    ['input', 'change', 'keyup', 'keydown'].forEach(function(eventType) {
+                        editor.dispatchEvent(new Event(eventType, { bubbles: true, cancelable: true }));
+                    });
+                }
+                tryAppend();
+            })()
+        """.trimIndent()
+
+        try {
+            cefBrowser.executeJavaScript(js, "", 0)
+            thisLogger().info("[AddToPromptAction] JS injection executed")
+        } catch (e: Exception) {
+            thisLogger().warn("[AddToPromptAction] JS injection failed: ${e.message}")
+        }
+    }
+
+    // === IdeaVim 兼容代码 ===
 
     private fun isIdeaVimInstalled(): Boolean {
         return try {
