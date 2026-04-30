@@ -58,7 +58,7 @@ class AddToPromptAction : AnAction(), DumbAware {
         val startLine = document.getLineNumber(selStart) + 1
         val endLine = document.getLineNumber(selEnd) + 1
 
-        val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText) + "\n"
+        val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText)
 
         // 直接追加到 OpenCode Web 输入框
         appendToOpenCodeWeb(project, formattedContent)
@@ -109,20 +109,27 @@ class AddToPromptAction : AnAction(), DumbAware {
                         return;
                     }
                     var text = '$escapedText';
-                    var current = editor.innerText || '';
-                    if (current.trim().length > 0) {
-                        // 追加一个新行文本节点
-                        var br = document.createElement('br');
-                        editor.appendChild(br);
+                    var hasContent = editor.innerText.trim().length > 0;
+                    if (hasContent) {
                         var textNode = document.createTextNode(text);
                         editor.appendChild(textNode);
+                        // 追加 <br> 模拟换行，再追加一个 <br> 创建新空行
+                        editor.appendChild(document.createElement('br'));
+                        var cursorBr = document.createElement('br');
+                        editor.appendChild(cursorBr);
+                        // 光标放在最后一个 <br> 之后（新空行上）
+                        var range = document.createRange();
+                        range.setStartAfter(cursorBr);
+                        range.collapse(true);
                     } else {
                         editor.innerText = text;
+                        // 追加一个 <br> 创建空行
+                        var br = document.createElement('br');
+                        editor.appendChild(br);
+                        var range = document.createRange();
+                        range.setStartAfter(br);
+                        range.collapse(true);
                     }
-                    // 将光标移到末尾
-                    var range = document.createRange();
-                    range.selectNodeContents(editor);
-                    range.collapse(false);
                     var sel = window.getSelection();
                     sel.removeAllRanges();
                     sel.addRange(range);
