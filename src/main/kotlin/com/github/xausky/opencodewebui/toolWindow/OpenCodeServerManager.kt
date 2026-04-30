@@ -2,11 +2,13 @@ package com.github.xausky.opencodewebui.toolWindow
 
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
+import com.github.xausky.opencodewebui.listeners.OpenCodeSSEConsumer
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
+import com.intellij.openapi.project.Project
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -17,6 +19,7 @@ object OpenCodeServerManager {
     private val serverRunning = AtomicBoolean(false)
     private val serverProcess = AtomicReference<Process?>(null)
     private val stateListeners = mutableListOf<(Boolean) -> Unit>()
+    private var sseConsumer: OpenCodeSSEConsumer? = null
 
     fun addStateListener(listener: (Boolean) -> Unit) {
         synchronized(stateListeners) {
@@ -44,6 +47,7 @@ object OpenCodeServerManager {
     ) {
         if (OpenCodeApi.isServerHealthySync()) {
             notifyStateListeners(true)
+            sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
             onStarted()
             return
         }
@@ -58,6 +62,7 @@ object OpenCodeServerManager {
 
                     if (healthy) {
                         notifyStateListeners(true)
+                        sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
                         onStarted()
                     } else {
                         // 健康检查超时，清理已启动的进程
@@ -77,6 +82,9 @@ object OpenCodeServerManager {
 
     fun stopServer() {
         try {
+            sseConsumer?.stop()
+            sseConsumer = null
+
             serverProcess.get()?.let { process ->
                 if (process.isAlive) {
                     process.destroy()
