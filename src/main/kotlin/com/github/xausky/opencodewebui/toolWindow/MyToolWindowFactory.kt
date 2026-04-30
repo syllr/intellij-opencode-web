@@ -28,11 +28,8 @@ import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.nio.charset.StandardCharsets
 import java.util.*
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
 import javax.swing.JComponent
 import javax.swing.JPanel
-import javax.swing.JSplitPane
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 
@@ -67,24 +64,9 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             toolWindow.activate(null)
         }
 
-        fun isWebPageReady(): Boolean {
-            val browser = getMainBrowser() ?: return false
-            val cefBrowser = browser.cefBrowser ?: return false
-            return true
-        }
-
         private val sharedJBCefClient by lazy { JBCefApp.getInstance().createClient() }
 
-        private var checkScheduledFuture: ScheduledFuture<*>? = null
         private var myToolWindowInstance: MyToolWindow? = null
-
-        private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "OpenCode-Server-Checker")
-        }
-
-        fun refreshBrowser() {
-            myToolWindowInstance?.refresh()
-        }
 
         /**
          * 获取主浏览器实例，用于在其他组件中执行 JavaScript
@@ -95,8 +77,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         fun stopServer() {
             try {
-                checkScheduledFuture?.cancel(true)
-                checkScheduledFuture = null
                 OpenCodeServerManager.stopServer()
             } catch (e: Exception) {
                 thisLogger().error("Error stopping OpenCode server: ${e.message}")
@@ -211,10 +191,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         fun getContent() = browserPanel
 
         fun getBrowser() = browserPanel.getBrowser()
-
-        fun refresh() {
-            mainBrowser?.cefBrowser?.reload()
-        }
 
         fun setupBrowserKeyboardHandling() {
             val panel = browserPanel

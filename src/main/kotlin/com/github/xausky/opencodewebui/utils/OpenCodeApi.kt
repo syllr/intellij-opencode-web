@@ -2,11 +2,9 @@ package com.github.xausky.opencodewebui.utils
 
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URLEncoder
 
 object OpenCodeApi {
     fun isServerHealthySync(): Boolean {

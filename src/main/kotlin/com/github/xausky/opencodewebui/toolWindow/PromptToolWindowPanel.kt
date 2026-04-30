@@ -368,7 +368,7 @@ class PromptToolWindowPanel(
     private fun showNotification(message: String) {
         ApplicationManager.getApplication().invokeLater {
             Notification(
-                "OpenCodeWeb",
+                "OpenCodeWeb.notifications",
                 "OpenCode",
                 message,
                 NotificationType.WARNING

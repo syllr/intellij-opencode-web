@@ -18,8 +18,6 @@ object OpenCodeServerManager {
     private val serverProcess = AtomicReference<Process?>(null)
     private val stateListeners = mutableListOf<(Boolean) -> Unit>()
 
-    fun isServerRunning(): Boolean = serverRunning.get()
-
     fun addStateListener(listener: (Boolean) -> Unit) {
         synchronized(stateListeners) {
             stateListeners.add(listener)
