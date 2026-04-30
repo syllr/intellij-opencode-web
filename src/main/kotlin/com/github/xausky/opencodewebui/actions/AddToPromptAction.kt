@@ -103,7 +103,8 @@ class AddToPromptAction : AnAction(), DumbAware {
                             val sessionUrl = buildSessionUrl(projectPath, sessionId)
                             thisLogger().info("[AddToPromptAction] 跳转到正确 session: $sessionUrl")
                             cefBrowser.loadURL(sessionUrl)
-                            Thread.sleep(2000)
+                            // 等待页面加载完成再注入
+                            Thread.sleep(3000)
                         }
                     }
                 } catch (e: Exception) {
@@ -159,7 +160,7 @@ class AddToPromptAction : AnAction(), DumbAware {
                 function tryAppend() {
                     var editor = document.querySelector('[role="textbox"][contenteditable="true"]');
                     if (!editor) {
-                        if (attempt < 30) {
+                        if (attempt < 100) {
                             attempt++;
                             setTimeout(tryAppend, 100);
                         }
