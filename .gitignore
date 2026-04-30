@@ -10,3 +10,4 @@ cert/
 local.properties
 .opencode/
 .opencode.json
+.playwright-mcp/

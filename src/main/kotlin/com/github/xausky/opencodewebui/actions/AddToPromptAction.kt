@@ -1,6 +1,9 @@
 package com.github.xausky.opencodewebui.actions
 
+import com.github.xausky.opencodewebui.OPENCODE_HOST
+import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory
+import com.github.xausky.opencodewebui.utils.PromptEditorService
 import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -12,6 +15,9 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
+import java.net.URI
+import java.net.URLDecoder
+import java.util.Base64
 
 class AddToPromptAction : AnAction(), DumbAware {
 
@@ -81,17 +87,67 @@ class AddToPromptAction : AnAction(), DumbAware {
     private fun appendToOpenCodeWeb(project: Project, text: String) {
         MyToolWindowFactory.openOpenCodeWebToolWindow(project)
 
+        val projectPath = project.basePath ?: return
+        val sessions = PromptEditorService.getSessions(projectPath)
+        val sessionId = sessions.firstOrNull()?.id
+        if (sessionId == null) {
+            thisLogger().warn("[AddToPromptAction] 当前项目没有活跃 session")
+            return
+        }
+
         for (i in 1..20) {
             val browser = MyToolWindowFactory.getMainBrowser()
             if (browser != null && browser.cefBrowser != null) {
-                thisLogger().info("[AddToPromptAction] browser ready after ${i * 500}ms")
-                executeAppend(browser.cefBrowser!!, text)
+                val cefBrowser = browser.cefBrowser!!
+                // 检查当前浏览器页面的 session 是否与当前项目匹配
+                val currentUrl = cefBrowser.getURL()
+                if (!isCorrectSession(currentUrl, projectPath)) {
+                    thisLogger().info("[AddToPromptAction] session 不匹配，跳转到正确 session: $projectPath")
+                    val sessionUrl = buildSessionUrl(projectPath, sessionId)
+                    cefBrowser.loadURL(sessionUrl)
+                    // 等待页面加载
+                    Thread.sleep(2000)
+                }
+                executeAppend(cefBrowser, text)
                 return
             }
             Thread.sleep(500)
         }
 
         thisLogger().warn("[AddToPromptAction] browser not ready after 10s")
+    }
+
+    private fun isCorrectSession(url: String?, projectPath: String): Boolean {
+        if (url == null || url.isBlank()) return false
+        try {
+            // URL 格式: http://host:port/<base64-project>/session/<session-id>
+            val segments = URI(url).path.split("/")
+            if (segments.size < 2) return false
+            val encodedPath = try {
+                java.net.URLDecoder.decode(segments[1], "UTF-8")
+            } catch (_: Exception) {
+                // 可能是 base64 编码
+                try {
+                    String(Base64.getUrlDecoder().decode(segments[1]))
+                } catch (_: Exception) {
+                    // 也可能是标准 Base64
+                    try {
+                        String(Base64.getDecoder().decode(segments[1]))
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }
+            return encodedPath == projectPath
+        } catch (e: Exception) {
+            thisLogger().warn("[AddToPromptAction] 解析 session URL 失败: ${e.message}")
+            return false
+        }
+    }
+
+    private fun buildSessionUrl(projectPath: String, sessionId: String): String {
+        val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(projectPath.toByteArray())
+        return "http://$OPENCODE_HOST:$OPENCODE_PORT/$encoded/session/$sessionId"
     }
 
     private fun executeAppend(cefBrowser: org.cef.browser.CefBrowser, text: String) {
