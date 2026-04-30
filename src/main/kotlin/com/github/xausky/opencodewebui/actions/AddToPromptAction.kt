@@ -88,25 +88,26 @@ class AddToPromptAction : AnAction(), DumbAware {
         MyToolWindowFactory.openOpenCodeWebToolWindow(project)
 
         val projectPath = project.basePath ?: return
-        val sessions = PromptEditorService.getSessions(projectPath)
-        val sessionId = sessions.firstOrNull()?.id
-        if (sessionId == null) {
-            thisLogger().warn("[AddToPromptAction] 当前项目没有活跃 session")
-            return
-        }
 
         for (i in 1..20) {
             val browser = MyToolWindowFactory.getMainBrowser()
             if (browser != null && browser.cefBrowser != null) {
                 val cefBrowser = browser.cefBrowser!!
-                // 检查当前浏览器页面的 session 是否与当前项目匹配
-                val currentUrl = cefBrowser.getURL()
-                if (!isCorrectSession(currentUrl, projectPath)) {
-                    thisLogger().info("[AddToPromptAction] session 不匹配，跳转到正确 session: $projectPath")
-                    val sessionUrl = buildSessionUrl(projectPath, sessionId)
-                    cefBrowser.loadURL(sessionUrl)
-                    // 等待页面加载
-                    Thread.sleep(2000)
+                // 尝试检查当前 session 是否匹配当前项目（可选，不阻塞注入）
+                try {
+                    val currentUrl = cefBrowser.getURL()
+                    if (!isCorrectSession(currentUrl, projectPath)) {
+                        val sessions = PromptEditorService.getSessions(projectPath)
+                        val sessionId = sessions.firstOrNull()?.id
+                        if (sessionId != null) {
+                            val sessionUrl = buildSessionUrl(projectPath, sessionId)
+                            thisLogger().info("[AddToPromptAction] 跳转到正确 session: $sessionUrl")
+                            cefBrowser.loadURL(sessionUrl)
+                            Thread.sleep(2000)
+                        }
+                    }
+                } catch (e: Exception) {
+                    thisLogger().warn("[AddToPromptAction] session 检查失败，直接注入: ${e.message}")
                 }
                 executeAppend(cefBrowser, text)
                 return
