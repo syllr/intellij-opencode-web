@@ -111,7 +111,11 @@ class AddToPromptAction : AnAction(), DumbAware {
                     var text = '$escapedText';
                     var current = editor.innerText || '';
                     if (current.trim().length > 0) {
-                        editor.innerText = current + '\n' + text;
+                        // 追加一个新行文本节点
+                        var br = document.createElement('br');
+                        editor.appendChild(br);
+                        var textNode = document.createTextNode(text);
+                        editor.appendChild(textNode);
                     } else {
                         editor.innerText = text;
                     }
