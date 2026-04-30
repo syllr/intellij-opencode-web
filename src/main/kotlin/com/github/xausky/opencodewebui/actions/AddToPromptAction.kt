@@ -110,26 +110,16 @@ class AddToPromptAction : AnAction(), DumbAware {
                     }
                     var text = '$escapedText';
                     var hasContent = editor.innerText.trim().length > 0;
-                    if (hasContent) {
-                        var textNode = document.createTextNode(text);
-                        editor.appendChild(textNode);
-                        // 追加 <br> 模拟换行，再追加一个 <br> 创建新空行
-                        editor.appendChild(document.createElement('br'));
-                        var cursorBr = document.createElement('br');
-                        editor.appendChild(cursorBr);
-                        // 光标放在最后一个 <br> 之后（新空行上）
-                        var range = document.createRange();
-                        range.setStartAfter(cursorBr);
-                        range.collapse(true);
-                    } else {
-                        editor.innerText = text;
-                        // 追加一个 <br> 创建空行
-                        var br = document.createElement('br');
-                        editor.appendChild(br);
-                        var range = document.createRange();
-                        range.setStartAfter(br);
-                        range.collapse(true);
-                    }
+                    // 追加文本内容
+                    var textNode = document.createTextNode(text);
+                    editor.appendChild(textNode);
+                    // 追加 <br> 创建换行，再追加一个 <br> 创建光标空行
+                    editor.appendChild(document.createElement('br'));
+                    var cursorBr = document.createElement('br');
+                    editor.appendChild(cursorBr);
+                    // 光标放在最后一个 <br> 之后（新空行上）
+                    var range = document.createRange();
+                    range.setStartAfter(cursorBr);
                     var sel = window.getSelection();
                     sel.removeAllRanges();
                     sel.addRange(range);
