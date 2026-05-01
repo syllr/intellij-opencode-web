@@ -140,6 +140,55 @@ class OpenCodeSSEConsumer(
         val isFileEdited = payloadType == "file.edited"
         val isFileWatcherUpdated = payloadType == "file.watcher.updated"
 
+        // === Handle bash tool file operations (rm, mv, cp, etc.) ===
+        if (payloadType == "message.part.updated") {
+            try {
+                val parsedMap = gson.fromJson(message, Map::class.java)
+                val payload = parsedMap?.get("payload") as? Map<*, *>
+                val props = payload?.get("properties") as? Map<*, *>
+                val part = props?.get("part") as? Map<*, *>
+                val partType = part?.get("type") as? String
+                val toolName = part?.get("tool") as? String
+                val state = part?.get("state") as? Map<*, *>
+                val status = state?.get("status") as? String
+                
+                if (partType == "tool" && toolName == "bash" && (status == "completed" || status == "running")) {
+                    val input = state?.get("input") as? Map<*, *>
+                    val command = input?.get("command") as? String ?: ""
+                    
+                    if (command.isNotBlank()) {
+                        logger.info("[OpenCodeSSEConsumer] Bash tool event: status=$status, command='${command.take(200)}'")
+                        
+                        if (status == "completed") {
+                            val exitCode = try {
+                                val metadata = state?.get("metadata") as? Map<*, *>
+                                (metadata?.get("exit") as? Double)?.toInt() ?: -1
+                            } catch (_: Exception) { -1 }
+                            
+                            if (exitCode == 0) {
+                                val projectPath = projectDir
+                                if (projectPath != null && command.contains(projectPath)) {
+                                    val filePaths = extractFilePathsFromCommand(command, projectPath)
+                                    if (filePaths.isNotEmpty()) {
+                                        logger.info("[OpenCodeSSEConsumer] Bash tool modified files, refreshing: $filePaths")
+                                        val diffFiles = filePaths.map { path ->
+                                            val relativePath = if (path.startsWith(projectPath)) {
+                                                path.removePrefix(projectPath).removePrefix("/")
+                                            } else { path }
+                                            DiffFile(file = relativePath, additions = 0, deletions = 0, status = "modified")
+                                        }
+                                        OpenCodeDiffRefresher.refreshFiles(projectPath, diffFiles)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                logger.warn("[OpenCodeSSEConsumer] Failed to parse bash tool event: ${e.message}")
+            }
+        }
+
         if (!isSessionDiff && !isFileEdited && !isFileWatcherUpdated) {
             // 非文件事件只打日志，不处理
             return
@@ -265,5 +314,26 @@ class OpenCodeSSEConsumer(
 
     override fun onError(error: Throwable) {
         logger.error("[OpenCodeSSEConsumer] SSE error: ${error.message}", error)
+    }
+
+    /**
+     * 从 bash 命令中提取受影响的文件路径（绝对路径）
+     */
+    private fun extractFilePathsFromCommand(command: String, projectPath: String): List<String> {
+        val paths = mutableListOf<String>()
+        try {
+            val cleanCmd = command.trimStart()
+                .removePrefix("rm").removePrefix("mv").removePrefix("cp")
+                .removePrefix("touch").removePrefix("mkdir").removePrefix("rmdir")
+                .trimStart()
+            val cleaned = cleanCmd.replace(Regex("-\\w+\\s+"), "").trim()
+            for (token in cleaned.split("\\s+".toRegex())) {
+                val path = token.trim().trim('"').trim('\'')
+                if (path.startsWith(projectPath) && path.length > projectPath.length + 2) {
+                    paths.add(path)
+                }
+            }
+        } catch (_: Exception) { }
+        return paths.distinct()
     }
 }
