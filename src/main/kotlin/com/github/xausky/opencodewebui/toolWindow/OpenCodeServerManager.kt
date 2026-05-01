@@ -33,6 +33,18 @@ object OpenCodeServerManager {
         }
     }
 
+    fun ensureSSEConsumer(project: com.intellij.openapi.project.Project): OpenCodeSSEConsumer {
+        if (sseConsumer == null) {
+            synchronized(this) {
+                if (sseConsumer == null) {
+                    thisLogger().info("[OpenCodeServerManager] Creating SSE consumer via ensureSSEConsumer")
+                    sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
+                }
+            }
+        }
+        return sseConsumer!!
+    }
+
     private fun notifyStateListeners(running: Boolean) {
         serverRunning.set(running)
         synchronized(stateListeners) {

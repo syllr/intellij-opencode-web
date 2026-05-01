@@ -171,16 +171,16 @@ class OpenCodeSSEConsumer(
                             if (exitCode == 0) {
                                 val projectPath = projectDir
                                 if (projectPath != null && command.contains(projectPath)) {
-                                    // 提取基本命令（第一个词），跳过 sudo/command/time 等前缀
-                                    val baseCommand = command.trimStart()
-                                        .removePrefix("sudo ").removePrefix("command ")
-                                        .removePrefix("time ").removePrefix("nohup ")
-                                        .split("\\s+".toRegex()).firstOrNull() ?: ""
-                                    // 只读命令白名单——这些命令不修改文件，跳过刷新
-                                    if (baseCommand in READ_ONLY_COMMANDS) {
-                                        logger.info("[OpenCodeSSEConsumer] Read-only bash command '$baseCommand', skipping refresh")
+                                    val segments = command.split(Regex("&&|;|\n"))
+                                    val allReadOnly = segments.all { segment ->
+                                        val base = extractBaseBashCommand(segment)
+                                        base.isEmpty() || base in READ_ONLY_COMMANDS
+                                    }
+                                    
+                                    if (allReadOnly) {
+                                        logger.info("[OpenCodeSSEConsumer] All bash segments are read-only, skipping refresh")
                                     } else {
-                                        logger.info("[OpenCodeSSEConsumer] Bash tool (cmd=$baseCommand) refreshed project root")
+                                        logger.info("[OpenCodeSSEConsumer] Bash has non-read-only segments, refreshing project root")
                                         OpenCodeDiffRefresher.refreshProjectRoot(projectPath)
                                         FullRefreshCoordinator.request()
                                     }
@@ -323,6 +323,19 @@ class OpenCodeSSEConsumer(
         logger.error("[OpenCodeSSEConsumer] SSE error: ${error.message}", error)
     }
 
+    private fun extractBaseBashCommand(cmd: String): String {
+        val skipPrefixes = listOf("sudo", "command", "time", "nohup")
+        var trimmed = cmd.trimStart()
+        while (true) {
+            val stripped = skipPrefixes.fold(trimmed) { acc, prefix ->
+                acc.removePrefix("$prefix ")
+            }
+            if (stripped == trimmed) break
+            trimmed = stripped.trimStart()
+        }
+        return trimmed.split("\\s+".toRegex()).firstOrNull()?.trim() ?: ""
+    }
+
     /**
      * 从 bash 命令中提取项目目录下的文件路径（绝对路径）
      * 使用正则匹配所有绝对路径，不限定具体命令
@@ -337,5 +350,12 @@ class OpenCodeSSEConsumer(
             "hash", "help", "man", "info", "whatis", "apropos", "whereis",
             "source", "exit", "return", "continue", "break", "shopt",
             "history", "fc", "bind", "complete", "compgen", "compopt",
+            "id", "whoami", "who", "w", "users", "last", "date",
+            "uname", "hostname", "arch", "nproc", "uptime",
+            "basename", "dirname", "realpath", "readlink",
+            "sleep", "true", "false",
+            "xargs", "pgrep", "pidof", "ps", "lsof",
+            "unset", "shift", "getopts", "trap", "wait",
+            "type", "command", "builtin", "eval",
         )
     }}

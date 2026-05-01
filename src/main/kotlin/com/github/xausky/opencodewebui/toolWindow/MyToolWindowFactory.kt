@@ -2,7 +2,6 @@ package com.github.xausky.opencodewebui.toolWindow
 
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
-import com.github.xausky.opencodewebui.listeners.OpenCodeSSEConsumer
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.ide.BrowserUtil
@@ -78,7 +77,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         fun stopServer() {
             try {
-                myToolWindowInstance?.cleanupSSE()
                 OpenCodeServerManager.stopServer()
             } catch (e: Exception) {
                 thisLogger().error("Error stopping OpenCode server: ${e.message}")
@@ -120,7 +118,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         private val project = toolWindow.project
         private val logger = thisLogger()
-        private var sseConsumer: OpenCodeSSEConsumer? = null
         private val browserPanel = BrowserPanel(HOST, PORT)
         private var mainBrowser: JBCefBrowser? = null
 
@@ -165,17 +162,12 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             lastHealthState = healthy
             startHealthMonitoring()
             if (healthy) {
-                logger.info("[checkAndLoadContent] Server healthy, creating SSE consumer")
-                sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
+                logger.info("[checkAndLoadContent] Server healthy, ensuring SSE consumer via OpenCodeServerManager")
+                OpenCodeServerManager.ensureSSEConsumer(project)
                 loadProjectPage()
             } else {
                 showServerNotRunning()
             }
-        }
-
-        fun cleanupSSE() {
-            sseConsumer?.stop()
-            sseConsumer = null
         }
 
         private fun showServerNotRunning() {
