@@ -177,17 +177,8 @@ class OpenCodeSSEConsumer(
                                     if (baseCommand in READ_ONLY_COMMANDS) {
                                         logger.info("[OpenCodeSSEConsumer] Read-only bash command '$baseCommand', skipping refresh")
                                     } else {
-                                        val filePaths = extractFilePathsFromCommand(command, projectPath)
-                                        if (filePaths.isNotEmpty()) {
-                                            logger.info("[OpenCodeSSEConsumer] Bash tool (cmd=$baseCommand) modified files, refreshing: $filePaths")
-                                            val diffFiles = filePaths.map { path ->
-                                                val relativePath = if (path.startsWith(projectPath)) {
-                                                    path.removePrefix(projectPath).removePrefix("/")
-                                                } else { path }
-                                                DiffFile(file = relativePath, additions = 0, deletions = 0, status = "modified")
-                                            }
-                                            OpenCodeDiffRefresher.refreshFiles(projectPath, diffFiles)
-                                        }
+                                        logger.info("[OpenCodeSSEConsumer] Bash tool (cmd=$baseCommand) refreshed project root")
+                                        OpenCodeDiffRefresher.refreshProjectRoot(projectPath)
                                     }
                                 }
                             }
@@ -341,15 +332,4 @@ class OpenCodeSSEConsumer(
             "source", "exit", "return", "continue", "break", "shopt",
             "history", "fc", "bind", "complete", "compgen", "compopt",
         )
-    }
-
-    private fun extractFilePathsFromCommand(command: String, projectPath: String): List<String> {
-        // 匹配绝对路径：/ 开头，后跟非空白字符
-        val pathPattern = Regex("""(^|\s)(/[^\s"']+)""")
-        return pathPattern.findAll(command)
-            .map { it.groupValues[2] }  // 捕获组2是完整路径
-            .filter { it.startsWith(projectPath) && it.length > projectPath.length + 1 }
-            .distinct()
-            .toList()
-    }
-}
+    }}

@@ -44,4 +44,32 @@ object OpenCodeDiffRefresher {
             }
         }
     }
+
+    /**
+     * 刷新整个项目根目录（递归）。
+     * 有 NativeFileWatcher 时只检查有变动的文件，不会遍历所有文件。
+     */
+    fun refreshProjectRoot(projectPath: String) {
+        logger.info("[DiffRefresher] refreshProjectRoot called with projectPath='$projectPath'")
+
+        ApplicationManager.getApplication().invokeLater {
+            try {
+                val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(projectPath)
+                if (vf != null) {
+                    logger.info("[DiffRefresher] Found project root: ${vf.path}, refreshing recursively")
+                    RefreshQueue.getInstance().refresh(
+                        /* async */ true,
+                        /* recursive */ true,
+                        /* finishRunnable */ null,
+                        vf
+                    )
+                    logger.info("[DiffRefresher] Project root refresh completed")
+                } else {
+                    logger.warn("[DiffRefresher] Project root not found: $projectPath")
+                }
+            } catch (e: Exception) {
+                logger.error("[DiffRefresher] Project root refresh failed: ${e.message}", e)
+            }
+        }
+    }
 }
