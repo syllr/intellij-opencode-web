@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 object FullRefreshCoordinator {
     private val logger = thisLogger()
     private val pendingRequests = AtomicInteger(0)
-    private var processedCount = 0
+    private val processedCount = AtomicInteger(0)
     private var scheduler: ScheduledExecutorService? = null
     private var projectRoot: String? = null
 
@@ -33,13 +33,11 @@ object FullRefreshCoordinator {
             logger.warn("[FullRefresh] Already started, skipping")
             return
         }
-        scheduler = Executors.newSingleThreadScheduledExecutor { r ->
+        val s = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "FullRefreshWorker")
         }
-        scheduler?.scheduleWithFixedDelay(
-            ::tick,
-            500, 500, TimeUnit.MILLISECONDS
-        )
+        s.scheduleWithFixedDelay(::tick, 500, 500, TimeUnit.MILLISECONDS)
+        scheduler = s
         logger.info("[FullRefresh] Started, polling every 500ms, root=$projectPath")
     }
 
@@ -56,7 +54,7 @@ object FullRefreshCoordinator {
 
     private fun tick() {
         val current = pendingRequests.get()
-        if (current == processedCount) return  // nothing new
+        if (current == processedCount.get()) return  // nothing new
 
         val root = projectRoot ?: return
         try {
@@ -66,15 +64,15 @@ object FullRefreshCoordinator {
                 return
             }
 
-            logger.info("[FullRefresh] Pending=${current - processedCount}, doing full refresh")
+            logger.info("[FullRefresh] Pending=${current - processedCount.get()}, doing full refresh")
             LocalFileSystem.getInstance().refreshIoFiles(
                 listOf(dir),
                 /* async */ false,   // 同步！确保刷新完成再更新计数
                 /* recursive */ true,
                 null
             )
-            processedCount = current
-            logger.info("[FullRefresh] Full refresh completed (processed=$processedCount)")
+            processedCount.set(current)
+            logger.info("[FullRefresh] Full refresh completed (processed=${processedCount.get()})")
         } catch (e: Exception) {
             logger.error("[FullRefresh] Full refresh failed: ${e.message}, will retry", e)
             // processedCount 不变，下次 tick 会重试

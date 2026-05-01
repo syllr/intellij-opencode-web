@@ -2,6 +2,7 @@ package com.github.xausky.opencodewebui.listeners
 
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.vfs.LocalFileSystem
+import java.io.File
 
 object OpenCodeDiffRefresher {
     private val logger = thisLogger()
@@ -12,12 +13,9 @@ object OpenCodeDiffRefresher {
         try {
             val virtualFiles = files.mapNotNull { diffFile ->
                 val absolutePath = "$directory/${diffFile.file}"
-                logger.info("[DiffRefresher] Looking up file: $absolutePath")
                 val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(absolutePath)
-                if (vf != null) {
-                    logger.info("[DiffRefresher]   -> FOUND: ${vf.path}")
-                } else {
-                    logger.warn("[DiffRefresher]   -> NOT FOUND: $absolutePath")
+                if (vf == null) {
+                    logger.warn("[DiffRefresher] File not found: $absolutePath")
                 }
                 vf
             }
@@ -25,7 +23,7 @@ object OpenCodeDiffRefresher {
             if (virtualFiles.isNotEmpty()) {
                 val pathList = virtualFiles.joinToString(", ") { it.path }
                 logger.info("[DiffRefresher] Refreshing ${virtualFiles.size} files via refreshIoFiles: $pathList")
-                val ioFiles = virtualFiles.map { java.io.File(it.path) }
+                val ioFiles = virtualFiles.map { File(it.path) }
                 LocalFileSystem.getInstance().refreshIoFiles(
                     ioFiles,
                     /* async */ false,
@@ -50,7 +48,7 @@ object OpenCodeDiffRefresher {
         logger.info("[DiffRefresher] refreshProjectRoot called with projectPath='$projectPath'")
 
         try {
-            val projectDir = java.io.File(projectPath)
+            val projectDir = File(projectPath)
             if (projectDir.exists()) {
                 logger.info("[DiffRefresher] Refreshing directory via refreshIoFiles: $projectPath")
                 LocalFileSystem.getInstance().refreshIoFiles(

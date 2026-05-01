@@ -372,6 +372,6 @@ class OpenCodeSSEConsumer(
             "sleep", "true", "false",
             "xargs", "pgrep", "pidof", "ps", "lsof",
             "unset", "shift", "getopts", "trap", "wait",
-            "type", "command", "builtin", "eval",
+            "command", "builtin", "eval",
         )
     }}
