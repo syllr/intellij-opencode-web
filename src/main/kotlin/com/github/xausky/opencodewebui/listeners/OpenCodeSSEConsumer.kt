@@ -48,6 +48,7 @@ class OpenCodeSSEConsumer(
 
     fun start() {
         val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
+        logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, project.basePath='${project.basePath}', uri=$uri")
         val connectStrategy = ConnectStrategy.http(uri)
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -73,26 +74,53 @@ class OpenCodeSSEConsumer(
     }
 
     override fun onMessage(event: String, messageEvent: MessageEvent) {
-        if (event == "session.diff") {
-            val message = messageEvent.data
-            logger.info("[OpenCodeSSEConsumer] session.diff event: $message")
+        val message = messageEvent.data
 
-            try {
-                val wrapper = gson.fromJson(message, SSEEventWrapper::class.java)
-                val props = wrapper.payload.properties
+        // 【关键日志】打印每个收到的 SSE 事件，不论类型
+        logger.info("[OpenCodeSSEConsumer] RAW SSE event: type='$event', data=${message.take(500)}")
 
-                val projectDir = project.basePath
-                if (projectDir != null && props.directory == projectDir) {
-                    logger.info("[OpenCodeSSEConsumer] Directory matched, refreshing ${props.diff.size} files")
-                    ApplicationManager.getApplication().invokeLater {
-                        OpenCodeDiffRefresher.refreshFiles(props.directory, props.diff)
-                    }
-                } else {
-                    logger.info("[OpenCodeSSEConsumer] Directory mismatch: event=${props.directory} vs project=$projectDir")
-                }
-            } catch (e: Exception) {
-                logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff: ${e.message}", e)
+        // 尝试从 JSON body 中解析 payload type（OpenCode 可能不在 event header 中传类型）
+        var payloadType: String? = null
+        try {
+            val parsed = gson.fromJson(message, Map::class.java) as? Map<*, *>
+            val payload = parsed?.get("payload") as? Map<*, *>
+            payloadType = payload?.get("type") as? String
+        } catch (e: Exception) {
+            logger.warn("[OpenCodeSSEConsumer] Failed to parse JSON payload type: ${e.message}")
+        }
+
+        // 双重判断：SSE event header OR JSON body payload.type
+        val isSessionDiff = event == "session.diff" || payloadType == "session.diff"
+
+        if (!isSessionDiff) {
+            logger.info("[OpenCodeSSEConsumer] Ignored event: event='$event', payloadType=$payloadType")
+            return
+        }
+
+        logger.info("[OpenCodeSSEConsumer] MESSAGE session.diff FOUND! event='$event', payloadType=$payloadType")
+        logger.info("[OpenCodeSSEConsumer] session.diff raw data: $message")
+
+        try {
+            val wrapper = gson.fromJson(message, SSEEventWrapper::class.java)
+            val props = wrapper.payload.properties
+
+            val projectDir = project.basePath
+            logger.info("[OpenCodeSSEConsumer] directory='${props.directory}', project.basePath='$projectDir'")
+            logger.info("[OpenCodeSSEConsumer] Files to refresh: ${props.diff.size} files")
+            props.diff.forEachIndexed { i, f ->
+                logger.info("[OpenCodeSSEConsumer]   diff[$i]: file='${f.file}', status=${f.status}, +${f.additions}/-${f.deletions}")
             }
+
+            if (projectDir != null && props.directory == projectDir) {
+                logger.info("[OpenCodeSSEConsumer] Directory MATCHED, invoking DiffRefresher via invokeLater")
+                ApplicationManager.getApplication().invokeLater {
+                    OpenCodeDiffRefresher.refreshFiles(props.directory, props.diff)
+                }
+            } else {
+                logger.info("[OpenCodeSSEConsumer] Directory MISMATCH: event='${props.directory}' vs project='$projectDir'")
+            }
+        } catch (e: Exception) {
+            logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff JSON: ${e.message}", e)
         }
     }
 

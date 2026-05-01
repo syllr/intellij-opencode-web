@@ -10,23 +10,34 @@ object OpenCodeDiffRefresher {
     private val logger = thisLogger()
 
     fun refreshFiles(directory: String, files: List<DiffFile>) {
+        logger.info("[DiffRefresher] refreshFiles called with directory='$directory', ${files.size} files")
+
         ApplicationManager.getApplication().invokeLater {
             try {
                 val virtualFiles = files.mapNotNull { diffFile ->
                     val absolutePath = "$directory/${diffFile.file}"
-                    LocalFileSystem.getInstance().refreshAndFindFileByPath(absolutePath)
+                    logger.info("[DiffRefresher] Looking up file: $absolutePath")
+                    val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(absolutePath)
+                    if (vf != null) {
+                        logger.info("[DiffRefresher]   -> FOUND: ${vf.path}")
+                    } else {
+                        logger.warn("[DiffRefresher]   -> NOT FOUND: $absolutePath")
+                    }
+                    vf
                 }
 
                 if (virtualFiles.isNotEmpty()) {
+                    val pathList = virtualFiles.joinToString(", ") { it.path }
+                    logger.info("[DiffRefresher] Refreshing ${virtualFiles.size} files via RefreshQueue: $pathList")
                     RefreshQueue.getInstance().refresh(
                         /* async */ true,
                         /* recursive */ false,
                         /* finishRunnable */ null,
                         /* files */ *virtualFiles.toTypedArray<VirtualFile>()
                     )
-                    logger.info("[DiffRefresher] Refreshed ${virtualFiles.size} files: ${files.map { it.file }}")
+                    logger.info("[DiffRefresher] RefreshQueue.refresh() called successfully")
                 } else {
-                    logger.warn("[DiffRefresher] No virtual files found for ${files.size} paths")
+                    logger.warn("[DiffRefresher] NO virtual files found from ${files.size} paths - refresh skipped")
                 }
             } catch (e: Exception) {
                 logger.error("[DiffRefresher] Refresh failed: ${e.message}", e)

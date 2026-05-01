@@ -47,6 +47,7 @@ object OpenCodeServerManager {
     ) {
         if (OpenCodeApi.isServerHealthySync()) {
             notifyStateListeners(true)
+            thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
             sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
             onStarted()
             return
@@ -62,6 +63,7 @@ object OpenCodeServerManager {
 
                     if (healthy) {
                         notifyStateListeners(true)
+                        thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
                         sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
                         onStarted()
                     } else {
@@ -82,6 +84,7 @@ object OpenCodeServerManager {
 
     fun stopServer() {
         try {
+            thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
             sseConsumer?.stop()
             sseConsumer = null
 
