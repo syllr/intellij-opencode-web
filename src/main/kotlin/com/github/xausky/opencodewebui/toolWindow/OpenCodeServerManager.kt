@@ -19,6 +19,7 @@ object OpenCodeServerManager {
     private val serverRunning = AtomicBoolean(false)
     private val serverProcess = AtomicReference<Process?>(null)
     private val stateListeners = mutableListOf<(Boolean) -> Unit>()
+    @Volatile
     private var sseConsumer: OpenCodeSSEConsumer? = null
 
     fun addStateListener(listener: (Boolean) -> Unit) {
@@ -60,6 +61,7 @@ object OpenCodeServerManager {
         if (OpenCodeApi.isServerHealthySync()) {
             notifyStateListeners(true)
             thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
+            sseConsumer?.stop()
             sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
             onStarted()
             return
@@ -76,6 +78,7 @@ object OpenCodeServerManager {
                     if (healthy) {
                         notifyStateListeners(true)
                         thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
+                        sseConsumer?.stop()
                         sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
                         onStarted()
                     } else {

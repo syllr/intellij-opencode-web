@@ -72,8 +72,6 @@ class OpenCodeSSEConsumer(
         val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
         logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, project.basePath='${project.basePath}', uri=$uri")
 
-        // 启动 VFS 监听测试（打印 IntelliJ 原生收到的文件事件）
-        VfsWatchTest.start()
         FullRefreshCoordinator.start(project.basePath ?: "")
 
         val connectStrategy = ConnectStrategy.http(uri)
@@ -108,11 +106,12 @@ class OpenCodeSSEConsumer(
         logger.info("[OpenCodeSSEConsumer] RAW SSE event: type='$event', data=${message.take(1000)}")
 
         // 从 JSON body 解析 payload type、顶层 directory 和 file 相关字段
+        var parsedMap: Map<*, *>? = null
         var payloadType: String? = null
         var eventDir: String? = null
         var fileProperty: String? = null
         try {
-            val parsedMap = gson.fromJson(message, Map::class.java)
+            parsedMap = gson.fromJson(message, Map::class.java)
             eventDir = parsedMap?.get("directory") as? String
             val payload = parsedMap?.get("payload") as? Map<*, *>
             payloadType = payload?.get("type") as? String
@@ -146,7 +145,7 @@ class OpenCodeSSEConsumer(
         // === Handle bash tool file operations (rm, mv, cp, etc.) ===
         if (payloadType == "message.part.updated") {
             try {
-                val parsedMap = gson.fromJson(message, Map::class.java)
+                // reuse parsedMap from top-level parse
                 val payload = parsedMap?.get("payload") as? Map<*, *>
                 val props = payload?.get("properties") as? Map<*, *>
                 val part = props?.get("part") as? Map<*, *>
@@ -236,7 +235,11 @@ class OpenCodeSSEConsumer(
                 val fe = gson.fromJson(message, SSEFileEditedEvent::class.java)
                 val absolutePath = fe.payload.properties.file
                 val relativePath = if (eventDir != null && absolutePath.startsWith(eventDir)) {
-                    absolutePath.removePrefix(eventDir).removePrefix("/")
+                    try {
+                        java.io.File(eventDir).toPath().relativize(java.io.File(absolutePath).toPath()).toString()
+                    } catch (_: Exception) {
+                        absolutePath.removePrefix(eventDir).removePrefix("/")
+                    }
                 } else {
                     logger.warn("[OpenCodeSSEConsumer] Cannot determine relative path: file='$absolutePath', dir='$eventDir'")
                     absolutePath
@@ -261,7 +264,7 @@ class OpenCodeSSEConsumer(
         // === Handle file.watcher.updated (filesystem events from ParcelWatcher) ===
         if (isFileWatcherUpdated) {
             try {
-                val parsedMap = gson.fromJson(message, Map::class.java)
+                // reuse parsedMap from top-level parse
                 val payload = parsedMap?.get("payload") as? Map<*, *>
                 val properties = payload?.get("properties") as? Map<*, *>
                 val absolutePath = properties?.get("file") as? String
@@ -273,7 +276,11 @@ class OpenCodeSSEConsumer(
                 }
 
                 val relativePath = if (eventDir != null && absolutePath.startsWith(eventDir)) {
-                    absolutePath.removePrefix(eventDir).removePrefix("/")
+                    try {
+                        java.io.File(eventDir).toPath().relativize(java.io.File(absolutePath).toPath()).toString()
+                    } catch (_: Exception) {
+                        absolutePath.removePrefix(eventDir).removePrefix("/")
+                    }
                 } else {
                     absolutePath
                 }

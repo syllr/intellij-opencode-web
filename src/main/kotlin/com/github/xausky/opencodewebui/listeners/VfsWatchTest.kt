@@ -1,5 +1,7 @@
 package com.github.xausky.opencodewebui.listeners
 
+import com.github.xausky.opencodewebui.OPENCODE_HOST
+import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.vfs.VirtualFileEvent
 import com.intellij.openapi.vfs.VirtualFileListener
@@ -61,6 +63,6 @@ object VfsWatchTest {
         VirtualFileManager.getInstance().addVirtualFileListener(listener)
         registered = true
         logger.info("[VfsWatchTest] VirtualFileListener registered. All VFS events will be logged.")
-        logger.info("[VfsWatchTest] OpenCode SSE URL: http://127.0.0.1:12398/global/event")
+        logger.info("[VfsWatchTest] OpenCode SSE URL: http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
     }
 }
