@@ -168,16 +168,26 @@ class OpenCodeSSEConsumer(
                             if (exitCode == 0) {
                                 val projectPath = projectDir
                                 if (projectPath != null && command.contains(projectPath)) {
-                                    val filePaths = extractFilePathsFromCommand(command, projectPath)
-                                    if (filePaths.isNotEmpty()) {
-                                        logger.info("[OpenCodeSSEConsumer] Bash tool modified files, refreshing: $filePaths")
-                                        val diffFiles = filePaths.map { path ->
-                                            val relativePath = if (path.startsWith(projectPath)) {
-                                                path.removePrefix(projectPath).removePrefix("/")
-                                            } else { path }
-                                            DiffFile(file = relativePath, additions = 0, deletions = 0, status = "modified")
+                                    // 提取基本命令（第一个词），跳过 sudo/command/time 等前缀
+                                    val baseCommand = command.trimStart()
+                                        .removePrefix("sudo ").removePrefix("command ")
+                                        .removePrefix("time ").removePrefix("nohup ")
+                                        .split("\\s+".toRegex()).firstOrNull() ?: ""
+                                    // 只读命令白名单——这些命令不修改文件，跳过刷新
+                                    if (baseCommand in READ_ONLY_COMMANDS) {
+                                        logger.info("[OpenCodeSSEConsumer] Read-only bash command '$baseCommand', skipping refresh")
+                                    } else {
+                                        val filePaths = extractFilePathsFromCommand(command, projectPath)
+                                        if (filePaths.isNotEmpty()) {
+                                            logger.info("[OpenCodeSSEConsumer] Bash tool (cmd=$baseCommand) modified files, refreshing: $filePaths")
+                                            val diffFiles = filePaths.map { path ->
+                                                val relativePath = if (path.startsWith(projectPath)) {
+                                                    path.removePrefix(projectPath).removePrefix("/")
+                                                } else { path }
+                                                DiffFile(file = relativePath, additions = 0, deletions = 0, status = "modified")
+                                            }
+                                            OpenCodeDiffRefresher.refreshFiles(projectPath, diffFiles)
                                         }
-                                        OpenCodeDiffRefresher.refreshFiles(projectPath, diffFiles)
                                     }
                                 }
                             }
@@ -320,6 +330,19 @@ class OpenCodeSSEConsumer(
      * 从 bash 命令中提取项目目录下的文件路径（绝对路径）
      * 使用正则匹配所有绝对路径，不限定具体命令
      */
+    companion object {
+        /** bash 只读命令白名单——不修改文件的命令，不触发刷新 */
+        private val READ_ONLY_COMMANDS = setOf(
+            "cd", "ls", "cat", "grep", "head", "tail", "echo", "pwd", "which", "type",
+            "dir", "less", "more", "printf", "find", "wc", "sort", "uniq", "cut",
+            "diff", "tree", "stat", "file", "du", "df", "env", "printenv", "read",
+            "test", "[", "declare", "typeset", "local", "export", "alias", "unalias",
+            "hash", "help", "man", "info", "whatis", "apropos", "whereis",
+            "source", "exit", "return", "continue", "break", "shopt",
+            "history", "fc", "bind", "complete", "compgen", "compopt",
+        )
+    }
+
     private fun extractFilePathsFromCommand(command: String, projectPath: String): List<String> {
         // 匹配绝对路径：/ 开头，后跟非空白字符
         val pathPattern = Regex("""(^|\s)(/[^\s"']+)""")
