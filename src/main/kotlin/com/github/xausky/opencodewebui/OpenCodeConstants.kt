@@ -2,3 +2,35 @@ package com.github.xausky.opencodewebui
 
 const val OPENCODE_PORT = 12398
 const val OPENCODE_HOST = "127.0.0.1"
+
+// 健康检查相关
+const val HEALTH_CHECK_INTERVAL_MS = 5000L
+const val HEALTH_CHECK_START_DELAY_MS = 10000L
+const val HEALTH_CHECK_POLL_INTERVAL_MS = 2000L
+const val HEALTH_CHECK_INITIAL_DELAY_MS = 1000L
+
+// 文件去重
+const val DEDUP_WINDOW_MS = 1000L
+
+// 全量刷新
+const val FULL_REFRESH_POLL_MS = 500L
+
+// 浏览器就绪重试
+const val BROWSER_READY_MAX_RETRIES = 20
+const val BROWSER_READY_RETRY_DELAY_MS = 500L
+
+// 服务器启动
+const val SERVER_START_TIMEOUT_MS = 30000L
+
+// HTTP 超时
+const val HTTP_TIMEOUT_MS = 8000
+
+// 会话查询超时
+const val SESSION_QUERY_TIMEOUT_MS = 2000
+
+// 进程销毁
+const val PROCESS_DESTROY_TIMEOUT_SECONDS = 5L
+const val PROCESS_FORCE_KILL_TIMEOUT_SECONDS = 3L
+
+// SSE 连接
+const val SSE_CONNECT_TIMEOUT_SECONDS = 5L

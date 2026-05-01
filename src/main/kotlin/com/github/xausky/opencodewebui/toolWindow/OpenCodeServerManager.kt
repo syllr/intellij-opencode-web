@@ -2,8 +2,12 @@ package com.github.xausky.opencodewebui.toolWindow
 
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
+import com.github.xausky.opencodewebui.PROCESS_DESTROY_TIMEOUT_SECONDS
+import com.github.xausky.opencodewebui.PROCESS_FORCE_KILL_TIMEOUT_SECONDS
+import com.github.xausky.opencodewebui.SERVER_START_TIMEOUT_MS
 import com.github.xausky.opencodewebui.listeners.OpenCodeSSEConsumer
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
+import com.github.xausky.opencodewebui.utils.SSEConsumerFactory
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -39,7 +43,7 @@ object OpenCodeServerManager {
             synchronized(this) {
                 if (sseConsumer == null) {
                     thisLogger().info("[OpenCodeServerManager] Creating SSE consumer via ensureSSEConsumer")
-                    sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
+                    sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
                 }
             }
         }
@@ -62,7 +66,7 @@ object OpenCodeServerManager {
             notifyStateListeners(true)
             thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
             sseConsumer?.stop()
-            sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
+            sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
             onStarted()
             return
         }
@@ -73,13 +77,13 @@ object OpenCodeServerManager {
                     val process = startOpenCodeProcess()
                     serverProcess.set(process)
 
-                    val healthy = OpenCodeApi.waitForServerHealthy(30000)
+                    val healthy = OpenCodeApi.waitForServerHealthy(SERVER_START_TIMEOUT_MS)
 
                     if (healthy) {
                         notifyStateListeners(true)
                         thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
                         sseConsumer?.stop()
-                        sseConsumer = OpenCodeSSEConsumer(project).also { it.start() }
+                        sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
                         onStarted()
                     } else {
                         // 健康检查超时，清理已启动的进程
@@ -106,9 +110,9 @@ object OpenCodeServerManager {
             serverProcess.get()?.let { process ->
                 if (process.isAlive) {
                     process.destroy()
-                    if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    if (!process.waitFor(PROCESS_DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
                         process.destroyForcibly()
-                        process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+                        process.waitFor(PROCESS_FORCE_KILL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                     }
                 }
             }

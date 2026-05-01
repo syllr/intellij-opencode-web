@@ -1,5 +1,6 @@
 package com.github.xausky.opencodewebui.listeners
 
+import com.github.xausky.opencodewebui.FULL_REFRESH_POLL_MS
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.vfs.LocalFileSystem
 import java.io.File
@@ -36,7 +37,7 @@ object FullRefreshCoordinator {
         val s = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "FullRefreshWorker")
         }
-        s.scheduleWithFixedDelay(::tick, 500, 500, TimeUnit.MILLISECONDS)
+        s.scheduleWithFixedDelay(::tick, FULL_REFRESH_POLL_MS, FULL_REFRESH_POLL_MS, TimeUnit.MILLISECONDS)
         scheduler = s
         logger.info("[FullRefresh] Started, polling every 500ms, root=$projectPath")
     }

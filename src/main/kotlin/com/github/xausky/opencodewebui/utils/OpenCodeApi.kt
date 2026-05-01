@@ -1,5 +1,8 @@
 package com.github.xausky.opencodewebui.utils
 
+import com.github.xausky.opencodewebui.HEALTH_CHECK_INITIAL_DELAY_MS
+import com.github.xausky.opencodewebui.HEALTH_CHECK_POLL_INTERVAL_MS
+import com.github.xausky.opencodewebui.HTTP_TIMEOUT_MS
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.intellij.openapi.diagnostic.thisLogger
@@ -12,8 +15,8 @@ object OpenCodeApi {
         val portOk = try {
             val socket = java.net.Socket()
             try {
-                socket.connect(java.net.InetSocketAddress(OPENCODE_HOST, OPENCODE_PORT), 8000)
-                socket.soTimeout = 8000
+                socket.connect(java.net.InetSocketAddress(OPENCODE_HOST, OPENCODE_PORT), HTTP_TIMEOUT_MS)
+                socket.soTimeout = HTTP_TIMEOUT_MS
                 true
             } finally {
                 socket.close()
@@ -31,8 +34,8 @@ object OpenCodeApi {
         return try {
             val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/health").toURL()
             connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 8000
-            connection.readTimeout = 8000
+            connection.connectTimeout = HTTP_TIMEOUT_MS
+            connection.readTimeout = HTTP_TIMEOUT_MS
             val responseCode = connection.responseCode
             responseCode == 200
         } catch (e: Exception) {
@@ -44,10 +47,10 @@ object OpenCodeApi {
     }
 
     fun waitForServerHealthy(timeoutMs: Long): Boolean {
-        Thread.sleep(1000)
+        Thread.sleep(HEALTH_CHECK_INITIAL_DELAY_MS)
 
         val startTime = System.currentTimeMillis()
-        val interval = 2000L
+        val interval = HEALTH_CHECK_POLL_INTERVAL_MS
 
         while (System.currentTimeMillis() - startTime < timeoutMs) {
             val healthy = isServerHealthySync()

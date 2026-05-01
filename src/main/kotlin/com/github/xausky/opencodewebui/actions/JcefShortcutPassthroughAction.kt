@@ -14,7 +14,7 @@ import com.intellij.openapi.wm.ToolWindowManager
  * 
  * 当 OpenCodeWeb 工具窗口未激活时，Action 被禁用，快捷键由 IDEA 原有 Action 处理
  */
-class PassToJcefAction : AnAction() {
+class JcefShortcutPassthroughAction : AnAction() {
     
     companion object {
         private const val TOOL_WINDOW_ID = "OpenCodeWeb"

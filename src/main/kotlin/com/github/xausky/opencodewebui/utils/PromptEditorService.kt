@@ -2,6 +2,7 @@ package com.github.xausky.opencodewebui.utils
 
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
+import com.github.xausky.opencodewebui.SESSION_QUERY_TIMEOUT_MS
 import com.intellij.openapi.diagnostic.thisLogger
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -42,8 +43,8 @@ object PromptEditorService {
             val encodedPath = URLEncoder.encode(directory, "UTF-8")
             val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/session?directory=$encodedPath").toURL()
             connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 2000
-            connection.readTimeout = 2000
+            connection.connectTimeout = SESSION_QUERY_TIMEOUT_MS
+            connection.readTimeout = SESSION_QUERY_TIMEOUT_MS
 
             val responseCode = connection.responseCode
             thisLogger().info("[PromptEditorService] 请求会话列表: URL=$url, HTTP=$responseCode")

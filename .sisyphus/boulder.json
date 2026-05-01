@@ -1,0 +1,23 @@
+{
+  "active_plan": "/Users/yutao/worktree/intellij-opencode-web-1.0.16/.sisyphus/plans/code-refactoring.md",
+  "started_at": "2026-05-01T08:25:04.830Z",
+  "session_ids": [
+    "ses_23867956cffeUPWu2heCXTClUB"
+  ],
+  "session_origins": {
+    "ses_23867956cffeUPWu2heCXTClUB": "direct"
+  },
+  "plan_name": "code-refactoring",
+  "agent": "atlas",
+  "task_sessions": {
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**编译验证**: `./gradlew buildPlugin` → BUILD SUCCESSFUL",
+      "session_id": "ses_21d0b4630ffemLmUkB6Vxds0be",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-05-01T09:55:09.233Z"
+    }
+  }
+}
