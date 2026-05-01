@@ -2,8 +2,6 @@ package com.github.xausky.opencodewebui.listeners
 
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapi.vfs.newvfs.RefreshQueue
 
 object OpenCodeDiffRefresher {
     private val logger = thisLogger()
@@ -26,14 +24,15 @@ object OpenCodeDiffRefresher {
 
             if (virtualFiles.isNotEmpty()) {
                 val pathList = virtualFiles.joinToString(", ") { it.path }
-                logger.info("[DiffRefresher] Refreshing ${virtualFiles.size} files via RefreshQueue: $pathList")
-                RefreshQueue.getInstance().refresh(
+                logger.info("[DiffRefresher] Refreshing ${virtualFiles.size} files via refreshIoFiles: $pathList")
+                val ioFiles = virtualFiles.map { java.io.File(it.path) }
+                LocalFileSystem.getInstance().refreshIoFiles(
+                    ioFiles,
                     /* async */ true,
                     /* recursive */ false,
-                    /* finishRunnable */ null,
-                    /* files */ *virtualFiles.toTypedArray<VirtualFile>()
+                    null
                 )
-                logger.info("[DiffRefresher] RefreshQueue.refresh() called successfully")
+                logger.info("[DiffRefresher] refreshIoFiles completed for: $pathList")
             } else {
                 logger.warn("[DiffRefresher] NO virtual files found from ${files.size} paths - refresh skipped")
             }

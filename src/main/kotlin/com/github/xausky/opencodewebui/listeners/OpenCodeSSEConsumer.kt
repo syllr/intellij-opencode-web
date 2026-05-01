@@ -2,6 +2,7 @@ package com.github.xausky.opencodewebui.listeners
 
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
+import com.github.xausky.opencodewebui.listeners.FullRefreshCoordinator
 import com.google.gson.Gson
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
@@ -73,6 +74,7 @@ class OpenCodeSSEConsumer(
 
         // 启动 VFS 监听测试（打印 IntelliJ 原生收到的文件事件）
         VfsWatchTest.start()
+        FullRefreshCoordinator.start(project.basePath ?: "")
 
         val connectStrategy = ConnectStrategy.http(uri)
             .connectTimeout(5, TimeUnit.SECONDS)
@@ -90,6 +92,7 @@ class OpenCodeSSEConsumer(
     }
 
     fun stop() {
+        FullRefreshCoordinator.stop()
         eventSourceRef.getAndSet(null)?.close()
         logger.info("[OpenCodeSSEConsumer] SSE consumer stopped")
     }
@@ -179,6 +182,7 @@ class OpenCodeSSEConsumer(
                                     } else {
                                         logger.info("[OpenCodeSSEConsumer] Bash tool (cmd=$baseCommand) refreshed project root")
                                         OpenCodeDiffRefresher.refreshProjectRoot(projectPath)
+                                        FullRefreshCoordinator.request()
                                     }
                                 }
                             }
@@ -247,6 +251,7 @@ class OpenCodeSSEConsumer(
                     )
                 )
                 OpenCodeDiffRefresher.refreshFiles(projectDir, diffFiles)
+                FullRefreshCoordinator.request()
             } catch (e: Exception) {
                 logger.error("[OpenCodeSSEConsumer] Failed to parse file.edited: ${e.message}", e)
             }
@@ -298,6 +303,7 @@ class OpenCodeSSEConsumer(
                     )
                 )
                 OpenCodeDiffRefresher.refreshFiles(projectDir, diffFiles)
+                FullRefreshCoordinator.request()
             } catch (e: Exception) {
                 logger.error("[OpenCodeSSEConsumer] Failed to parse file.watcher.updated: ${e.message}", e)
             }
