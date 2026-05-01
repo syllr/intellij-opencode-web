@@ -317,23 +317,16 @@ class OpenCodeSSEConsumer(
     }
 
     /**
-     * 从 bash 命令中提取受影响的文件路径（绝对路径）
+     * 从 bash 命令中提取项目目录下的文件路径（绝对路径）
+     * 使用正则匹配所有绝对路径，不限定具体命令
      */
     private fun extractFilePathsFromCommand(command: String, projectPath: String): List<String> {
-        val paths = mutableListOf<String>()
-        try {
-            val cleanCmd = command.trimStart()
-                .removePrefix("rm").removePrefix("mv").removePrefix("cp")
-                .removePrefix("touch").removePrefix("mkdir").removePrefix("rmdir")
-                .trimStart()
-            val cleaned = cleanCmd.replace(Regex("-\\w+\\s+"), "").trim()
-            for (token in cleaned.split("\\s+".toRegex())) {
-                val path = token.trim().trim('"').trim('\'')
-                if (path.startsWith(projectPath) && path.length > projectPath.length + 2) {
-                    paths.add(path)
-                }
-            }
-        } catch (_: Exception) { }
-        return paths.distinct()
+        // 匹配绝对路径：/ 开头，后跟非空白字符
+        val pathPattern = Regex("""(^|\s)(/[^\s"']+)""")
+        return pathPattern.findAll(command)
+            .map { it.groupValues[2] }  // 捕获组2是完整路径
+            .filter { it.startsWith(projectPath) && it.length > projectPath.length + 1 }
+            .distinct()
+            .toList()
     }
 }
