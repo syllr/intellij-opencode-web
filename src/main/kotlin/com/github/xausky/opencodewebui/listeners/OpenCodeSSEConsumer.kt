@@ -16,7 +16,13 @@ import java.net.URI
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * SSE event wrapper.
+ * @param directory The project directory from the SSE event (top-level field in JSON).
+ * @param payload The SSE payload containing session diff information.
+ */
 data class SSEEventWrapper(
+    val directory: String? = null,
     val payload: SSESessionDiffPayload
 )
 
@@ -27,7 +33,6 @@ data class SSESessionDiffPayload(
 
 data class SSESessionDiffProperties(
     val sessionID: String,
-    val directory: String,
     val diff: List<DiffFile>
 )
 
@@ -103,21 +108,22 @@ class OpenCodeSSEConsumer(
         try {
             val wrapper = gson.fromJson(message, SSEEventWrapper::class.java)
             val props = wrapper.payload.properties
-
+            val eventDir = wrapper.directory
             val projectDir = project.basePath
-            logger.info("[OpenCodeSSEConsumer] directory='${props.directory}', project.basePath='$projectDir'")
+            logger.info("[OpenCodeSSEConsumer] event.directory='$eventDir', project.basePath='$projectDir'")
             logger.info("[OpenCodeSSEConsumer] Files to refresh: ${props.diff.size} files")
             props.diff.forEachIndexed { i, f ->
                 logger.info("[OpenCodeSSEConsumer]   diff[$i]: file='${f.file}', status=${f.status}, +${f.additions}/-${f.deletions}")
             }
-
-            if (projectDir != null && props.directory == projectDir) {
-                logger.info("[OpenCodeSSEConsumer] Directory MATCHED, invoking DiffRefresher via invokeLater")
+            if (projectDir != null && eventDir == projectDir && props.diff.isNotEmpty()) {
+                logger.info("[OpenCodeSSEConsumer] Directory MATCHED with ${props.diff.size} files, invoking DiffRefresher via invokeLater")
                 ApplicationManager.getApplication().invokeLater {
-                    OpenCodeDiffRefresher.refreshFiles(props.directory, props.diff)
+                    OpenCodeDiffRefresher.refreshFiles(eventDir, props.diff)
                 }
+            } else if (projectDir != null && eventDir != projectDir) {
+                logger.info("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
             } else {
-                logger.info("[OpenCodeSSEConsumer] Directory MISMATCH: event='${props.directory}' vs project='$projectDir'")
+                logger.info("[OpenCodeSSEConsumer] Skipping: match=${eventDir == projectDir}, files=${props.diff.size}")
             }
         } catch (e: Exception) {
             logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff JSON: ${e.message}", e)
