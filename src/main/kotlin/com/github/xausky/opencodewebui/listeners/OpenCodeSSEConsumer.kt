@@ -43,6 +43,20 @@ data class DiffFile(
     val status: String
 )
 
+data class SSEFileEditedEvent(
+    val directory: String? = null,
+    val payload: SSEFileEditedPayload
+)
+
+data class SSEFileEditedPayload(
+    val type: String,
+    val properties: SSEFileEditedProperties
+)
+
+data class SSEFileEditedProperties(
+    val file: String
+)
+
 class OpenCodeSSEConsumer(
     private val project: Project
 ) : BackgroundEventHandler {
@@ -81,52 +95,88 @@ class OpenCodeSSEConsumer(
     override fun onMessage(event: String, messageEvent: MessageEvent) {
         val message = messageEvent.data
 
-        // 【关键日志】打印每个收到的 SSE 事件，不论类型
+        // 打印每个收到的 SSE 事件
         logger.info("[OpenCodeSSEConsumer] RAW SSE event: type='$event', data=${message.take(500)}")
 
-        // 尝试从 JSON body 中解析 payload type（OpenCode 可能不在 event header 中传类型）
+        // 从 JSON body 解析 payload type 和顶层 directory
         var payloadType: String? = null
+        var eventDir: String? = null
         try {
-            val parsed = gson.fromJson(message, Map::class.java) as? Map<*, *>
-            val payload = parsed?.get("payload") as? Map<*, *>
+            val parsedMap = gson.fromJson(message, Map::class.java)
+            eventDir = parsedMap?.get("directory") as? String
+            val payload = parsedMap?.get("payload") as? Map<*, *>
             payloadType = payload?.get("type") as? String
         } catch (e: Exception) {
-            logger.warn("[OpenCodeSSEConsumer] Failed to parse JSON payload type: ${e.message}")
+            logger.warn("[OpenCodeSSEConsumer] Failed to parse JSON: ${e.message}")
         }
 
-        // 双重判断：SSE event header OR JSON body payload.type
         val isSessionDiff = event == "session.diff" || payloadType == "session.diff"
+        val isFileEdited = payloadType == "file.edited"
 
-        if (!isSessionDiff) {
+        if (!isSessionDiff && !isFileEdited) {
             logger.info("[OpenCodeSSEConsumer] Ignored event: event='$event', payloadType=$payloadType")
             return
         }
 
-        logger.info("[OpenCodeSSEConsumer] MESSAGE session.diff FOUND! event='$event', payloadType=$payloadType")
-        logger.info("[OpenCodeSSEConsumer] session.diff raw data: $message")
+        val projectDir = project.basePath
+        if (projectDir == null) {
+            logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping")
+            return
+        }
 
-        try {
-            val wrapper = gson.fromJson(message, SSEEventWrapper::class.java)
-            val props = wrapper.payload.properties
-            val eventDir = wrapper.directory
-            val projectDir = project.basePath
-            logger.info("[OpenCodeSSEConsumer] event.directory='$eventDir', project.basePath='$projectDir'")
-            logger.info("[OpenCodeSSEConsumer] Files to refresh: ${props.diff.size} files")
-            props.diff.forEachIndexed { i, f ->
-                logger.info("[OpenCodeSSEConsumer]   diff[$i]: file='${f.file}', status=${f.status}, +${f.additions}/-${f.deletions}")
-            }
-            if (projectDir != null && eventDir == projectDir && props.diff.isNotEmpty()) {
-                logger.info("[OpenCodeSSEConsumer] Directory MATCHED with ${props.diff.size} files, invoking DiffRefresher via invokeLater")
-                ApplicationManager.getApplication().invokeLater {
-                    OpenCodeDiffRefresher.refreshFiles(eventDir, props.diff)
+        if (eventDir != null && eventDir != projectDir) {
+            logger.info("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
+            return
+        }
+
+        // === Handle session.diff (batch refresh via diff list) ===
+        if (isSessionDiff) {
+            logger.info("[OpenCodeSSEConsumer] RAW session.diff data: $message")
+            try {
+                val wrapper = gson.fromJson(message, SSEEventWrapper::class.java)
+                val props = wrapper.payload.properties
+                logger.info("[OpenCodeSSEConsumer] session.diff: ${props.diff.size} files")
+                props.diff.forEachIndexed { i, f ->
+                    logger.info("[OpenCodeSSEConsumer]   diff[$i]: file='${f.file}', status=${f.status}")
                 }
-            } else if (projectDir != null && eventDir != projectDir) {
-                logger.info("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
-            } else {
-                logger.info("[OpenCodeSSEConsumer] Skipping: match=${eventDir == projectDir}, files=${props.diff.size}")
+                if (props.diff.isNotEmpty()) {
+                    logger.info("[OpenCodeSSEConsumer] Refreshing ${props.diff.size} files from session.diff")
+                    OpenCodeDiffRefresher.refreshFiles(projectDir, props.diff)
+                } else {
+                    logger.info("[OpenCodeSSEConsumer] session.diff has 0 files, skipping")
+                }
+            } catch (e: Exception) {
+                logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff: ${e.message}", e)
             }
-        } catch (e: Exception) {
-            logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff JSON: ${e.message}", e)
+            return
+        }
+
+        // === Handle file.edited (single file from OpenCode edit) ===
+        if (isFileEdited) {
+            try {
+                val fe = gson.fromJson(message, SSEFileEditedEvent::class.java)
+                val absolutePath = fe.payload.properties.file
+                // file.edited 的 file 字段是绝对路径，需要转成相对路径
+                val relativePath = if (eventDir != null && absolutePath.startsWith(eventDir)) {
+                    absolutePath.removePrefix(eventDir).removePrefix("/")
+                } else {
+                    logger.warn("[OpenCodeSSEConsumer] Cannot determine relative path: file='$absolutePath', dir='$eventDir'")
+                    absolutePath
+                }
+                logger.info("[OpenCodeSSEConsumer] file.edited: absolute='$absolutePath', relative='$relativePath'")
+                val diffFiles = listOf(
+                    DiffFile(
+                        file = relativePath,
+                        additions = 0,
+                        deletions = 0,
+                        status = "modified"
+                    )
+                )
+                OpenCodeDiffRefresher.refreshFiles(projectDir, diffFiles)
+            } catch (e: Exception) {
+                logger.error("[OpenCodeSSEConsumer] Failed to parse file.edited: ${e.message}", e)
+            }
+            return
         }
     }
 
