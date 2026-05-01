@@ -64,6 +64,8 @@ class OpenCodeSSEConsumer(
     private val gson = Gson()
     private val eventSourceRef = AtomicReference<BackgroundEventSource?>(null)
     private val logger = thisLogger()
+    // 去重：最近刷新的文件路径 → 时间戳（毫秒）
+    private val lastRefreshTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     fun start() {
         val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
@@ -136,8 +138,9 @@ class OpenCodeSSEConsumer(
 
         val isSessionDiff = event == "session.diff" || payloadType == "session.diff"
         val isFileEdited = payloadType == "file.edited"
+        val isFileWatcherUpdated = payloadType == "file.watcher.updated"
 
-        if (!isSessionDiff && !isFileEdited) {
+        if (!isSessionDiff && !isFileEdited && !isFileWatcherUpdated) {
             // 非文件事件只打日志，不处理
             return
         }
@@ -196,6 +199,57 @@ class OpenCodeSSEConsumer(
                 OpenCodeDiffRefresher.refreshFiles(projectDir, diffFiles)
             } catch (e: Exception) {
                 logger.error("[OpenCodeSSEConsumer] Failed to parse file.edited: ${e.message}", e)
+            }
+            return
+        }
+
+        // === Handle file.watcher.updated (filesystem events from ParcelWatcher) ===
+        if (isFileWatcherUpdated) {
+            try {
+                val parsedMap = gson.fromJson(message, Map::class.java)
+                val payload = parsedMap?.get("payload") as? Map<*, *>
+                val properties = payload?.get("properties") as? Map<*, *>
+                val absolutePath = properties?.get("file") as? String
+                val eventType = properties?.get("event") as? String  // "add", "change", "unlink"
+
+                if (absolutePath == null) {
+                    logger.warn("[OpenCodeSSEConsumer] file.watcher.updated missing file property")
+                    return
+                }
+
+                val relativePath = if (eventDir != null && absolutePath.startsWith(eventDir)) {
+                    absolutePath.removePrefix(eventDir).removePrefix("/")
+                } else {
+                    absolutePath
+                }
+
+                logger.info("[OpenCodeSSEConsumer] file.watcher.updated: event=$eventType, absolute='$absolutePath', relative='$relativePath'")
+
+                // 注意：file.edited 和 file.watcher.updated 对 create/edit 是双发的
+                // 这里用文件路径去重：记录最近刷新的文件，1秒内不重复刷新同一个文件
+                val now = System.currentTimeMillis()
+                val lastRefresh = lastRefreshTimes.get(absolutePath)
+                if (lastRefresh != null && now - lastRefresh < 1000) {
+                    logger.info("[OpenCodeSSEConsumer] Skipping duplicate refresh for $absolutePath (${now - lastRefresh}ms ago)")
+                    return
+                }
+                lastRefreshTimes[absolutePath] = now
+
+                val diffFiles = listOf(
+                    DiffFile(
+                        file = relativePath,
+                        additions = 0,
+                        deletions = 0,
+                        status = when (eventType) {
+                            "add" -> "created"
+                            "unlink" -> "deleted"
+                            else -> "modified"
+                        }
+                    )
+                )
+                OpenCodeDiffRefresher.refreshFiles(projectDir, diffFiles)
+            } catch (e: Exception) {
+                logger.error("[OpenCodeSSEConsumer] Failed to parse file.watcher.updated: ${e.message}", e)
             }
             return
         }
