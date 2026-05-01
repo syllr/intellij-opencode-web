@@ -203,9 +203,18 @@ class OpenCodeSSEConsumer(
             return
         }
 
-        if (eventDir != null && eventDir != projectDir) {
-            logger.info("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
-            return
+        if (eventDir != null && projectDir != null) {
+            try {
+                if (java.io.File(eventDir).canonicalPath != java.io.File(projectDir).canonicalPath) {
+                    logger.info("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
+                    return
+                }
+            } catch (_: Exception) {
+                if (eventDir != projectDir) {
+                    logger.info("[OpenCodeSSEConsumer] Directory MISMATCH (fallback): event='$eventDir' vs project='$projectDir'")
+                    return
+                }
+            }
         }
 
         // === Handle session.diff (batch refresh via diff list) ===

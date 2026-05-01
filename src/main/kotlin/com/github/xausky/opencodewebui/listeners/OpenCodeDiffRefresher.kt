@@ -28,7 +28,7 @@ object OpenCodeDiffRefresher {
                 val ioFiles = virtualFiles.map { java.io.File(it.path) }
                 LocalFileSystem.getInstance().refreshIoFiles(
                     ioFiles,
-                    /* async */ true,
+                    /* async */ false,
                     /* recursive */ false,
                     null
                 )
