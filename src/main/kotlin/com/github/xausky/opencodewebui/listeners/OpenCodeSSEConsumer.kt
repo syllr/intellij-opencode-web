@@ -68,6 +68,10 @@ class OpenCodeSSEConsumer(
     fun start() {
         val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
         logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, project.basePath='${project.basePath}', uri=$uri")
+
+        // 启动 VFS 监听测试（打印 IntelliJ 原生收到的文件事件）
+        VfsWatchTest.start()
+
         val connectStrategy = ConnectStrategy.http(uri)
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
