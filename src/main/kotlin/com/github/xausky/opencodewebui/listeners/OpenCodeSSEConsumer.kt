@@ -96,31 +96,50 @@ class OpenCodeSSEConsumer(
         val message = messageEvent.data
 
         // 打印每个收到的 SSE 事件
-        logger.info("[OpenCodeSSEConsumer] RAW SSE event: type='$event', data=${message.take(500)}")
+        logger.info("[OpenCodeSSEConsumer] RAW SSE event: type='$event', data=${message.take(1000)}")
 
-        // 从 JSON body 解析 payload type 和顶层 directory
+        // 从 JSON body 解析 payload type、顶层 directory 和 file 相关字段
         var payloadType: String? = null
         var eventDir: String? = null
+        var fileProperty: String? = null
         try {
             val parsedMap = gson.fromJson(message, Map::class.java)
             eventDir = parsedMap?.get("directory") as? String
             val payload = parsedMap?.get("payload") as? Map<*, *>
             payloadType = payload?.get("type") as? String
+            val properties = payload?.get("properties") as? Map<*, *>
+            // 检查 payload.properties 中是否包含 file/filePath 字段
+            fileProperty = properties?.get("file") as? String
+            if (fileProperty == null) {
+                fileProperty = properties?.get("filePath") as? String
+            }
+            if (fileProperty != null) {
+                logger.info("[OpenCodeSSEConsumer] *** FILE EVENT *** type=$payloadType, file=$fileProperty, eventDir=$eventDir")
+            }
         } catch (e: Exception) {
             logger.warn("[OpenCodeSSEConsumer] Failed to parse JSON: ${e.message}")
+        }
+
+        val projectDir = project.basePath
+
+        // 所有事件都打印诊断信息
+        logger.info("[OpenCodeSSEConsumer] Event: type='$payloadType', eventDir=$eventDir, projectDir=$projectDir, file=$fileProperty")
+
+        // 有 file 属性的额外标记
+        if (fileProperty != null) {
+            logger.info("[OpenCodeSSEConsumer] *** FILE CHANGE DETECTED *** payloadType=$payloadType, file=$fileProperty")
         }
 
         val isSessionDiff = event == "session.diff" || payloadType == "session.diff"
         val isFileEdited = payloadType == "file.edited"
 
         if (!isSessionDiff && !isFileEdited) {
-            logger.info("[OpenCodeSSEConsumer] Ignored event: event='$event', payloadType=$payloadType")
+            // 非文件事件只打日志，不处理
             return
         }
 
-        val projectDir = project.basePath
         if (projectDir == null) {
-            logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping")
+            logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh")
             return
         }
 
@@ -131,7 +150,6 @@ class OpenCodeSSEConsumer(
 
         // === Handle session.diff (batch refresh via diff list) ===
         if (isSessionDiff) {
-            logger.info("[OpenCodeSSEConsumer] RAW session.diff data: $message")
             try {
                 val wrapper = gson.fromJson(message, SSEEventWrapper::class.java)
                 val props = wrapper.payload.properties
@@ -156,7 +174,6 @@ class OpenCodeSSEConsumer(
             try {
                 val fe = gson.fromJson(message, SSEFileEditedEvent::class.java)
                 val absolutePath = fe.payload.properties.file
-                // file.edited 的 file 字段是绝对路径，需要转成相对路径
                 val relativePath = if (eventDir != null && absolutePath.startsWith(eventDir)) {
                     absolutePath.removePrefix(eventDir).removePrefix("/")
                 } else {
