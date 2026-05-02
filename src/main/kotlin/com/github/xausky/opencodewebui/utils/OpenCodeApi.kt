@@ -5,9 +5,11 @@ import com.github.xausky.opencodewebui.HEALTH_CHECK_POLL_INTERVAL_MS
 import com.github.xausky.opencodewebui.HTTP_TIMEOUT_MS
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
+import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.thisLogger
 import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URLEncoder
 
 object OpenCodeApi {
     fun isServerHealthySync(): Boolean {
@@ -61,5 +63,32 @@ object OpenCodeApi {
         }
 
         return false
+    }
+
+    /**
+     * 获取指定项目目录的最新 session ID。
+     * 调用 GET /session?directory=xxx 获取该项目的 session 列表（服务端按 time_updated DESC 排序），
+     * 取最新的 session ID。可用于构建带 session 的 URL 以复用已有 session。
+     */
+    fun getLatestSessionId(directory: String): String? {
+        return try {
+            val encodedDir = URLEncoder.encode(directory, "UTF-8")
+            val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/session?directory=$encodedDir").toURL()
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = HTTP_TIMEOUT_MS
+            conn.readTimeout = HTTP_TIMEOUT_MS
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val array = JsonParser.parseString(body).asJsonArray
+            if (array.size() > 0) {
+                array[0].asJsonObject.get("id")?.asString
+            } else {
+                thisLogger().info("[OpenCodeApi] No existing sessions for $directory")
+                null
+            }
+        } catch (e: Exception) {
+            thisLogger().warn("[OpenCodeApi] Failed to get latest session for $directory: ${e.message}")
+            null
+        }
     }
 }

@@ -138,9 +138,17 @@ class MyToolWindow(toolWindow: ToolWindow) {
     private fun loadProjectPage() {
         isShowingStartButton = false
         val projectPath = project.basePath ?: return
+
+        // 获取已有 session 恢复，否则让前端创建新的
+        val latestSessionId = OpenCodeApi.getLatestSessionId(projectPath)
+
         val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-        val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath"
-        thisLogger().info("Loading page: $url")
+        val url = if (latestSessionId != null) {
+            "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath/session/$latestSessionId"
+        } else {
+            "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath"
+        }
+        thisLogger().info("Loading page: $url (session=$latestSessionId)")
         browserPanel.hideStartButton()
         val startTime = System.currentTimeMillis()
         if (mainBrowser == null) {

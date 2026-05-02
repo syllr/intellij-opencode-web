@@ -123,31 +123,6 @@ class BrowserPanel(
             sharedClient.addLoadHandler(object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
                     thisLogger().info("onLoadEnd called, projectPath: $projectPath")
-                    val escapedProjectPath = projectPath.replace("\\", "\\\\").replace("'", "\\'")
-                    val js = """
-                        (function() {
-                            try {
-                                var serverKey = 'opencode.global.dat:server';
-                                var raw = localStorage.getItem(serverKey);
-                                var store = raw ? JSON.parse(raw) : { list: [], projects: {}, lastProject: {} };
-                                store.list = store.list || [];
-                                store.projects = store.projects || {};
-                                store.lastProject = store.lastProject || {};
-                                var origin = location.origin;
-                                var isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
-                                var serverKeyName = isLocal ? 'local' : origin;
-                                var projectPath = '$escapedProjectPath';
-                                store.projects[serverKeyName] = (store.projects[serverKeyName] || []).filter(function(p) { return p.worktree !== projectPath; });
-                                if (!store.list.includes(origin)) store.list.push(origin);
-                                store.projects[serverKeyName].push({ worktree: projectPath, expanded: true });
-                                store.lastProject[serverKeyName] = projectPath;
-                                localStorage.setItem(serverKey, JSON.stringify(store));
-                            } catch(e) {
-                                console.error('opencode localStorage error: ' + e.message);
-                            }
-                        })();
-                    """.trimIndent()
-                    cefBrowser?.executeJavaScript(js, "", 0)
                 }
             }, createdBrowser.cefBrowser)
             sharedClient.addDisplayHandler(object : CefDisplayHandlerAdapter() {
