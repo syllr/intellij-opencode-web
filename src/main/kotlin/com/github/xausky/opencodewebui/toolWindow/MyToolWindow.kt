@@ -3,7 +3,6 @@ package com.github.xausky.opencodewebui.toolWindow
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
-import com.github.xausky.opencodewebui.utils.SessionHelper
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.wm.ToolWindow
@@ -139,14 +138,8 @@ class MyToolWindow(toolWindow: ToolWindow) {
     private fun loadProjectPage() {
         isShowingStartButton = false
         val projectPath = project.basePath ?: return
-        // 获取 session ID 并构建完整 URL
-        val sessionId = SessionHelper.getLatestSessionId(projectPath)
         val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
-        val url = if (sessionId != null) {
-            "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath/session/$sessionId"
-        } else {
-            "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath"
-        }
+        val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath"
         thisLogger().info("Loading page: $url")
         browserPanel.hideStartButton()
         val startTime = System.currentTimeMillis()

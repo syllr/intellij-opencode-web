@@ -8,15 +8,32 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
+import java.awt.KeyboardFocusManager
+import javax.swing.SwingUtilities
 
 class AddToPromptAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project: Project = e.project ?: return
+
+        // 如果焦点在 OpenCode Web 面板中，将焦点移回 IDE 编辑器
+        if (isFocusInOpenCodeWeb()) {
+            thisLogger().info("[AddToPromptAction] Focus in OpenCodeWeb, moving focus to editor")
+            val editorManager = FileEditorManager.getInstance(project)
+            val editor = editorManager.selectedTextEditor
+            if (editor != null) {
+                editor.contentComponent.requestFocusInWindow()
+            } else {
+                editorManager.allEditors.firstOrNull()?.component?.requestFocusInWindow()
+            }
+            return
+        }
+
         val editor: Editor?
 
         var selectedText: String?
@@ -72,5 +89,11 @@ class AddToPromptAction : AnAction(), DumbAware {
 
     override fun update(e: AnActionEvent) {
         e.presentation.isEnabled = e.project != null
+    }
+
+    private fun isFocusInOpenCodeWeb(): Boolean {
+        val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner ?: return false
+        val browser = MyToolWindowFactory.getMainBrowser() ?: return false
+        return SwingUtilities.isDescendingFrom(focusOwner, browser.component)
     }
 }
