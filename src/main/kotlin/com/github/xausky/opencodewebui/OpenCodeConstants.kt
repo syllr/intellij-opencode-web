@@ -1,6 +1,6 @@
 package com.github.xausky.opencodewebui
 
-const val OPENCODE_PORT = 12398
+const val OPENCODE_PORT = 12396
 const val OPENCODE_HOST = "127.0.0.1"
 
 // 健康检查相关
@@ -24,10 +24,6 @@ const val SERVER_START_TIMEOUT_MS = 30000L
 
 // HTTP 超时
 const val HTTP_TIMEOUT_MS = 8000
-
-// 进程销毁
-const val PROCESS_DESTROY_TIMEOUT_SECONDS = 5L
-const val PROCESS_FORCE_KILL_TIMEOUT_SECONDS = 3L
 
 // SSE 连接
 const val SSE_CONNECT_TIMEOUT_SECONDS = 5L

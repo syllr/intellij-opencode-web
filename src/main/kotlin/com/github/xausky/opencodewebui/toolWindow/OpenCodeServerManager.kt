@@ -2,8 +2,6 @@ package com.github.xausky.opencodewebui.toolWindow
 
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
-import com.github.xausky.opencodewebui.PROCESS_DESTROY_TIMEOUT_SECONDS
-import com.github.xausky.opencodewebui.PROCESS_FORCE_KILL_TIMEOUT_SECONDS
 import com.github.xausky.opencodewebui.SERVER_START_TIMEOUT_MS
 import com.github.xausky.opencodewebui.listeners.OpenCodeSSEConsumer
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
@@ -74,6 +72,8 @@ object OpenCodeServerManager {
         val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
             override fun run(indicator: ProgressIndicator) {
                 try {
+                    logDiagnosticEnvironment()
+
                     val process = startOpenCodeProcess()
                     serverProcess.set(process)
 
@@ -101,25 +101,48 @@ object OpenCodeServerManager {
         ProgressManager.getInstance().run(task)
     }
 
+    /**
+     * 关闭 OpenCode 服务器。
+     *
+     * 注意：这是用户通过右键菜单主动触发的操作，而非 IDE 退出时的自动清理。
+     * IDE 退出时不会调用此方法，opencode 服务进程会独立继续运行。
+     *
+     * kill 策略：直接通过端口号暴力 kill (SIGKILL)，不做优雅关闭。
+     * 不依赖 process.destroy() 是因为启动命令经过 zsh 中转（zsh -lc "opencode serve..."），
+     * process.destroy() 只能杀死 zsh，opencode serve 会变成孤儿进程继续占用端口。
+     */
     fun stopServer() {
         try {
             thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
             sseConsumer?.stop()
             sseConsumer = null
 
-            serverProcess.get()?.let { process ->
-                if (process.isAlive) {
-                    process.destroy()
-                    if (!process.waitFor(PROCESS_DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
-                        process.destroyForcibly()
-                        process.waitFor(PROCESS_FORCE_KILL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
-                    }
-                }
+            thisLogger().info("[OpenCodeServerManager] Killing process on port $PORT")
+            try {
+                val killCmd = listOf("/bin/sh", "-c", "lsof -ti :$PORT | xargs kill -9")
+                Runtime.getRuntime().exec(killCmd.toTypedArray()).waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (e: Exception) {
+                thisLogger().warn("[OpenCodeServerManager] Port kill failed: ${e.message}")
             }
+
             serverProcess.set(null)
             notifyStateListeners(false)
         } catch (e: Exception) {
             thisLogger().error("Error stopping OpenCode server: ${e.message}")
+        }
+    }
+
+    override fun toString(): String = "OpenCodeServerManager"
+
+    private fun logDiagnosticEnvironment() {
+        try {
+            val cmd = listOf("/bin/zsh", "-l", "-c", "echo '---WHICH opencode---' && which opencode 2>&1 || echo 'NOT FOUND' && echo '---PATH---' && echo \$PATH && echo '---NODE---' && (which node 2>&1 || echo 'NOT FOUND') && echo '---NVM---' && (which nvm 2>&1 || echo 'NOT FOUND') && echo '---HOME---' && echo \$HOME && echo '---SHELL---' && echo \$SHELL && echo '---ENV---' && env | sort")
+            val proc = Runtime.getRuntime().exec(cmd.toTypedArray())
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            thisLogger().info("[OpenCodeServerManager] Diagnostic environment (exit=$exitCode):\n$output")
+        } catch (e: Exception) {
+            thisLogger().warn("[OpenCodeServerManager] Diagnostic failed: ${e.message}")
         }
     }
 
@@ -139,6 +162,8 @@ object OpenCodeServerManager {
         // 使用 zsh login mode (-l) 启动 opencode
         // -l 会加载用户的 .zshrc，确保 PATH 包含 Homebrew/NVM 等路径
         // 这样 opencode 命令才能被正确找到
-        return listOf("/bin/zsh", "-l", "-c", "opencode serve --hostname $HOST --port $PORT")
+        // source ~/.zshrc 确保 $PATH 包含 nvm/volta 等环境管理器的路径
+        // macOS app 环境下 zsh -l 加载的 PATH 可能不完整
+        return listOf("/bin/zsh", "-l", "-c", "source ~/.zshrc && opencode serve --hostname $HOST --port $PORT")
     }
 }
