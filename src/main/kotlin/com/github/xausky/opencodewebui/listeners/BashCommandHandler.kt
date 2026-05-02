@@ -28,7 +28,7 @@ object BashCommandHandler {
                 val command = input?.get("command") as? String ?: ""
 
                 if (command.isNotBlank()) {
-                    logger.info("[BashCommandHandler] Bash tool event: status=$status, command='${command.take(200)}'")
+                    logger.debug("[BashCommandHandler] Bash tool event: status=$status, command='${command.take(200)}'")
 
                     if (status == "completed") {
                         val exitCode = try {
@@ -46,9 +46,9 @@ object BashCommandHandler {
                                 }
 
                                 if (allReadOnly) {
-                                    logger.info("[BashCommandHandler] All bash segments are read-only, skipping refresh")
+                                    logger.debug("[BashCommandHandler] All bash segments are read-only, skipping refresh")
                                 } else {
-                                    logger.info("[BashCommandHandler] Bash has non-read-only segments, refreshing project root")
+                                    logger.debug("[BashCommandHandler] Bash has non-read-only segments, refreshing project root")
                                     OpenCodeDiffRefresher.refreshProjectRoot(projectPath)
                                     FullRefreshCoordinator.request()
                                     return true

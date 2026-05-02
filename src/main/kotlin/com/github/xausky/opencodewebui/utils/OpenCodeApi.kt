@@ -80,12 +80,17 @@ object OpenCodeApi {
             val body = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
             val array = JsonParser.parseString(body).asJsonArray
-            if (array.size() > 0) {
-                array[0].asJsonObject.get("id")?.asString
-            } else {
-                thisLogger().info("[OpenCodeApi] No existing sessions for $directory")
-                null
+            for (i in 0 until array.size()) {
+                val session = array[i].asJsonObject
+                val time = session.getAsJsonObject("time")
+                if (time == null) continue
+                if (time.has("archived")) continue
+                if (time.get("created") == time.get("updated")) continue
+                val id = session.get("id")?.asString
+                if (id != null) return id
             }
+            thisLogger().info("[OpenCodeApi] No active session with content for $directory")
+            null
         } catch (e: Exception) {
             thisLogger().warn("[OpenCodeApi] Failed to get latest session for $directory: ${e.message}")
             null
