@@ -71,15 +71,15 @@ object OpenCodeApi {
      * 取最新的 session ID。可用于构建带 session 的 URL 以复用已有 session。
      */
     fun getLatestSessionId(directory: String): String? {
+        var conn: java.net.HttpURLConnection? = null
         return try {
-            val encodedDir = URLEncoder.encode(directory, "UTF-8")
-            val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/session?directory=$encodedDir").toURL()
-            val conn = url.openConnection() as HttpURLConnection
+            val encodedDir = java.net.URLEncoder.encode(directory, "UTF-8")
+            val url = java.net.URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/session?directory=$encodedDir").toURL()
+            conn = url.openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = HTTP_TIMEOUT_MS
             conn.readTimeout = HTTP_TIMEOUT_MS
             val body = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
-            val array = JsonParser.parseString(body).asJsonArray
+            val array = com.google.gson.JsonParser.parseString(body).asJsonArray
             for (i in 0 until array.size()) {
                 val session = array[i].asJsonObject
                 val time = session.getAsJsonObject("time")
@@ -94,6 +94,8 @@ object OpenCodeApi {
         } catch (e: Exception) {
             thisLogger().warn("[OpenCodeApi] Failed to get latest session for $directory: ${e.message}")
             null
+        } finally {
+            conn?.disconnect()
         }
     }
 }

@@ -25,7 +25,9 @@ object FullRefreshCoordinator {
     private val logger = thisLogger()
     private val pendingRequests = AtomicInteger(0)
     private val processedCount = AtomicInteger(0)
+    @Volatile
     private var scheduler: ScheduledExecutorService? = null
+    @Volatile
     private var projectRoot: String? = null
 
     fun start(projectPath: String) {

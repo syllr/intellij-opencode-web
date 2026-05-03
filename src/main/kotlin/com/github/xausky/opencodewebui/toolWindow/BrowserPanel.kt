@@ -31,6 +31,7 @@ class BrowserPanel(
     private val port: Int,
     private val sharedClient: JBCefClient
 ) : JPanel() {
+    @Volatile
     private var browser: JBCefBrowser? = null
 
     private var startButtonPanel: JPanel? = null

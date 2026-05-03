@@ -20,6 +20,8 @@ import javax.swing.SwingUtilities
 class AddToPromptAction : AnAction(), DumbAware {
 
     companion object {
+        // TODO: 临时方案——im-select 路径和输入法 ID 应改为可配置（设置页面）。
+        // 当前硬编码仅适用于开发者本人机器，后续需抽离为插件配置。
         private val IM_SELECT_PATH = "/Users/yutao/Desktop/software/bin/im-select"
         private val IM_SELECT_ARG_CN = "com.apple.inputmethod.SCIM.ITABC"
         private val IM_SELECT_ARG_EN = "com.apple.keylayout.ABC"
@@ -41,7 +43,7 @@ class AddToPromptAction : AnAction(), DumbAware {
         val project: Project = e.project ?: return
 
         // 如果焦点在 OpenCode Web 面板中，将焦点移回 IDE 编辑器
-        if (isFocusInOpenCodeWeb()) {
+        if (isFocusInOpenCodeWeb(project)) {
             thisLogger().info("[AddToPromptAction] Focus in OpenCodeWeb, moving focus to editor")
             switchInputMethod(IM_SELECT_ARG_EN)
             val editorManager = FileEditorManager.getInstance(project)
@@ -115,9 +117,11 @@ class AddToPromptAction : AnAction(), DumbAware {
         e.presentation.isEnabled = e.project != null
     }
 
-    private fun isFocusInOpenCodeWeb(): Boolean {
+    private fun isFocusInOpenCodeWeb(project: Project): Boolean {
         val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner ?: return false
-        val browser = MyToolWindowFactory.getMainBrowser() ?: return false
-        return SwingUtilities.isDescendingFrom(focusOwner, browser.component)
+        val instance = MyToolWindowFactory.myToolWindowInstances[project] ?: return false
+        return instance.getBrowser()?.let { browser ->
+            SwingUtilities.isDescendingFrom(focusOwner, browser.component)
+        } ?: false
     }
 }
