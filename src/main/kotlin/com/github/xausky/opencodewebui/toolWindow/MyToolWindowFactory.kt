@@ -10,6 +10,7 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefClient
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * OpenCode Web UI 工具窗口工厂类
@@ -36,19 +37,19 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         fun openOpenCodeWebToolWindow(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             val toolWindow = toolWindowManager.getToolWindow(OPCODE_WEB_TOOL_WINDOW_ID) ?: return
-            thisLogger().info("[Lifecycle] openOpenCodeWebToolWindow: activating tool window '$OPCODE_WEB_TOOL_WINDOW_ID', myToolWindowInstance=${myToolWindowInstance != null}")
+            thisLogger().info("[Lifecycle] openOpenCodeWebToolWindow: activating tool window '$OPCODE_WEB_TOOL_WINDOW_ID', myToolWindowInstances.size=${myToolWindowInstances.size}")
             toolWindow.activate(null)
         }
 
         internal val sharedJBCefClient by lazy { JBCefApp.getInstance().createClient() }
 
-        internal var myToolWindowInstance: MyToolWindow? = null
+        internal val myToolWindowInstances: ConcurrentHashMap<Project, MyToolWindow> = ConcurrentHashMap()
 
         /**
-         * 获取主浏览器实例，用于在其他组件中执行 JavaScript
+         * 获取当前项目中主浏览器实例，用于在其他组件中执行 JavaScript
          */
-        fun getMainBrowser(): JBCefBrowser? {
-            return myToolWindowInstance?.getBrowser()
+        fun getMainBrowser(project: Project): JBCefBrowser? {
+            return myToolWindowInstances[project]?.getBrowser()
         }
 
         fun stopServer() {

@@ -5,6 +5,7 @@ import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.ui.jcef.JBCefBrowser
 import java.awt.event.WindowAdapter
@@ -23,7 +24,15 @@ class MyToolWindow(toolWindow: ToolWindow) {
 
     init {
         setupWindowFocusListener(toolWindow)
-        MyToolWindowFactory.myToolWindowInstance = this
+        MyToolWindowFactory.myToolWindowInstances[project] = this
+
+        // 项目关闭时清理：移除 map 引用并释放资源，防止内存泄漏
+        Disposer.register(project) {
+            logger.info("[Lifecycle] Cleaning up MyToolWindow for project=${project.name}")
+            MyToolWindowFactory.myToolWindowInstances.remove(project)
+            healthMonitor.stop()
+            browserPanel.disposeBrowser()
+        }
     }
 
     private var isShowingStartButton = false

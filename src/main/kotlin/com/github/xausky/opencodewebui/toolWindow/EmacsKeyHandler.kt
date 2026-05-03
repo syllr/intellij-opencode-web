@@ -21,10 +21,6 @@ object EmacsKeyHandler {
             override fun keyPressed(e: KeyEvent) {
                 handleEmacsKey(e, emacsMappings, component)
             }
-
-            override fun keyReleased(e: KeyEvent) {
-                handleEmacsKey(e, emacsMappings, component)
-            }
         })
     }
 

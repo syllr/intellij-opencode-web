@@ -64,31 +64,35 @@ object BashCommandHandler {
     private fun extractBaseBashCommand(cmd: String): String {
         val skipPrefixes = listOf("sudo", "command", "time", "nohup")
         var trimmed = cmd.trimStart()
-        while (true) {
+        var iterations = 0
+        while (iterations < 10) {
+            iterations++
             val stripped = skipPrefixes.fold(trimmed) { acc, prefix ->
                 acc.removePrefix("$prefix ")
             }
             if (stripped == trimmed) break
             trimmed = stripped.trimStart()
         }
-        return trimmed.split("\\s+".toRegex()).firstOrNull()?.trim() ?: ""
+        return trimmed.split(WHITESPACE_REGEX).firstOrNull()?.trim() ?: ""
     }
 
     /** bash 只读命令白名单——不修改文件的命令，不触发刷新 */
+    private val WHITESPACE_REGEX = "\\s+".toRegex()
+
     val READ_ONLY_COMMANDS = setOf(
         "cd", "ls", "cat", "grep", "head", "tail", "echo", "pwd", "which", "type",
         "dir", "less", "more", "printf", "find", "wc", "sort", "uniq", "cut",
         "diff", "tree", "stat", "file", "du", "df", "env", "printenv", "read",
         "test", "[", "declare", "typeset", "local", "export", "alias", "unalias",
         "hash", "help", "man", "info", "whatis", "apropos", "whereis",
-        "source", "exit", "return", "continue", "break", "shopt",
+        "exit", "return", "continue", "break", "shopt",
         "history", "fc", "bind", "complete", "compgen", "compopt",
         "id", "whoami", "who", "w", "users", "last", "date",
         "uname", "hostname", "arch", "nproc", "uptime",
         "basename", "dirname", "realpath", "readlink",
         "sleep", "true", "false",
-        "xargs", "pgrep", "pidof", "ps", "lsof",
+        "pgrep", "pidof", "ps", "lsof",
         "unset", "shift", "getopts", "trap", "wait",
-        "command", "builtin", "eval",
+        "command", "builtin",
     )
 }
