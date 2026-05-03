@@ -12,6 +12,7 @@ class FormatAsPromptTest {
         assertTrue(result.contains("content:"))
         assertTrue(result.contains("```"))
         assertTrue(result.contains("fun hello()"))
+        assertTrue("Expected 2 spaces after closing ```", result.endsWith("```\n  "))
     }
 
     @Test
