@@ -65,7 +65,7 @@ object FullRefreshCoordinator {
                 return
             }
 
-            logger.info("[FullRefresh] Pending=${current - processedCount.get()}, doing full refresh")
+            logger.debug("[FullRefresh] Pending=${current - processedCount.get()}, doing full refresh")
             LocalFileSystem.getInstance().refreshIoFiles(
                 listOf(dir),
                 /* async */ false,   // 同步！确保刷新完成再更新计数
@@ -73,7 +73,7 @@ object FullRefreshCoordinator {
                 null
             )
             processedCount.set(current)
-            logger.info("[FullRefresh] Full refresh completed (processed=${processedCount.get()})")
+            logger.debug("[FullRefresh] Full refresh completed (processed=${processedCount.get()})")
         } catch (e: Exception) {
             logger.error("[FullRefresh] Full refresh failed: ${e.message}, will retry", e)
             // processedCount 不变，下次 tick 会重试

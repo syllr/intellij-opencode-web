@@ -36,23 +36,20 @@ object BashCommandHandler {
                             (metadata?.get("exit") as? Double)?.toInt() ?: -1
                         } catch (_: Exception) { -1 }
 
-                        if (exitCode == 0) {
+                        if (exitCode == 0 && projectDir != null) {
                             val projectPath = projectDir
-                            if (projectPath != null && command.contains(projectPath)) {
-                                val segments = command.split(Regex("&&|;|\n"))
-                                val allReadOnly = segments.all { segment ->
-                                    val base = extractBaseBashCommand(segment)
-                                    base.isEmpty() || base in READ_ONLY_COMMANDS
-                                }
+                            val segments = command.split(Regex("&&|;|\n"))
+                            val allReadOnly = segments.all { segment ->
+                                val base = extractBaseBashCommand(segment)
+                                base.isEmpty() || base in READ_ONLY_COMMANDS
+                            }
 
-                                if (allReadOnly) {
-                                    logger.debug("[BashCommandHandler] All bash segments are read-only, skipping refresh")
-                                } else {
-                                    logger.debug("[BashCommandHandler] Bash has non-read-only segments, refreshing project root")
-                                    OpenCodeDiffRefresher.refreshProjectRoot(projectPath)
-                                    FullRefreshCoordinator.request()
-                                    return true
-                                }
+                            if (allReadOnly) {
+                                logger.debug("[BashCommandHandler] All bash segments are read-only, skipping refresh")
+                            } else {
+                                logger.debug("[BashCommandHandler] Bash has non-read-only segments, requesting refresh")
+                                FullRefreshCoordinator.request()
+                                return true
                             }
                         }
                     }

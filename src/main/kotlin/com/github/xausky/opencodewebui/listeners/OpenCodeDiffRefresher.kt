@@ -8,7 +8,7 @@ object OpenCodeDiffRefresher {
     private val logger = thisLogger()
 
     fun refreshFiles(directory: String, files: List<DiffFile>) {
-        logger.info("[DiffRefresher] refreshFiles called with directory='$directory', ${files.size} files")
+        logger.debug("[DiffRefresher] refreshFiles called with directory='$directory', ${files.size} files")
 
         try {
             val virtualFiles = files.mapNotNull { diffFile ->
@@ -22,7 +22,7 @@ object OpenCodeDiffRefresher {
 
             if (virtualFiles.isNotEmpty()) {
                 val pathList = virtualFiles.joinToString(", ") { it.path }
-                logger.info("[DiffRefresher] Refreshing ${virtualFiles.size} files via refreshIoFiles: $pathList")
+                logger.debug("[DiffRefresher] Refreshing ${virtualFiles.size} files via refreshIoFiles: $pathList")
                 val ioFiles = virtualFiles.map { File(it.path) }
                 LocalFileSystem.getInstance().refreshIoFiles(
                     ioFiles,
@@ -30,39 +30,12 @@ object OpenCodeDiffRefresher {
                     /* recursive */ false,
                     null
                 )
-                logger.info("[DiffRefresher] refreshIoFiles completed for: $pathList")
+                logger.debug("[DiffRefresher] refreshIoFiles completed for: $pathList")
             } else {
                 logger.warn("[DiffRefresher] NO virtual files found from ${files.size} paths - refresh skipped")
             }
         } catch (e: Exception) {
             logger.error("[DiffRefresher] Refresh failed: ${e.message}", e)
-        }
-    }
-
-    /**
-     * 强制重新读取项目根目录的磁盘内容（递归）。
-     * 使用 refreshIoFiles 直接读取磁盘，不依赖 NativeFileWatcher 的变更列表，
-     * 这样能正确捕获文件删除（watcher 可能延迟报告删除事件）。
-     */
-    fun refreshProjectRoot(projectPath: String) {
-        logger.info("[DiffRefresher] refreshProjectRoot called with projectPath='$projectPath'")
-
-        try {
-            val projectDir = File(projectPath)
-            if (projectDir.exists()) {
-                logger.info("[DiffRefresher] Refreshing directory via refreshIoFiles: $projectPath")
-                LocalFileSystem.getInstance().refreshIoFiles(
-                    listOf(projectDir),
-                    /* async */ true,
-                    /* recursive */ true,
-                    null
-                )
-                logger.info("[DiffRefresher] refreshIoFiles completed for: $projectPath")
-            } else {
-                logger.warn("[DiffRefresher] Project root does not exist: $projectPath")
-            }
-        } catch (e: Exception) {
-            logger.error("[DiffRefresher] Project root refresh failed: ${e.message}", e)
         }
     }
 }
