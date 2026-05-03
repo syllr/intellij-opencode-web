@@ -59,22 +59,15 @@ class OpenCodeSSEConsumer(
 
     override fun onMessage(event: String, messageEvent: MessageEvent) {
         val message = messageEvent.data
-
-        // 解析 SSE 事件
         val parsed = SSEEventParser.parse(event, message)
         val parsedMap = parsed.parsedMap
         val payloadType = parsed.payloadType
         val eventDir = parsed.directory
         val fileProperty = parsed.file
-
         val projectDir = project.basePath
 
-        // message.part.delta 太频繁（AI 每输出一个字符都会触发），跳过日志避免刷屏
         if (payloadType == "message.part.delta") {
-            // 只处理文件相关事件
-            if (fileProperty != null) {
-                logger.debug("[OpenCodeSSEConsumer] *** FILE CHANGE DETECTED *** payloadType=$payloadType, file=$fileProperty")
-            }
+            if (fileProperty != null) logger.debug("[OpenCodeSSEConsumer] *** FILE CHANGE DETECTED *** payloadType=$payloadType, file=$fileProperty")
             return
         }
 
@@ -84,145 +77,77 @@ class OpenCodeSSEConsumer(
         val isFileEdited = parsed.payloadType == "file.edited"
         val isFileWatcherUpdated = parsed.payloadType == "file.watcher.updated"
 
-        // === Handle bash tool file operations ===
-        if (payloadType == "message.part.updated") {
-            BashCommandHandler.handleBashEvent(parsedMap, projectDir)
-            return
-        }
+        if (payloadType == "message.part.updated") { BashCommandHandler.handleBashEvent(parsedMap, projectDir); return }
+        if (!isSessionDiff && !isFileEdited && !isFileWatcherUpdated) return
+        if (projectDir == null) { logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh"); return }
 
-        if (!isSessionDiff && !isFileEdited && !isFileWatcherUpdated) {
-            // 非文件事件只打日志，不处理
-            return
-        }
-
-        if (projectDir == null) {
-            logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh")
-            return
-        }
-
-        if (eventDir != null && projectDir != null) {
+        if (eventDir != null) {
             try {
                 if (java.io.File(eventDir).canonicalPath != java.io.File(projectDir).canonicalPath) {
                     logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
                     return
                 }
-            } catch (_: Exception) {
-                if (eventDir != projectDir) {
-                    logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH (fallback): event='$eventDir' vs project='$projectDir'")
-                    return
-                }
+            } catch (e: Exception) {
+                logger.warn("[OpenCodeSSEConsumer] Directory canonical path check failed: ${e.message}")
+                if (eventDir != projectDir) { logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH (fallback): event='$eventDir' vs project='$projectDir'"); return }
             }
         }
 
-        // === Handle session.diff (batch refresh via diff list) ===
         if (isSessionDiff) {
-            try {
-                val wrapper = gson.fromJson(message, SSEEventWrapper::class.java)
-                val props = wrapper.payload.properties
-                logger.debug("[OpenCodeSSEConsumer] session.diff: ${props.diff.size} files")
-                props.diff.forEachIndexed { i, f ->
-                    logger.debug("[OpenCodeSSEConsumer]   diff[$i]: file='${f.file}', status=${f.status}")
-                }
-                if (props.diff.isNotEmpty()) {
-                    logger.debug("[OpenCodeSSEConsumer] Refreshing ${props.diff.size} files from session.diff")
-                    OpenCodeDiffRefresher.refreshFiles(projectDir, props.diff)
-                } else {
-                    logger.debug("[OpenCodeSSEConsumer] session.diff has 0 files, skipping")
-                }
-            } catch (e: Exception) {
-                logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff: ${e.message}", e)
-            }
+            try { handleSessionDiff(gson.fromJson(message, SSEEventWrapper::class.java).payload.properties, projectDir) }
+            catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff: ${e.message}", e) }
             return
         }
-
-        // === Handle file.edited (single file from OpenCode edit) ===
-        if (isFileEdited) {
-            try {
-                val fe = gson.fromJson(message, SSEFileEditedEvent::class.java)
-                val absolutePath = fe.payload.properties.file
-                val relativePath = if (eventDir != null && absolutePath.startsWith(eventDir)) {
-                    try {
-                        java.io.File(eventDir).toPath().relativize(java.io.File(absolutePath).toPath()).toString()
-                    } catch (_: Exception) {
-                        absolutePath.removePrefix(eventDir).removePrefix("/")
-                    }
-                } else {
-                    logger.warn("[OpenCodeSSEConsumer] Cannot determine relative path: file='$absolutePath', dir='$eventDir'")
-                    absolutePath
-                }
-                logger.debug("[OpenCodeSSEConsumer] file.edited: absolute='$absolutePath', relative='$relativePath'")
-                val diffFiles = listOf(
-                    DiffFile(
-                        file = relativePath,
-                        additions = 0,
-                        deletions = 0,
-                        status = "modified"
-                    )
-                )
-                OpenCodeDiffRefresher.refreshFiles(projectDir, diffFiles)
-                FullRefreshCoordinator.request()
-            } catch (e: Exception) {
-                logger.error("[OpenCodeSSEConsumer] Failed to parse file.edited: ${e.message}", e)
-            }
-            return
-        }
-
-        // === Handle file.watcher.updated (filesystem events from ParcelWatcher) ===
-        if (isFileWatcherUpdated) {
-            try {
-                // reuse parsedMap from top-level parse
-                val payload = parsedMap?.get("payload") as? Map<*, *>
-                val properties = payload?.get("properties") as? Map<*, *>
-                val absolutePath = properties?.get("file") as? String
-                val eventType = properties?.get("event") as? String  // "add", "change", "unlink"
-
-                if (absolutePath == null) {
-                    logger.warn("[OpenCodeSSEConsumer] file.watcher.updated missing file property")
-                    return
-                }
-
-                val relativePath = if (eventDir != null && absolutePath.startsWith(eventDir)) {
-                    try {
-                        java.io.File(eventDir).toPath().relativize(java.io.File(absolutePath).toPath()).toString()
-                    } catch (_: Exception) {
-                        absolutePath.removePrefix(eventDir).removePrefix("/")
-                    }
-                } else {
-                    absolutePath
-                }
-
-                logger.debug("[OpenCodeSSEConsumer] file.watcher.updated: event=$eventType, absolute='$absolutePath', relative='$relativePath'")
-
-                // 注意：file.edited 和 file.watcher.updated 对 create/edit 是双发的
-                // 这里用文件路径去重：记录最近刷新的文件，1秒内不重复刷新同一个文件
-                if (!refreshDeduplicator.shouldRefresh(absolutePath, DEDUP_WINDOW_MS)) {
-                    logger.debug("[OpenCodeSSEConsumer] Skipping duplicate refresh for $absolutePath")
-                    return
-                }
-
-                val diffFiles = listOf(
-                    DiffFile(
-                        file = relativePath,
-                        additions = 0,
-                        deletions = 0,
-                        status = when (eventType) {
-                            "add" -> "created"
-                            "unlink" -> "deleted"
-                            else -> "modified"
-                        }
-                    )
-                )
-                OpenCodeDiffRefresher.refreshFiles(projectDir, diffFiles)
-                FullRefreshCoordinator.request()
-            } catch (e: Exception) {
-                logger.error("[OpenCodeSSEConsumer] Failed to parse file.watcher.updated: ${e.message}", e)
-            }
-            return
-        }
+        if (isFileEdited) { handleFileEdited(eventDir, fileProperty, projectDir, parsedMap, message); return }
+        if (isFileWatcherUpdated) { handleFileWatcherUpdated(eventDir, fileProperty, projectDir, parsedMap); return }
     }
 
+    private fun handleSessionDiff(props: SSESessionDiffProperties, projectDir: String) {
+        logger.debug("[OpenCodeSSEConsumer] session.diff: ${props.diff.size} files")
+        props.diff.forEachIndexed { i, f -> logger.debug("[OpenCodeSSEConsumer]   diff[$i]: file='${f.file}', status=${f.status}") }
+        if (props.diff.isNotEmpty()) { logger.debug("[OpenCodeSSEConsumer] Refreshing ${props.diff.size} files from session.diff"); OpenCodeDiffRefresher.refreshFiles(projectDir, props.diff) }
+    }
+
+    private fun handleFileEdited(eventDir: String?, fileProperty: String?, projectDir: String, parsedMap: Map<*, *>?, message: String) {
+        try {
+            val absolutePath = gson.fromJson(message, SSEFileEditedEvent::class.java).payload.properties.file
+            val relativePath = computeRelativePath(eventDir, absolutePath)
+            logger.debug("[OpenCodeSSEConsumer] file.edited: absolute='$absolutePath', relative='$relativePath'")
+            OpenCodeDiffRefresher.refreshFiles(projectDir, listOf(DiffFile(relativePath, 0, 0, "modified")))
+            FullRefreshCoordinator.request()
+        } catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to parse file.edited: ${e.message}", e) }
+    }
+
+    private fun handleFileWatcherUpdated(eventDir: String?, fileProperty: String?, projectDir: String, parsedMap: Map<*, *>?) {
+        try {
+            val props = (parsedMap?.get("payload") as? Map<*, *>)?.get("properties") as? Map<*, *>
+            val absolutePath = props?.get("file") as? String
+                ?: run { logger.warn("[OpenCodeSSEConsumer] file.watcher.updated missing file property"); return }
+            val eventType = props.get("event") as? String
+            val relativePath = computeRelativePath(eventDir, absolutePath)
+            logger.debug("[OpenCodeSSEConsumer] file.watcher.updated: event=$eventType, absolute='$absolutePath', relative='$relativePath'")
+            if (!refreshDeduplicator.shouldRefresh(absolutePath, DEDUP_WINDOW_MS)) {
+                logger.debug("[OpenCodeSSEConsumer] Skipping duplicate refresh for $absolutePath"); return
+            }
+            OpenCodeDiffRefresher.refreshFiles(projectDir, listOf(DiffFile(relativePath, 0, 0,
+                when (eventType) { "add" -> "created"; "unlink" -> "deleted"; else -> "modified" })))
+            FullRefreshCoordinator.request()
+        } catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to parse file.watcher.updated: ${e.message}", e) }
+    }
+
+    private fun computeRelativePath(eventDir: String?, absolutePath: String): String =
+        if (eventDir != null && absolutePath.startsWith(eventDir)) {
+            try { java.io.File(eventDir).toPath().relativize(java.io.File(absolutePath).toPath()).toString() }
+            catch (e: Exception) {
+                logger.warn("[OpenCodeSSEConsumer] Failed to relativize path: ${e.message}")
+                absolutePath.removePrefix(eventDir).removePrefix("/")
+            }
+        } else absolutePath
+
     override fun onComment(comment: String) {
-        // 忽略 SSE 注释
+        // BackgroundEventHandler 接口强制实现。
+        // SSE 注释事件（以 : 开头的行）在此插件中无意义，故意留空。
+        // 请勿删除此方法——没有它编译会失败，它是接口契约的一部分。
     }
 
     override fun onClosed() {

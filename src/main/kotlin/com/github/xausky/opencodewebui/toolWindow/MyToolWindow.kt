@@ -81,14 +81,9 @@ class MyToolWindow(toolWindow: ToolWindow) {
     fun getBrowser() = browserPanel.getBrowser()
 
     fun setupBrowserKeyboardHandling() {
-        val panel = browserPanel
-        JcefKeyboardInterceptor.interceptKeys(panel)
-        JcefKeyboardInterceptor.interceptKeysRecursive(panel)
-        val osrComponent = (browserPanel.getBrowser()?.cefBrowser?.uiComponent as? JComponent)
-        osrComponent?.let {
-            JcefKeyboardInterceptor.interceptKeys(it)
-            EmacsKeyHandler.addEmacsKeyMapping(it)
-        }
+        // 在根 panel 上注册 WHEN_IN_FOCUSED_WINDOW 级别的拦截，
+        // 确保任意后代组件获得焦点时 ESC/Meta+,/Meta+K 被消耗
+        JcefKeyboardInterceptor.interceptKeys(browserPanel)
     }
 
     private fun setupBrowserComponent(browser: JBCefBrowser) {

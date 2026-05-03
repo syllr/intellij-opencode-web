@@ -34,7 +34,10 @@ object BashCommandHandler {
                         val exitCode = try {
                             val metadata = state?.get("metadata") as? Map<*, *>
                             (metadata?.get("exit") as? Double)?.toInt() ?: -1
-                        } catch (_: Exception) { -1 }
+                        } catch (e: Exception) {
+                            logger.debug("[BashCommandHandler] Failed to parse exit code: ${e.message}")
+                            -1
+                        }
 
                         if (exitCode == 0 && projectDir != null) {
                             val projectPath = projectDir

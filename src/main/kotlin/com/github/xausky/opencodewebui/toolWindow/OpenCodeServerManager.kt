@@ -11,30 +11,15 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.openapi.project.Project
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 object OpenCodeServerManager {
     private const val HOST = OPENCODE_HOST
     private const val PORT = OPENCODE_PORT
 
-    private val serverRunning = AtomicBoolean(false)
     private val serverProcess = AtomicReference<Process?>(null)
-    private val stateListeners = mutableListOf<(Boolean) -> Unit>()
     @Volatile
     private var sseConsumer: OpenCodeSSEConsumer? = null
-
-    fun addStateListener(listener: (Boolean) -> Unit) {
-        synchronized(stateListeners) {
-            stateListeners.add(listener)
-        }
-    }
-
-    fun removeStateListener(listener: (Boolean) -> Unit) {
-        synchronized(stateListeners) {
-            stateListeners.remove(listener)
-        }
-    }
 
     fun ensureSSEConsumer(project: com.intellij.openapi.project.Project): OpenCodeSSEConsumer {
         if (sseConsumer == null) {
@@ -48,20 +33,12 @@ object OpenCodeServerManager {
         return sseConsumer!!
     }
 
-    private fun notifyStateListeners(running: Boolean) {
-        serverRunning.set(running)
-        synchronized(stateListeners) {
-            stateListeners.forEach { it(running) }
-        }
-    }
-
     fun startServer(
         project: com.intellij.openapi.project.Project,
         onStarted: () -> Unit,
         onFailed: (Exception) -> Unit
     ) {
         if (OpenCodeApi.isServerHealthySync()) {
-            notifyStateListeners(true)
             thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
             sseConsumer?.stop()
             sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
@@ -80,7 +57,6 @@ object OpenCodeServerManager {
                     val healthy = OpenCodeApi.waitForServerHealthy(SERVER_START_TIMEOUT_MS)
 
                     if (healthy) {
-                        notifyStateListeners(true)
                         thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
                         sseConsumer?.stop()
                         sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
@@ -126,13 +102,10 @@ object OpenCodeServerManager {
             }
 
             serverProcess.set(null)
-            notifyStateListeners(false)
         } catch (e: Exception) {
             thisLogger().error("Error stopping OpenCode server: ${e.message}")
         }
     }
-
-    override fun toString(): String = "OpenCodeServerManager"
 
     private fun logDiagnosticEnvironment() {
         try {

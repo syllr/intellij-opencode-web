@@ -34,6 +34,7 @@ class HealthMonitor(
                 try {
                     Thread.sleep(HEALTH_CHECK_START_DELAY_MS)
                 } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
                     return@Thread
                 }
             }
@@ -41,6 +42,7 @@ class HealthMonitor(
                 try {
                     Thread.sleep(HEALTH_CHECK_INTERVAL_MS)
                 } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
                     return@Thread
                 }
                 val healthy = OpenCodeApi.isServerHealthySync()

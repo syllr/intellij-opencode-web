@@ -1,6 +1,5 @@
 package com.github.xausky.opencodewebui.toolWindow
 
-import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefBrowserBuilder
@@ -8,9 +7,6 @@ import com.intellij.ui.jcef.JBCefClient
 import org.cef.CefSettings
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
-import org.cef.callback.CefContextMenuParams
-import org.cef.callback.CefMenuModel
-import org.cef.handler.CefContextMenuHandlerAdapter
 import org.cef.handler.CefDisplayHandlerAdapter
 import org.cef.handler.CefLoadHandlerAdapter
 import java.awt.BorderLayout
@@ -18,9 +14,6 @@ import java.awt.Color
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
-import java.awt.Toolkit
-import java.awt.datatransfer.StringSelection
-import java.net.URI
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -36,13 +29,6 @@ class BrowserPanel(
 
     private var startButtonPanel: JPanel? = null
     private var startCallback: (() -> Unit)? = null
-
-    companion object {
-        private const val COPY_LINK_COMMAND_ID = 26500
-        private const val REFRESH_COMMAND_ID = 26501
-        private const val SHUTDOWN_COMMAND_ID = 26502
-        private const val COPY_LINK_AS_PROMPT_COMMAND_ID = 26503
-    }
 
     init {
         layout = BorderLayout()
@@ -168,58 +154,4 @@ class BrowserPanel(
         browser = null
     }
 
-    private inner class LinkContextMenuHandler : CefContextMenuHandlerAdapter() {
-        override fun onBeforeContextMenu(
-            browser: CefBrowser,
-            frame: CefFrame,
-            params: CefContextMenuParams,
-            model: CefMenuModel
-        ) {
-            model.clear()
-            model.addItem(100, "Back")
-            model.setEnabled(100, browser.canGoBack())
-            model.addItem(101, "Forward")
-            model.setEnabled(101, browser.canGoForward())
-            model.addItem(REFRESH_COMMAND_ID, "Refresh")
-            val linkUrl = params.linkUrl
-            if (!linkUrl.isNullOrEmpty()) {
-                model.addItem(COPY_LINK_COMMAND_ID, "Open in Browser")
-                model.addItem(COPY_LINK_AS_PROMPT_COMMAND_ID, "Copy Link")
-            }
-            model.addItem(SHUTDOWN_COMMAND_ID, "Shutdown Server")
-        }
-
-        override fun onContextMenuCommand(
-            browser: CefBrowser,
-            frame: CefFrame,
-            params: CefContextMenuParams,
-            commandId: Int,
-            eventFlags: Int
-        ): Boolean {
-            if (commandId == REFRESH_COMMAND_ID) {
-                browser.reload()
-                return true
-            }
-            if (commandId == COPY_LINK_COMMAND_ID) {
-                val linkUrl = params.linkUrl
-                if (!linkUrl.isNullOrEmpty()) {
-                    BrowserUtil.browse(URI(linkUrl))
-                }
-                return true
-            }
-            if (commandId == COPY_LINK_AS_PROMPT_COMMAND_ID) {
-                val linkUrl = params.linkUrl
-                if (!linkUrl.isNullOrEmpty()) {
-                    val selection = StringSelection(linkUrl)
-                    Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
-                }
-                return true
-            }
-            if (commandId == SHUTDOWN_COMMAND_ID) {
-                MyToolWindowFactory.stopServer()
-                return true
-            }
-            return false
-        }
-    }
 }

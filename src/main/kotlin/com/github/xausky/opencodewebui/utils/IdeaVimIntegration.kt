@@ -6,12 +6,33 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.extensions.PluginId
 
 object IdeaVimIntegration {
+    private val logger = thisLogger()
 
     fun isIdeaVimInstalled(): Boolean {
         return try {
             PluginManagerCore.getPlugin(PluginId.getId("IdeaVIM")) != null
         } catch (e: Exception) {
             false
+        }
+    }
+
+    /**
+     * 获取 IdeaVim 的 injector 实例。
+     * 优先使用 getInjector() 方法，降级到 injector 字段反射。
+     */
+    private fun getVimInjector(instance: Any): Any? {
+        return try {
+            instance::class.java.getMethod("getInjector").invoke(instance)
+        } catch (_: NoSuchMethodException) {
+            logger.debug("[IdeaVimIntegration] getInjector() not found, using field fallback")
+            try {
+                val field = instance::class.java.getDeclaredField("injector")
+                field.isAccessible = true
+                field.get(instance)
+            } catch (e: Exception) {
+                logger.warn("[IdeaVimIntegration] Field fallback failed: ${e.message}")
+                null
+            }
         }
     }
 
@@ -31,13 +52,7 @@ object IdeaVimIntegration {
 
             val instance = vimPluginClass.getMethod("getInstance").invoke(null)
 
-            val injector = try {
-                instance::class.java.getMethod("getInjector").invoke(instance)
-            } catch (_: NoSuchMethodException) {
-                val field = instance::class.java.getDeclaredField("injector")
-                field.isAccessible = true
-                field.get(instance)
-            }
+            val injector = getVimInjector(instance)
 
             if (injector == null) return null
 
@@ -80,13 +95,7 @@ object IdeaVimIntegration {
             if (!isEnabled) return false
 
             val instance = vimPluginClass.getMethod("getInstance").invoke(null)
-            val injector = try {
-                instance::class.java.getMethod("getInjector").invoke(instance)
-            } catch (_: NoSuchMethodException) {
-                val field = instance::class.java.getDeclaredField("injector")
-                field.isAccessible = true
-                field.get(instance)
-            } ?: return false
+            val injector = getVimInjector(instance) ?: return false
 
             val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
             val mode = vimState::class.java.getMethod("getMode").invoke(vimState)
@@ -103,13 +112,7 @@ object IdeaVimIntegration {
         try {
             val vimPluginClass = Class.forName("com.maddyhome.idea.vim.VimPlugin")
             val instance = vimPluginClass.getMethod("getInstance").invoke(null)
-            val injector = try {
-                instance::class.java.getMethod("getInjector").invoke(instance)
-            } catch (_: NoSuchMethodException) {
-                val field = instance::class.java.getDeclaredField("injector")
-                field.isAccessible = true
-                field.get(instance)
-            } ?: return
+            val injector = getVimInjector(instance) ?: return
 
             val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
             val exitMethod = vimState::class.java.getMethod("exitVisualMode")

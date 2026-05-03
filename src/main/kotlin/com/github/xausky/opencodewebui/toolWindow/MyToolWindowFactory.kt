@@ -63,7 +63,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
-    // 调用此函数 → 创建 MyToolWindow → setupBrowserKeyboardHandling → checkAndLoadContent → startPeriodicCheck → startPeriodicUpdateCheck
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         thisLogger().info("[Lifecycle] createToolWindowContent called, project=${project.name}")
         val contentManager = toolWindow.contentManager

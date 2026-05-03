@@ -32,8 +32,8 @@ class AddToPromptAction : AnAction(), DumbAware {
         if (imSelectAvailable) {
             try {
                 Runtime.getRuntime().exec(arrayOf(IM_SELECT_PATH, arg))
-            } catch (_: Exception) {
-                // 静默忽略，不影响主流程
+            } catch (e: Exception) {
+                thisLogger().debug("[AddToPromptAction] Failed to switch input method: ${e.message}")
             }
         }
     }
