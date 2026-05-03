@@ -14,9 +14,28 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import java.awt.KeyboardFocusManager
+import java.io.File
 import javax.swing.SwingUtilities
 
 class AddToPromptAction : AnAction(), DumbAware {
+
+    companion object {
+        private val IM_SELECT_PATH = "/Users/yutao/Desktop/software/bin/im-select"
+        private val IM_SELECT_ARG_CN = "com.apple.inputmethod.SCIM.ITABC"
+        private val IM_SELECT_ARG_EN = "com.apple.keylayout.ABC"
+        // 插件启动时检查一次 im-select 是否存在，结果缓存到进程退出
+        private val imSelectAvailable by lazy { File(IM_SELECT_PATH).exists() }
+    }
+
+    private fun switchInputMethod(arg: String) {
+        if (imSelectAvailable) {
+            try {
+                Runtime.getRuntime().exec(arrayOf(IM_SELECT_PATH, arg))
+            } catch (_: Exception) {
+                // 静默忽略，不影响主流程
+            }
+        }
+    }
 
     override fun actionPerformed(e: AnActionEvent) {
         val project: Project = e.project ?: return
@@ -24,6 +43,7 @@ class AddToPromptAction : AnAction(), DumbAware {
         // 如果焦点在 OpenCode Web 面板中，将焦点移回 IDE 编辑器
         if (isFocusInOpenCodeWeb()) {
             thisLogger().info("[AddToPromptAction] Focus in OpenCodeWeb, moving focus to editor")
+            switchInputMethod(IM_SELECT_ARG_EN)
             val editorManager = FileEditorManager.getInstance(project)
             val editor = editorManager.selectedTextEditor
             if (editor != null) {
@@ -64,6 +84,7 @@ class AddToPromptAction : AnAction(), DumbAware {
 
         if (selectedText.isNullOrBlank() || selStart < 0 || selEnd <= selStart) {
             thisLogger().info("[AddToPromptAction] No valid selection, opening OpenCode Web")
+            switchInputMethod(IM_SELECT_ARG_CN)
             MyToolWindowFactory.openOpenCodeWebToolWindow(project)
             return
         }
@@ -78,6 +99,9 @@ class AddToPromptAction : AnAction(), DumbAware {
         val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText)
 
         JcefJsInjector.appendTextToEditor(project, formattedContent)
+
+        // 切换到中文输入法（旁路功能，仅在 im-select 存在时生效）
+        switchInputMethod(IM_SELECT_ARG_CN)
 
         // 清除选中
         if (IdeaVimIntegration.isIdeaVimInstalled() && IdeaVimIntegration.isInVisualMode(editor)) {
