@@ -58,13 +58,14 @@ object JcefJsInjector {
                         editor.innerHTML = '';
                         editor.innerText = text;
                     }
-                    // 追加一个 <br> 创建换行，再追加一个 <br> 创建光标空行
-                    editor.appendChild(document.createElement('br'));
-                    var cursorBr = document.createElement('br');
-                    editor.appendChild(cursorBr);
-                    // 光标放在最后一个 <br> 之后（新空行上）
+                    // 注意：不追加 <br> 元素。
+                    // formatAsPrompt 输出的末尾已自带 \n  （换行 + 2 个空格），
+                    // 它在 contenteditable 中渲染为一个可见空白行。
+                    // 追加 <br> 会产生额外空行，导致末尾多出空白（历史教训）。
+                    // 直接将光标移到编辑器内容末尾即可。
                     var range = document.createRange();
-                    range.setStartAfter(cursorBr);
+                    range.selectNodeContents(editor);
+                    range.collapse(false);
                     var sel = window.getSelection();
                     sel.removeAllRanges();
                     sel.addRange(range);

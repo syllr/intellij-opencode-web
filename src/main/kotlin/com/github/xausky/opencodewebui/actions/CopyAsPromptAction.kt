@@ -21,7 +21,9 @@ import java.awt.datatransfer.StringSelection
  */
 fun formatAsPrompt(filePath: String, startLine: Int, endLine: Int, selectedText: String): String {
     val lineRange = if (startLine == endLine) "$startLine" else "$startLine-$endLine"
-    // 在结束 ``` 后加一个带 2 个空格的空白行，避免末尾代码行被误处理
+    // 在结束 ``` 后加一个带 2 个空格的空白行。
+    // 这是为了在 contenteditable 输入框中渲染出一个可见的空白行，
+    // 视觉上分隔代码块与后续光标位置，避免末尾代码行被误处理。
     return "location:$filePath:$lineRange\ncontent:\n```\n$selectedText\n```\n  "
 }
 
