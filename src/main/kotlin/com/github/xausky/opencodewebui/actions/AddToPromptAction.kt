@@ -23,7 +23,6 @@ class AddToPromptAction : AnAction(), DumbAware {
         // TODO: 临时方案——im-select 路径和输入法 ID 应改为可配置（设置页面）。
         // 当前硬编码仅适用于开发者本人机器，后续需抽离为插件配置。
         private val IM_SELECT_PATH = "/Users/yutao/Desktop/software/bin/im-select"
-        private val IM_SELECT_ARG_CN = "com.apple.inputmethod.SCIM.ITABC"
         private val IM_SELECT_ARG_EN = "com.apple.keylayout.ABC"
         // 插件启动时检查一次 im-select 是否存在，结果缓存到进程退出
         private val imSelectAvailable by lazy { File(IM_SELECT_PATH).exists() }
@@ -86,7 +85,7 @@ class AddToPromptAction : AnAction(), DumbAware {
 
         if (selectedText.isNullOrBlank() || selStart < 0 || selEnd <= selStart) {
             thisLogger().info("[AddToPromptAction] No valid selection, opening OpenCode Web")
-            switchInputMethod(IM_SELECT_ARG_CN)
+            switchInputMethod(IM_SELECT_ARG_EN)
             MyToolWindowFactory.openOpenCodeWebToolWindow(project)
             return
         }
@@ -102,8 +101,8 @@ class AddToPromptAction : AnAction(), DumbAware {
 
         JcefJsInjector.appendTextToEditor(project, formattedContent)
 
-        // 切换到中文输入法（旁路功能，仅在 im-select 存在时生效）
-        switchInputMethod(IM_SELECT_ARG_CN)
+        // 焦点进入 OpenCode Web 页面时，默认切英文输入法
+        switchInputMethod(IM_SELECT_ARG_EN)
 
         // 清除选中
         if (IdeaVimIntegration.isIdeaVimInstalled() && IdeaVimIntegration.isInVisualMode(editor)) {
