@@ -83,9 +83,12 @@ object OpenCodeServerManager {
      * 注意：这是用户通过右键菜单主动触发的操作，而非 IDE 退出时的自动清理。
      * IDE 退出时不会调用此方法，opencode 服务进程会独立继续运行。
      *
-     * kill 策略：直接通过端口号暴力 kill (SIGKILL)，不做优雅关闭。
-     * 不依赖 process.destroy() 是因为启动命令经过 zsh 中转（zsh -lc "opencode serve..."），
-     * process.destroy() 只能杀死 zsh，opencode serve 会变成孤儿进程继续占用端口。
+     * kill 策略：通过 lsof 查找端口号，暴力 kill (SIGKILL)，不做优雅关闭。
+     * 不依赖 process.destroy() 是因为 zsh -lc 会 exec 优化，启动后 zsh 进程已被替换。
+     *
+     * 关键：必须加 -sTCP:LISTEN 过滤，否则 lsof -ti :PORT 会返回所有与该端口
+     * 有 TCP 连接（包括 ESTABLISHED 客户端连接）的进程。JCEF Chromium 子进程通过
+     * HTTP 连接到此端口会被 lsof 误列，kill -9 它们会导致 IDE 崩溃退出。
      */
     fun stopServer() {
         try {
@@ -95,7 +98,7 @@ object OpenCodeServerManager {
 
             thisLogger().info("[OpenCodeServerManager] Killing process on port $PORT")
             try {
-                val killCmd = listOf("/bin/sh", "-c", "lsof -ti :$PORT | xargs kill -9")
+                val killCmd = listOf("/bin/sh", "-c", "lsof -tiTCP:$PORT -sTCP:LISTEN | xargs kill -9")
                 Runtime.getRuntime().exec(killCmd.toTypedArray()).waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
             } catch (e: Exception) {
                 thisLogger().warn("[OpenCodeServerManager] Port kill failed: ${e.message}")
