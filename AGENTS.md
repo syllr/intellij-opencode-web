@@ -1,98 +1,152 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-04-27
-**Commit:** c96e033
-**Branch:** main
+**Generated:** 2026-05-10
+**Commit:** f5a95b4
+**Branch:** 1.0.17
 
 ## OVERVIEW
+
 IntelliJ Platform 插件，为 OpenCode Web UI 提供 JetBrains IDE 集成（fork 版本）。
 
 ## STRUCTURE
+
 ```
 intellij-opencode-web/
 ├── src/main/kotlin/com/github/xausky/opencodewebui/
-│   ├── toolWindow/      # JCEF + 服务器管理
-│   ├── actions/         # IDE actions（重启、快捷键、Copy as Prompt）
-│   ├── gutter/          # 行标记（Prompt 评论）
-│   ├── services/        # 平台服务
-│   ├── listeners/       # 生命周期监听器
-│   ├── startup/        # 启动活动
-│   └── utils/          # Session 辅助工具
-├── src/main/resources/  # 图标、plugin.xml、消息
+│   ├── toolWindow/      # JCEF 浏览器 + 服务器管理 + 键盘处理【核心】
+│   ├── listeners/       # SSE 事件消费 + 文件刷新协调
+│   │   └── 参考/         # OpenCode Message API 参考文档
+│   ├── actions/         # IDE actions（快捷键传递、Copy/Add to Prompt）
+│   └── utils/           # HTTP API、JS 注入、IdeaVim 集成
+├── src/main/resources/  # plugin.xml、图标、i18n 消息
+├── src/test/            # 单元测试 + 集成测试
 ├── .github/workflows/   # CI/CD（构建、发布、UI测试）
-└── build.gradle.kts     # Gradle 配置
+└── references/          # IntelliJ 平台参考文档
 ```
 
 ## WHERE TO LOOK
-| Task | Location | Notes |
-|------|----------|-------|
-| 核心逻辑 | toolWindow/MyToolWindowFactory.kt | JCEF + 服务器管理 |
-| IDE Actions | actions/ | RestartServer、PassToJcef、CopyAsPrompt |
-| Gutter Icons | gutter/ | PromptLineMarkerProvider、PromptCommentDialog |
-| CI/CD | .github/workflows/ | 构建、发布、UI测试 |
-| 构建配置 | build.gradle.kts, gradle.properties | 依赖、版本 |
-| 测试 | src/test/ | 单元测试 + 集成测试 |
-| **IntelliJ 参考** | `references/intellij-platform/` | 官方文档 |
+
+| Task              | Location                              | Notes                          |
+| ----------------- | ------------------------------------- | ------------------------------ |
+| 工具窗口入口      | toolWindow/MyToolWindowFactory.kt     | JCEF + 服务器管理              |
+| 工具窗口面板      | toolWindow/MyToolWindow.kt            | 浏览器生命周期管理             |
+| 服务器管理        | toolWindow/OpenCodeServerManager.kt   | 单例对象，启停管理             |
+| IDE Actions       | actions/                              | 快捷键传递、Copy/Add to Prompt |
+| SSE 事件          | listeners/OpenCodeSSEConsumer.kt      | session.diff/file.edited 等    |
+| 文件刷新          | listeners/FullRefreshCoordinator.kt   | 生产者-消费者模式              |
+| 快捷键传递        | toolWindow/JcefKeyboardInterceptor.kt | ESC/Cmd+K/Cmd+, → JCEF         |
+| Emacs 按键        | toolWindow/EmacsKeyHandler.kt         | Ctrl+N/P/E/A/B/F               |
+| 右键菜单          | toolWindow/LinkContextMenuHandler.kt  | JCEF 右键菜单                  |
+| 健康监控          | toolWindow/HealthMonitor.kt           | 服务器定时轮询                 |
+| 常量定义          | root/OpenCodeConstants.kt             | 端口、超时等                   |
+| CI/CD             | .github/workflows/                    | 构建、发布、UI测试             |
+| 构建配置          | build.gradle.kts, gradle.properties   | 依赖、版本                     |
+| 测试              | src/test/                             | 单元测试 + 集成测试            |
+| **IntelliJ 参考** | `references/intellij-platform/`       | 官方文档                       |
 
 ## CODE MAP
 
-| Symbol | Type | Location | Role |
-|--------|------|----------|------|
-| MyToolWindowFactory | ToolWindowFactory | toolWindow/ | JCEF 浏览器 + 服务器管理 |
-| OpenCodeServerManager | Object | toolWindow/ | 服务器生命周期管理 |
-| OpenCodeApi | Class | toolWindow/ | HTTP API 调用 |
-| SessionHelper | Object | utils/ | 会话恢复 |
-| PromptLineMarkerProvider | LineMarkerProvider | gutter/ | 行标记图标 |
-| PromptCommentDialog | DialogWrapper | gutter/ | 评论对话框 |
-| PassToJcefAction | AnAction | actions/ | 快捷键传递 |
-| CopyAsPromptAction | AnAction | actions/ | 复制为 Prompt |
-| AddToPromptAction | AnAction | actions/ | 添加到 Prompt 编辑器 |
-| MyStartupActivity | StartupActivity | startup/ | 启动时注册 Disposable |
-| PromptToolWindowFactory | ToolWindowFactory | toolWindow/ | Prompt 编辑器工具窗口 |
-| PromptToolWindowPanel | JPanel | toolWindow/ | Prompt 编辑器面板 |
+### toolWindow/（8 文件，核心模块）
+
+| Symbol                  | Type                         | Role                                      |
+| ----------------------- | ---------------------------- | ----------------------------------------- |
+| MyToolWindowFactory     | ToolWindowFactory            | 工具窗口入口，管理共享 JBCefClient        |
+| MyToolWindow            | Panel                        | 工具窗口面板，协调浏览器生命周期          |
+| BrowserPanel            | Panel                        | JCEF 浏览器 Panel，CefBrowser 创建/销毁   |
+| OpenCodeServerManager   | Object                       | 服务器进程启停管理（AtomicReference）     |
+| HealthMonitor           | Class                        | 服务器健康检查定时轮询                    |
+| JcefKeyboardInterceptor | Class                        | 将 ESC/Cmd+K/Cmd+, 传递给 JCEF 浏览器     |
+| EmacsKeyHandler         | Object                       | Emacs 风格按键映射（Ctrl+N/P/E/A/B/F）    |
+| LinkContextMenuHandler  | CefContextMenuHandlerAdapter | JCEF 右键菜单（刷新/浏览器打开/复制链接） |
+
+### listeners/（6 文件 + 参考/，SSE + 文件事件）
+
+| Symbol                 | Type                   | Role                                        |
+| ---------------------- | ---------------------- | ------------------------------------------- |
+| OpenCodeSSEConsumer    | BackgroundEventHandler | SSE 事件消费（session.diff/file.edited 等） |
+| FullRefreshCoordinator | Object                 | 全量刷新协调器（生产者-消费者）             |
+| RefreshDeduplicator    | Class                  | 文件刷新去重（时间窗口）                    |
+| SSEEventParser         | Object                 | SSE 事件 JSON 解析                          |
+| BashCommandHandler     | Object                 | Bash 工具 SSE 事件处理                      |
+| OpenCodeDiffRefresher  | Object                 | 文件刷新器（LocalFileSystem）               |
+
+### actions/（3 文件）
+
+| Symbol                        | Type     | Role                                       |
+| ----------------------------- | -------- | ------------------------------------------ |
+| JcefShortcutPassthroughAction | AnAction | 快捷键传递（ESC/Cmd+K/Cmd+,）到 JCEF       |
+| CopyAsPromptAction            | AnAction | 复制选中文本为 Prompt 格式（带路径和行号） |
+| AddToPromptAction             | AnAction | 添加选中代码到 Prompt 编辑器，支持 IdeaVim |
+
+### utils/（4 文件）
+
+| Symbol             | Type   | Role                                   |
+| ------------------ | ------ | -------------------------------------- |
+| OpenCodeApi        | Object | HTTP API 调用（健康检查/获取 session） |
+| JcefJsInjector     | Object | 向 JCEF 页面注入 JavaScript            |
+| IdeaVimIntegration | Object | IdeaVim 集成（获取 visual 模式选区）   |
+| SSEConsumerFactory | Object | OpenCodeSSEConsumer 工厂               |
+
+### root
+
+| Symbol            | Type   | Role                             |
+| ----------------- | ------ | -------------------------------- |
+| OpenCodeConstants | Const  | 常量（端口 12396、超时、间隔等） |
+| MyBundle          | Bundle | i18n 资源绑定                    |
 
 ## CONVENTIONS
+
 - Gradle 版本目录 (`gradle/libs.versions.toml`)
-- JDK 21, Kotlin 2.3.20
-- Qodana + Kover 代码质量
+- JDK 21, Kotlin 2.3.20, IntelliJ Platform 2.14.0
+- 平台版本 2026.1 (sinceBuild 261)
+- Qodana + Kover 代码质量，CodeCov 覆盖率上传
 - SemVer 版本格式
+- 使用 `thisLogger().info/warn/error()` 记录日志
+- 日志文件: `build/idea-sandbox/IU-2026.1/log/`
+- 构建: `./gradlew buildPlugin`，测试: `./gradlew check`
 - **包名不匹配**: 源码 `com.github.xausky.opencodewebui` vs `pluginGroup = com.shenyuanlaolarou`（已知问题，暂未修复）
 - **Git 提交**: Agent 禁止自动提交，必须用户显式调用
 - **发布**: Agent 禁止自动发布，必须用户显式调用
 
 ## ANTI-PATTERNS (THIS PROJECT)
-- ~~静态全局服务器状态~~ → 已修复：使用 AtomicReference/AtomicBoolean
-- ~~弃用的 JBCefBrowser~~ → 已修复：使用 JBCefBrowserBuilder
-- ~~SQLite JDBC 会话管理~~ → 已修复：使用 HTTP API
-- ~~单个大文件~~ → 已修复：拆分为多个文件
+
+- ~~静态全局服务器状态~~ → 已修复：使用 `AtomicReference<Process>` + `AtomicBoolean` / `@Volatile`
+- ~~弃用的 JBCefBrowser~~ → 已修复：使用 `JBCefBrowserBuilder`
+- ~~SQLite JDBC 会话管理~~ → 已修复：通过 HTTP API (`OpenCodeApi.getLatestSessionId`) 实现会话持久化
+- ~~单个大文件 (MyToolWindowFactory.kt 900+ 行)~~ → 已修复：拆分为多个文件（toolWindow/ 8 文件）
 - ~~正则表达式解析 HTTP 响应体~~ → 已修复：统一使用 Gson 解析 JSON 响应。所有 HTTP API 返回的 body 必须通过 Gson 或类似的 JSON 解析器处理，禁止使用 `Regex` / `Pattern` / 字符串操作来提取 JSON 字段
 
-## TOOLWINDOW 配置说明
-- **PromptEditor** 工具窗口通过 `secondary="true"` 和 `order="after Bookmarks"` 配置显示在左侧边栏下方
-- IntelliJ 的 `secondary` 属性控制工具窗口显示在主组（上方）还是辅助组（下方）
-- `side_tool="true"` 是 IntelliJ 运行时状态，由 IDE 根据 `secondary` 属性和用户拖动操作写入配置文件
-- 如果 `secondary` 不生效，用户手动拖动后 IDE 会写入 `side_tool="true"` 到 workspace.xml
+### 开发注意事项
+
+- **禁止静态全局可变状态** - 使用 AtomicReference/AtomicBoolean 替代
+- **禁止 Regex 解析 JSON** - 必须用 Gson 或类似 JSON 解析器
+- **AddToPromptAction** 中 im-select 路径和输入法 ID 硬编码，需改为可配置（待处理）
 
 ## UNIQUE STYLES
-- Emacs 风格 JCEF 键盘快捷键
+
+- Emacs 风格 JCEF 键盘快捷键（Ctrl+N/P/E/A/B/F）
+- 快捷键传递：ESC/Cmd+K/Cmd+, 在 JCEF 焦点时传递给网页而非 IDE
 - 首次打开工具窗口时自动重启服务器
-- ESC 键焦点修复（JCEF）
-- 端口 12396（非标准）
+- 端口 12396（非标准，避免冲突）
 - 中文输入法修复：移除 `e.consume()`
 - 外部链接在系统浏览器打开
 - 会话恢复（通过 HTTP API）
-- **Copy as Prompt**：复制选中文本为 Prompt 格式
-- **Add to Prompt**：选中代码后添加到 PromptEditor，支持快捷键
-- **PromptEditor 自动启动**：点击发送时如果服务未启动会自动启动
+- **Copy as Prompt**：选中代码后右键复制为 Prompt 格式
+- **Add to Prompt**：选中代码后添加到 Prompt 编辑器，支持 IdeaVim
+- **IdeaVim 集成**：与 IdeaVim 插件配合，正确获取 visual 模式选区
+- **JCEF JS 注入**：注入 JavaScript 到浏览器页面
+- **HealthMonitor**：定时轮询服务器健康状态，自动重连
 
 ## TOOLWINDOW 配置说明
-- **PromptEditor** 工具窗口通过 `secondary="true"` 和 `order="after Bookmarks"` 配置显示在左侧边栏下方
-- IntelliJ 的 `secondary` 属性控制工具窗口显示在主组（上方）还是辅助组（下方）
-- `side_tool="true"` 是 IntelliJ 运行时状态，由 IDE 根据 `secondary` 属性和用户拖动操作写入配置文件
-- 如果 `secondary` 不生效，用户手动拖动后 IDE 会写入 `side_tool="true"` 到 workspace.xml
-- **PromptEditor 发送逻辑**：服务未启动时自动启动服务后发送，服务崩溃时自动重连
+
+- **OpenCodeWeb** 工具窗口通过 `anchor="right"` 配置显示在右侧边栏
+- 实现 `DumbAware` 接口，确保索引更新期间工具窗口可正常使用
+- 使用 `sharedJBCefClient` 共享 JBCefClient 实例，减少资源占用
+- 通过 `myToolWindowInstances: ConcurrentHashMap<Project, MyToolWindow>` 管理多项目实例
+- 服务未启动时自动启动，服务崩溃时自动重连
 
 ## COMMANDS
+
 ```bash
 ./gradlew buildPlugin          # 构建插件
 ./gradlew check                 # 测试 + Qodana
@@ -102,15 +156,30 @@ intellij-opencode-web/
 ./gradlew qodana                # 代码质量检查
 ```
 
+## TESTING
+
+| 类型     | 框架                          | 位置                                       |
+| -------- | ----------------------------- | ------------------------------------------ |
+| 单元测试 | JUnit 4                       | src/test/.../actions/FormatAsPromptTest.kt |
+| 集成测试 | IntelliJ BasePlatformTestCase | src/test/.../MyPluginTest.kt               |
+| UI 测试  | Robot + IntelliJ 测试框架     | .github/workflows/run-ui-tests.yml         |
+
+- 测试数据放在 `src/test/testData/` 目录
+- 集成测试继承 `BasePlatformTestCase`，使用 `@TestDataPath`
+- Kover 代码覆盖率集成至 `check` 任务
+
 ## NOTES
+
 - Fork 自 xausky/intellij-opencode-web-ui
 - 插件 ID: `com.shenyuanlaolarou.opencodewebui`
 - 调试日志: `thisLogger().info/warn/error()`
-- 日志文件: `build/idea-sandbox/IU-2025.3.4/log/`
+- 日志文件: `build/idea-sandbox/IU-2026.1/log/`
+- 默认端口: 12396，默认主机: 127.0.0.1
 
 ## REFERENCES
-| Resource | URL |
-|----------|-----|
-| DevGuide | https://plugins.jetbrains.com/docs/intellij/ |
-| JCEF Docs | https://chromiumembedded.github.io/java-cef/ |
+
+| Resource         | URL                                                    |
+| ---------------- | ------------------------------------------------------ |
+| DevGuide         | https://plugins.jetbrains.com/docs/intellij/           |
+| JCEF Docs        | https://chromiumembedded.github.io/java-cef/           |
 | Platform Samples | https://github.com/JetBrains/intellij-sdk-code-samples |
