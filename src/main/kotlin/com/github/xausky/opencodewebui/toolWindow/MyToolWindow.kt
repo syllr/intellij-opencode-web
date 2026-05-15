@@ -27,6 +27,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
         MyToolWindowFactory.myToolWindowInstances[project] = this
 
         // 项目关闭时清理：移除 map 引用并释放资源，防止内存泄漏
+        // 注意：不关闭 opencode 服务器进程，它在 IDE 之外独立运行
         Disposer.register(project) {
             logger.info("[Lifecycle] Cleaning up MyToolWindow for project=${project.name}")
             MyToolWindowFactory.myToolWindowInstances.remove(project)

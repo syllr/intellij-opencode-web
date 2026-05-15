@@ -62,8 +62,8 @@ object OpenCodeServerManager {
                         sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
                         onStarted()
                     } else {
-                        // 健康检查超时，清理已启动的进程
-                        process.destroyForcibly()
+                        // 健康检查超时，清理已启动的进程树（含 MCP 子进程）
+                        killProcessTreeByHandle(process)
                         serverProcess.set(null)
                         onFailed(Exception("Server not healthy after 30s"))
                     }
@@ -78,17 +78,13 @@ object OpenCodeServerManager {
     }
 
     /**
-     * 关闭 OpenCode 服务器。
+     * 关闭 OpenCode 服务器和所有子进程（MCP 服务等）。
      *
-     * 注意：这是用户通过右键菜单主动触发的操作，而非 IDE 退出时的自动清理。
-     * IDE 退出时不会调用此方法，opencode 服务进程会独立继续运行。
-     *
-     * kill 策略：通过 lsof 查找端口号，暴力 kill (SIGKILL)，不做优雅关闭。
-     * 不依赖 process.destroy() 是因为 zsh -lc 会 exec 优化，启动后 zsh 进程已被替换。
-     *
-     * 关键：必须加 -sTCP:LISTEN 过滤，否则 lsof -ti :PORT 会返回所有与该端口
-     * 有 TCP 连接（包括 ESTABLISHED 客户端连接）的进程。JCEF Chromium 子进程通过
-     * HTTP 连接到此端口会被 lsof 误列，kill -9 它们会导致 IDE 崩溃退出。
+     * kill 策略：优先用 ProcessHandle API 从叶子杀到根；回退用 lsof+pgrep 递归遍历。
+     * 为什么不能只 kill 父进程：opencode serve 启动的 MCP 子进程（open-websearch、
+     * @playwright/mcp 等）通过 npm exec/npx 拉起，杀父进程后变为孤儿进程驻留。
+     * 关键：lsof 必须加 -sTCP:LISTEN 过滤，否则会误杀与端口有 ESTABLISHED 连接的
+     * JCEF Chromium 子进程，导致 IDE 崩溃退出。
      */
     fun stopServer() {
         try {
@@ -96,17 +92,79 @@ object OpenCodeServerManager {
             sseConsumer?.stop()
             sseConsumer = null
 
-            thisLogger().info("[OpenCodeServerManager] Killing process on port $PORT")
-            try {
-                val killCmd = listOf("/bin/sh", "-c", "lsof -tiTCP:$PORT -sTCP:LISTEN | xargs kill -9")
-                Runtime.getRuntime().exec(killCmd.toTypedArray()).waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
-            } catch (e: Exception) {
-                thisLogger().warn("[OpenCodeServerManager] Port kill failed: ${e.message}")
-            }
+            thisLogger().info("[OpenCodeServerManager] Killing process tree on port $PORT")
 
-            serverProcess.set(null)
+            // getAndSet(null) 原子性地获取并清空引用，防止与 startServer() 并发时的 TOCTOU 竞态
+            val process = serverProcess.getAndSet(null)
+            if (process != null && process.isAlive) {
+                killProcessTreeByHandle(process)
+            } else {
+                killProcessTreeByPort()
+            }
         } catch (e: Exception) {
             thisLogger().error("Error stopping OpenCode server: ${e.message}")
+        }
+    }
+
+    /**
+     * 使用 ProcessHandle API 递归杀死进程树（从叶子到根）。
+     * 只杀目标进程的后代，不会误杀同 PGID 的无关进程。
+     */
+    private fun killProcessTreeByHandle(process: Process) {
+        try {
+            val handle = process.toHandle()
+            val pid = handle.pid()
+            thisLogger().info("[OpenCodeServerManager] Killing process tree via ProcessHandle, PID=$pid")
+
+            val descendants = handle.descendants().toList()
+            descendants.reversed().forEach { it.destroyForcibly() }
+            handle.destroyForcibly()
+
+            // 等待根进程确认终止，防止 onExit() 非阻塞导致健康检查误判
+            try {
+                handle.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS)
+                thisLogger().info("[OpenCodeServerManager] Process $pid confirmed terminated after SIGKILL")
+            } catch (_: java.util.concurrent.TimeoutException) {
+                thisLogger().warn("[OpenCodeServerManager] Process $pid did not terminate within 3s after destroyForcibly")
+            }
+
+            thisLogger().info("[OpenCodeServerManager] Killed $pid and ${descendants.size} descendants via ProcessHandle")
+        } catch (e: Exception) {
+            thisLogger().warn("[OpenCodeServerManager] ProcessHandle kill failed: ${e.message}. Falling back to port-based kill.")
+            killProcessTreeByPort()
+        }
+    }
+
+    /**
+     * 通过端口查找主进程，递归杀死所有子进程（从叶子到根）。
+     * 后备方案：serverProcess 不可用时使用。
+     */
+    private fun killProcessTreeByPort() {
+        try {
+            thisLogger().info("[OpenCodeServerManager] Killing process tree via port lookup (PORT=$PORT)")
+            val script = """
+                |_kill_tree() {
+                |    local pid=${'$'}1
+                |    for child in ${'$'}(pgrep -P ${'$'}pid 2>/dev/null); do
+                |        _kill_tree ${'$'}child
+                |    done
+                |    kill -9 ${'$'}pid 2>/dev/null || true
+                |}
+                |PID=${'$'}(lsof -tiTCP:${PORT} -sTCP:LISTEN | head -1)
+                |if [ -n "${'$'}PID" ]; then
+                |    _kill_tree ${'$'}PID
+                |fi
+            """.trimMargin()
+
+            val proc = Runtime.getRuntime().exec(arrayOf("/bin/sh", "-c", script))
+            val exited = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            if (!exited) {
+                proc.destroyForcibly()
+                thisLogger().warn("[OpenCodeServerManager] Port-based process tree kill timed out")
+            }
+            thisLogger().info("[OpenCodeServerManager] Process tree killed via port-based lookup")
+        } catch (e: Exception) {
+            thisLogger().warn("[OpenCodeServerManager] Port-based process tree kill failed: ${e.message}")
         }
     }
 
