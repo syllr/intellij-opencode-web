@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Setting UI 页面
+### Requirement: Settings UI 页面
 
-系统 MUST 在 IntelliJ Settings → Tools 下注册 "OpenCode" 配置页面。
+系统 MUST 在 IntelliJ Settings → Tools 下注册 "OpenCode" 配置页。
 
 #### Scenario: 页面可见
 
@@ -11,55 +11,60 @@
 
 #### Scenario: 页面结构
 
-- **WHEN** 用户点击 "OpenCode" 配置项
-- **THEN** 显示配置页面，包含通知配置 Section，且预留额外 Section 空间
+- **WHEN** 用户点击 "OpenCode"
+- **THEN** 显示通知配置 Section（全局开关 + 12 个事件开关 + minDuration + 显示选项），且预留额外 Section 空间
 
-### Requirement: 通知事件开关配置
+### Requirement: 事件开关配置
 
 系统 MUST 支持按事件类型独立开关通知。
 
 #### Scenario: 事件开关 UI
 
 - **WHEN** 用户打开通知配置 Section
-- **THEN** 每个事件类型（permission/complete/subagent_complete/error/question/user_cancelled/plan_exit/session_started/user_message/client_connected）都有一个复选框开关
+- **THEN** 每个事件类型都有复选框（permission/complete/subagent_complete/error/question/interrupted/user_cancelled/plan_exit/session_started/user_message/client_connected）
 
-#### Scenario: 开关状态持久化
+#### Scenario: interrupted 标注
 
-- **WHEN** 用户修改开关状态并点击 Apply/OK
-- **THEN** 配置保存到 `PropertiesComponent` 和/或 `opencode-ide.json` 文件
+- **WHEN** 显示 `interrupted` 开关
+- **THEN** 灰色显示并标注"当前环境不支持"
+
+#### Scenario: 配置持久化
+
+- **WHEN** 用户点击 Apply/OK
+- **THEN** 配置写入 `PropertiesComponent.getInstance()`，Key 格式 `opencode.event.{type}.enabled`
 
 #### Scenario: 配置立即生效
 
-- **WHEN** 用户修改开关状态
-- **THEN** 运行中的 `OpenCodeNotificationService` 立即使用新配置，无需重启 IDE
+- **WHEN** 用户修改配置
+- **THEN** 运行中的通知服务立即使用新配置，无需重启 IDE
 
-### Requirement: 配置文件支持
+### Requirement: 通用配置
 
-系统 SHALL 支持通过 `~/.config/opencode/opencode-ide.json` 配置文件加载配置。
+系统 SHALL 在 Setting UI 中提供 minDuration、showProjectName、showSessionTitle 配置项。
 
-#### Scenario: 配置文件加载
+#### Scenario: minDuration
 
-- **WHEN** 插件启动
-- **THEN** 读取 `~/.config/opencode/opencode-ide.json` 文件（如果存在），解析为 `NotifierConfig` 对象
+- **WHEN** 用户打开通知配置 Section
+- **THEN** 可以看到 minDuration（秒）数字输入框，默认 0
 
-#### Scenario: 配置文件不存在
+#### Scenario: showProjectName
 
-- **WHEN** `~/.config/opencode/opencode-ide.json` 不存在
-- **THEN** 使用默认配置（permission/complete/error/client_connected 开启，其余关闭）
+- **WHEN** 用户打开通知配置 Section
+- **THEN** 可以看到"在通知标题中显示项目名称"复选框
 
-#### Scenario: 配置合并
+#### Scenario: showSessionTitle
 
-- **WHEN** 配置文件和 Setting UI 同时存在配置
-- **THEN** 文件配置为基础，UI 配置为覆盖（UI 优先）
+- **WHEN** 用户打开通知配置 Section
+- **THEN** 可以看到"在通知内容中显示 Session 标题"复选框
 
-### Requirement: 默认通知消息模板
+### Requirement: 默认消息模板
 
-系统 MUST 提供默认的通知消息模板，支持 `{sessionTitle}` 占位符。
+系统 MUST 提供默认消息模板，支持 `{sessionTitle}`、`{projectName}`、`{timestamp}`、`{agentName}` 占位符。
 
-#### Scenario: 默认消息
+#### Scenario: 默认模板
 
-- **WHEN** 未自定义消息模板
-- **THEN** 使用如下默认模板：
+- **WHEN** PropertiesComponent 中无对应 key
+- **THEN** 使用以下默认模板：
 
 | 通知类型          | 默认消息                            |
 | ----------------- | ----------------------------------- |
@@ -68,13 +73,26 @@
 | subagent_complete | "Subagent 任务完成: {sessionTitle}" |
 | error             | "执行错误: {sessionTitle}"          |
 | question          | "需要回答: {sessionTitle}"          |
+| interrupted       | "会话中断: {sessionTitle}"          |
 | user_cancelled    | "会话取消: {sessionTitle}"          |
-| plan_exit         | "Plan 制定完成: {sessionTitle}"     |
+| plan_exit         | "Plan 完成: {sessionTitle}"         |
 | session_started   | "新会话: {sessionTitle}"            |
 | user_message      | "用户已发送消息"                    |
 | client_connected  | "OpenCode 已连接"                   |
 
-#### Scenario: 标题占位符替换
+#### Scenario: 占位符替换
 
 - **WHEN** 消息模板包含 `{sessionTitle}`
-- **THEN** 替换为实际的 session 标题（可通过 HTTP API 获取）
+- **THEN** 替换为 HTTP API 获取的 session 标题
+
+- **WHEN** 消息模板包含 `{projectName}`
+- **THEN** 替换为 `project.basePath` 的 basename
+
+- **WHEN** 消息模板包含 `{timestamp}`
+- **THEN** 替换为当前 HH:MM:SS
+
+- **WHEN** 消息模板包含 `{agentName}`
+- **THEN** 替换为 session title 中 `(@name subagent)` 格式的 agent 名称
+
+- **WHEN** 消息模板包含不支持的占位符
+- **THEN** 保留原样输出
