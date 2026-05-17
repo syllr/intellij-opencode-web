@@ -1,35 +1,36 @@
 package com.github.xausky.opencodewebui.toolWindow
 
+import com.github.xausky.opencodewebui.utils.OpenCodeNotificationRouter
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefClient
+import com.intellij.util.messages.MessageBusConnection
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * OpenCode Web UI 工具窗口工厂类
- *
- * 【重要】实现 DumbAware 接口：
- * IntelliJ 在 "dumb mode"（索引更新期间）会禁用需要智能功能的组件，默认情况下
- * 所有 ToolWindow 都会受到影响，显示 "This view is not available until indexes are built"。
- *
- * 实现 DumbAware 接口可以告知 IntelliJ：这个工具窗口不依赖于项目索引，
- * 在索引更新期间也可以正常使用。OpenCode 是纯浏览器 UI，不需要索引，
- * 因此实现此接口可以避免索引期间的覆盖层提示。
- *
- * 【API 警告说明】：
- * @Suppress("DEPRECATION", "EXPERIMENTAL_API_USAGE") 用于抑制 ToolWindowFactory
- * 接口的 deprecated/experimental 方法警告。这些警告来自 IntelliJ 框架本身，
- * 不是我们代码的问题 - 官方 SDK 示例同样使用相同模式。
- */
 @Suppress("DEPRECATION", "EXPERIMENTAL_API_USAGE")
 class MyToolWindowFactory : ToolWindowFactory, DumbAware {
+
+    init {
+        // 项目打开时注册到 Router（双保险注册的第一道保险）
+        val connection: MessageBusConnection = ApplicationManager.getApplication().messageBus.connect()
+        connection.subscribe(ProjectManager.TOPIC, object : ProjectManagerListener {
+            override fun projectOpened(project: Project) {
+                OpenCodeNotificationRouter.register(project)
+            }
+            override fun projectClosing(project: Project) {
+                OpenCodeNotificationRouter.unregister(project)
+            }
+        })
+    }
 
     companion object {
         private const val OPCODE_WEB_TOOL_WINDOW_ID = "OpenCodeWeb"
@@ -65,6 +66,7 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         thisLogger().info("[Lifecycle] createToolWindowContent called, project=${project.name}")
+        OpenCodeNotificationRouter.register(project)
         val contentManager = toolWindow.contentManager
 
         // 创建 MyToolWindow，触发 init 块设置 myToolWindowInstance

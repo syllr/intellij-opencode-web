@@ -11,6 +11,13 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 
+data class SessionInfo(
+    val id: String,
+    val title: String?,
+    val parentID: String?,
+    val timeCreated: Long?
+)
+
 object OpenCodeApi {
     fun isServerHealthySync(): Boolean {
         // 先检查端口连通性（比 HTTP 请求更轻量）
@@ -63,6 +70,34 @@ object OpenCodeApi {
         }
 
         return false
+    }
+
+    /**
+     * 获取指定 session 的详细信息（title、parentID 等）。
+     * 调用 GET /session/:sessionID 获取单个 session 的信息。
+     */
+    fun getSession(sessionID: String): SessionInfo? {
+        var conn: java.net.HttpURLConnection? = null
+        return try {
+            val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/session/$sessionID").toURL()
+            conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = HTTP_TIMEOUT_MS
+            conn.readTimeout = HTTP_TIMEOUT_MS
+            val body = conn.inputStream.bufferedReader().readText()
+            val obj = JsonParser.parseString(body).asJsonObject
+            val time = obj.getAsJsonObject("time")
+            SessionInfo(
+                id = obj.get("id")?.asString ?: sessionID,
+                title = obj.get("title")?.asString,
+                parentID = obj.get("parentID")?.asString,
+                timeCreated = time?.get("created")?.asLong
+            )
+        } catch (e: Exception) {
+            thisLogger().warn("[OpenCodeApi] Failed to get session $sessionID: ${e.message}")
+            null
+        } finally {
+            conn?.disconnect()
+        }
     }
 
     /**

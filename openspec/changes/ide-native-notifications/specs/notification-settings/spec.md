@@ -38,6 +38,25 @@
 - **WHEN** 用户修改配置
 - **THEN** 运行中的通知服务立即使用新配置，无需重启 IDE
 
+#### Scenario: plan_exit 不支持标注
+
+- **WHEN** `session.next.tool.called` 经实测不在 SSE 流中
+- **THEN** `plan_exit` 开关也灰色显示并标注"当前环境不支持"
+
+### Requirement: 消息模板配置
+
+系统 SHALL 在通知配置 Section 中提供消息模板编辑功能。
+
+#### Scenario: 消息模板文本框
+
+- **WHEN** 用户展开某事件类型的配置
+- **THEN** 可以看到该事件的消息模板文本输入框（默认值见默认模板列表）
+
+#### Scenario: 模板持久化
+
+- **WHEN** 用户修改消息模板并点击 Apply
+- **THEN** 模板写入 `PropertiesComponent`，Key 格式 `opencode.message.{type}`
+
 ### Requirement: 通用配置
 
 系统 SHALL 在 Setting UI 中提供 minDuration、showProjectName、showSessionTitle 配置项。
@@ -68,14 +87,14 @@
 
 | 通知类型          | 默认消息                            |
 | ----------------- | ----------------------------------- |
-| permission        | "需要权限: {sessionTitle}"          |
+| permission        | "权限申请: {sessionTitle}"          |
 | complete          | "回答完成: {sessionTitle}"          |
 | subagent_complete | "Subagent 任务完成: {sessionTitle}" |
 | error             | "执行错误: {sessionTitle}"          |
-| question          | "需要回答: {sessionTitle}"          |
+| question          | "询问用户: {sessionTitle}"          |
 | interrupted       | "会话中断: {sessionTitle}"          |
 | user_cancelled    | "会话取消: {sessionTitle}"          |
-| plan_exit         | "Plan 完成: {sessionTitle}"         |
+| plan_exit         | "Plan 制定完成: {sessionTitle}"     |
 | session_started   | "新会话: {sessionTitle}"            |
 | user_message      | "用户已发送消息"                    |
 | client_connected  | "OpenCode 已连接"                   |

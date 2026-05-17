@@ -48,5 +48,9 @@
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow factoryClass="com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
         <notificationGroup id="OpenCodeWeb.notifications" displayType="BALLOON"/>
+        <applicationConfigurable parentId="tools"
+                               instance="com.github.xausky.opencodewebui.settings.OpenCodeConfigurable"
+                               id="com.shenyuanlaolarou.opencodewebui.config"
+                               displayName="OpenCode"/>
     </extensions>
 </idea-plugin>

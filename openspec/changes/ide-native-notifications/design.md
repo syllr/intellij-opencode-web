@@ -63,9 +63,47 @@ input.tool === "plan_exit" → plan_exit
 - `session.next.tool.called` — V2 Event（含 `tool` 字段），定义于 `v2/session-event.ts`，同样桥接到 GlobalBus
 - 所有 BusEvent 和 SyncEvent 最终统一进入 GlobalBus → SSE 流
 
-⚠️ `session.next.tool.called` 的 SSE 可达性尚未通过 curl 实测验证（未触发 question/permission/plan_exit 场景）。这是 P0 风险，必须在实现前验证。
+⚠️ `session.next.tool.called` 的 SSE 可达性尚未通过 curl 实测验证（未触发 question/permission/plan_exit 场景）。**这是 P0 风险，实施前必须用 curl 验证。**
 
-### 3. IntelliJ 配置持久化调研
+- 如果验证通过：question 和 plan_exit 通过 `session.next.tool.called` 的 `tool` 字段检测
+- 如果验证不通过：question 降级为 `question.asked` BusEvent（100% 可用）；plan_exit 降级为不支持，Settings UI 中灰色标注
+
+### 3. SyncEvent 解析方案
+
+`SSEEventParser` 当前只解析 `payload.type` 路径。需要扩展以支持 V2 SyncEvent 格式。
+
+**当前 `ParsedSSEEvent` 结构**：
+
+```kotlin
+data class ParsedSSEEvent(
+    val eventType: String,      // SSE 事件名（固定为 "message"）
+    val directory: String?,
+    val file: String?,
+    val payloadType: String?,   // payload.type → "server.connected", "sync", 等
+    val parsedMap: Map<*, *>?
+)
+```
+
+**需要扩展为**：
+
+```kotlin
+data class ParsedSSEEvent(
+    val eventType: String,
+    val directory: String?,
+    val file: String?,
+    val payloadType: String?,       // payload.type（如 "server.connected", "sync"）
+    val syncEventType: String?,     // payload.syncEvent.type，如 "session.created.1"，去掉 ".1" 后缀
+    val syncEventData: Map<*, *>?,  // payload.syncEvent.data
+    val parsedMap: Map<*, *>?
+)
+```
+
+**解析逻辑**：
+
+1. 先按现有方式提取 `payload.type` → 存入 `payloadType`
+2. 如果 `payload.type == "sync"`，则继续提取 `payload.syncEvent.type` 和 `payload.syncEvent.data`
+3. 从 `syncEvent.type` 中去掉 `.N` 版本号后缀（如 `session.created.1` → `session.created`），存入 `syncEventType`
+4. 下游消费者判断：`payloadType == "sync"` 时使用 `syncEventType` 做事件路由，否则使用 `payloadType`
 
 对比了两种方案：
 
@@ -78,7 +116,83 @@ input.tool === "plan_exit" → plan_exit
 
 **结论**：使用 `PropertiesComponent.getInstance()`（IDE 级别，跨项目共享），Key 命名 `opencode.settings.{name}`、`opencode.event.{type}.enabled`、`opencode.message.{type}`。每次通知前直接读取 PropertiesComponent，零开销，配置变更即生效。
 
-### 4. plugin.xml 需求调研
+### 4. 多项目/多窗口通知路由调研
+
+**关键发现：`OpenCodeServerManager` 是全局单例 `object`，内部只有一个 `sseConsumer`。**
+
+这意味着所有 IntelliJ 项目（窗口）共享同一个 SSE 连接。该 SSE 消费者创建时绑定到**第一个**初始化的项目。后续打开的项目窗口的 `ensureSSEConsumer()` 返回同一个消费者实例。
+
+**对当前文件事件的影响**：现有目录过滤（`eventDir == projectDir`）使单个消费者能正确过滤出匹配的项目事件，因此文件刷新在各种场景下工作正常——但仅对第一个项目的目录有效。
+
+**对通知的影响**：通知需要精确路由到事件所属项目的窗口。单消费者 + 单项目引用的模式无法满足多项目需求。
+
+**方案**：利用 SSE 事件中的 `directory` 字段做路由。单消费者收到所有事件后，通过 directory 匹配当前打开的多个项目，将通知路由到正确的项目窗口。
+
+**多项目/多显示器窗口焦点调研**：
+
+使用 `java.awt.Window.isActive()`（JFrame 继承自 Window）判断特定项目窗口是否有焦点：
+
+```kotlin
+import com.intellij.openapi.wm.WindowManager
+
+fun isProjectWindowActive(project: Project): Boolean {
+    val frame = WindowManager.getInstance().getFrame(project) ?: return false
+    return frame.isActive  // java.awt.Window.isActive()
+}
+```
+
+关键 API：
+
+- `WindowManager.getInstance().getFrame(project)` → 获取该项目的 JFrame
+- `JFrame.isActive` (继承自 `Window.isActive`) → 该窗口是否为当前焦点窗口
+- `ApplicationManager.getApplication().isActive()` → IDE 是否为当前活跃 App
+
+多显示器场景下（3 个显示器，各一个 IntelliJ 窗口）：
+
+| 窗口位置                 | IDE App 状态 | 该窗口 isActive | 应该通知方式       |
+| ------------------------ | ------------ | --------------- | ------------------ |
+| 显示器 A（有焦点）       | 活跃         | `true`          | BALLOON ✅         |
+| 显示器 B（可见，无焦点） | 活跃         | `false`         | **macOS 系统通知** |
+| 显示器 C（可见，无焦点） | 活跃         | `false`         | **macOS 系统通知** |
+| 全部最小化               | 后台         | `false`         | macOS 系统通知     |
+| 全部在另一个 Space       | 后台         | `false`         | macOS 系统通知     |
+
+### 5. IntelliJ 通知类型与 macOS 集成调研 + E2E 测试验证
+
+通过查阅 IntelliJ Platform SDK 官方文档（2026.3）和源码分析，确认了全部通知 displayType，并经过 e2e 测试验证：
+
+**核心发现**：`com.intellij.ui.SystemNotifications` 是 IntelliJ 官方提供的系统通知 API。在 macOS 上，它通过 `MacOsNotifications`（内部使用 Foundation JNA 调用 NSUserNotification）发送 macOS 原生通知。在 Windows 上使用 `SystemTrayNotifications`。
+
+**e2e 测试结果（macOS）**：
+
+- `SystemNotifications` → ✅ macOS 通知中心弹窗，IntelliJ 图标，点击跳转到正确项目
+- `BALLOON` → ❌ IDE 后台时无任何显示
+- `STICKY_BALLOON` → ❌ IDE 后台时无任何显示
+- `TOOL_WINDOW` → ❌ IDE 后台时无任何显示
+
+**前提条件**：用户需在 IntelliJ 设置中开启：Preferences → Appearance & Behavior → Notifications → "Enable system notifications"
+
+**双模式策略**：
+
+```text
+IDE 前台 → Notification.notify(project) BALLOON（窗口内弹窗）
+IDE 后台 → SystemNotifications.notify() macOS 系统通知（通知中心）
+```
+
+| **STICKY_BALLOON** | 窗口右下角，带按钮 | ❌ 需用户操作 | ✅ Suggestions | ❌ 不可见 | IDE后台时自动 |
+| **TOOL_WINDOW** | 工具窗口按钮旁 | 点击/按键后 | ❌ 默认不记录 | ❌ 不可见 | 无 |
+| **NONE** | 无弹窗 | — | ✅ 仅日志 | ✅ 始终记录 | 无 |
+
+关键认知：
+
+- **所有 displayType 都依赖窗口的 NSView 可见性**。窗口最小化 = 没有可见的 NSView → 任何弹窗都无法渲染
+- macOS 通知中心推送**不由 displayType 控制**，而是由 IntelliJ IDE 自身管理：IDE 在后台时自动通过 `NSUserNotification` 推送
+- **插件只需调用 `notification.notify(project)`**，剩下的 IDE 负责
+- 使用 `BALLOON` 是最合适的：窗口聚焦时弹窗，IDE 后台时 macOS 通知中心自动接管
+
+此外，官方文档指出较新的 API 是直接 `Notification("groupId", "content", type).notify(project)`，`NotificationGroupManager` 已标记为 obsolete。
+
+### 6. plugin.xml 需求调研
 
 确认以下内容均不需要：
 
@@ -130,15 +244,187 @@ input.tool === "plan_exit" → plan_exit
 - `~/.config/opencode/opencode-ide.json` 文件 → 需文件 I/O 和解析，用户需直接编辑 JSON
 - `PersistentStateComponent` → 大材小用，简单 key-value 无需对象序列化，注解增加复杂度
 
-### Decision: 通知服务设计为模块化对象 — OpenCodeNotificationService
+### Decision: 通知策略 — 双模式（BALLOON + SystemNotifications）
 
 **Rationale**:
-与 Project 绑定，非 IntelliJ Service（不在 plugin.xml 注册）。由 `OpenCodeSSEConsumer` 在启动/停止生命周期中管理。提供 `notify(eventType, properties)` 方法供 SSE Consumer 调用，内部根据 `OpenCodeConfig` 判断是否发送通知。
+`OpenCodeServerManager` 是全局单例，只有一个 SSE 消费者。因此需要两层设计：先路由到正确项目，再按前后台状态选择通知方式。
+
+**第一层：项目路由** — OpenCodeNotificationRouter
+
+```kotlin
+object OpenCodeNotificationRouter {
+    // directory → Project 映射，File.canonicalPath 规范化
+    private val projectRegistry = ConcurrentHashMap<String, Project>()
+
+    fun register(project: Project) {
+        val path = normalize(project.basePath) ?: return
+        projectRegistry[path] = project
+    }
+
+    fun unregister(project: Project) {
+        val path = normalize(project.basePath)
+        if (path != null) projectRegistry.remove(path)
+    }
+
+    fun notify(eventType: String, properties: Map<*, *>?, eventDir: String?) {
+        val dir = normalize(eventDir) ?: return
+        val project = projectRegistry[dir] ?: return
+        OpenCodeNotificationService.send(eventType, buildContent(eventType, properties), project)
+    }
+
+    private fun normalize(path: String?): String? = try {
+        java.io.File(path ?: return null).canonicalPath
+    } catch (_: Exception) { path }
+}
+```
+
+**注册时机**：双保险机制。
+
+1. **项目加载时**：通过 `ProjectManagerListener` 监听项目打开事件，立即注册 `project.basePath → Project`
+2. **工具窗口创建时**：在 `createToolWindowContent()` 中再次确认注册（幂等），确保无论用户是否手动打开过工具窗口都已有注册
+
+路由流程：
+
+1. 每个项目窗口初始化时，Router 注册 `project.basePath → project`（`createToolWindowContent` 入口）
+2. SSE Consumer 收到事件 → `Router.notify(eventType, props, eventDir)`
+3. Router 使用 `File.canonicalPath` 规范化路径后查找，支持符号链接和大小写
+4. 找到匹配 Project 后调用 OpenCodeNotificationService.send()
+5. 找不到则静默丢弃（该项目可能未在 IDE 中打开）
+
+**第二层：双模式通知** — BALLOON + SystemNotifications
+
+- macOS: 通过 `MacOsNotifications` (Foundation JNA → NSUserNotification) 发送 macOS 通知中心弹窗
+- Windows: 通过 `SystemTrayNotifications` (AWT TrayIcon) 发送系统托盘通知
+- Linux: 通过 `LibNotifyWrapper` (libnotify) 发送通知
+
+**核心机制** — `SystemNotificationsImpl.notify()` 内部自带守卫条件：
+
+```java
+// SystemNotificationsImpl.java (IntelliJ Platform 源码)
+public void notify(String notificationName, String title, String text) {
+    // 两个条件必须同时满足：
+    // 1. 用户在设置中开启了系统通知 (默认关闭)
+    // 2. IDE 当前不是活跃 App（已切换到后台）
+    if (SYSTEM_NOTIFICATIONS_ENABLED && !ApplicationManager.getApplication().isActive()) {
+        macNotifier.notify(title, text);  // 真正发送 macOS 通知
+    }
+    // 前台时什么也不做，静默跳过
+}
+```
+
+**前提条件**：用户需在 IntelliJ 设置中开启：
+**Preferences → Appearance & Behavior → Notifications → "Enable system notifications"**
+
+**完整通知流程**：
+
+```kotlin
+fun send(eventType: String, title: String, body: String, type: NotificationType, project: Project) {
+    // ===== 第1层: 工具窗口聚焦抑制 =====
+    val tw = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
+    if (tw?.isVisible == true && tw.isActive) return
+
+    // ===== 第2层: 判断该项目的窗口是否有焦点 =====
+    // Window.isActive() = true 表示该窗口是当前焦点窗口（键盘/鼠标）
+    val frame = WindowManager.getInstance().getFrame(project)
+    val projectWindowInactive = frame == null || !frame.isActive
+
+    // ===== 第3层: 前台 BALLOON =====
+    // 如果该项目窗口有焦点（在活跃显示器上），弹 BALLOON
+    if (!projectWindowInactive && !project.isDisposed) {
+        Notification("OpenCodeWeb.notifications", title, body, type)
+            .addAction(NotificationAction.createSimpleExpiring(MyBundle.message("notification.action.open")) {
+                ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")?.activate(null)
+            })
+            .notify(project)
+    }
+
+    // ===== 第4层: macOS 系统通知 =====
+    // 两种场景走系统通知：
+    //   a) IDE 整体在后台（切到浏览器）
+    //   b) IDE 在前台，但该项目窗口无焦点（多显示器，在另一个屏幕上）
+    // SystemNotifications 内部检查 isActive()，场景 a 时会发通知
+    // 场景 b 需要由我们主动检测 frame.isActive
+    if (projectWindowInactive || !ApplicationManager.getApplication().isActive()) {
+        SystemNotifications.getInstance().notify("OpenCodeWeb", title, body)
+    }
+}
+```
+
+**为什么同时调用两者是安全的**：
+调用 `SystemNotifications.notify()` 在前台时**什么也不做**（源码级保证）。`isActive()` 返回 `true` 时整个函数直接 return。所以同时调用 Notification.notify + SystemNotifications.notify 不会产生重复通知。
+
+**为什么不会出现"前台 BALLOON 弹了又弹 macOS 通知"**：
+因为 `SystemNotificationsImpl` 内部有 `!ApplicationManager.getApplication().isActive()` 守卫——前台时直接 return，不执行任何代码。
+
+**多显示器行为矩阵**：
+
+| 场景                                 | frame.isActive | 通知方式               |
+| ------------------------------------ | -------------- | ---------------------- |
+| 项目窗口聚焦（键盘鼠标在本窗口）     | `true`         | ✅ BALLOON             |
+| 项目窗口在另一显示器上（可见无焦点） | `false`        | ✅ SystemNotifications |
+| IDE 整体后台（切到浏览器/Slack）     | `false`        | ✅ SystemNotifications |
+| 窗口最小化                           | `false`        | ✅ SystemNotifications |
+| OpenCodeWeb 工具窗口活跃             | （不拘）       | ❌ 抑制                |
+
+| 场景                               | 效果                      | 结论                             |
+| ---------------------------------- | ------------------------- | -------------------------------- |
+| IDE 前台（窗口聚焦），只有 BALLOON | ✅ 右下角弹窗，无系统通知 | SystemNotifications 正确抑制     |
+| 切换至浏览器，10秒后               | ✅ macOS 通知中心弹窗     | SystemNotifications 正确触发     |
+| 通知显示 IntelliJ 图标             | ✅                        | JNA 调用从 IntelliJ 进程发出     |
+| 点击通知跳转                       | ✅ 跳转到正确的项目窗口   | 多项目路由验证通过               |
+| 多个 IDE 窗口（项目 A/B）          | ✅ 仅接收自己项目的通知   | SSE directory 过滤 + Router 确认 |
+
+**多显示器场景下 SystemNotifications 的行为已验证**：
+
+由于 `SystemNotifications` 内部检查 `ApplicationManager.getApplication().isActive()`，该 API 返回 `true` 只要**任意一个 IntelliJ 窗口**是前台 App。这意味着：
+
+- 3 个显示器上各有 1 个 IntelliJ 窗口 → `isActive() == true` → SystemNotifications **不会自动发通知**
+- 但 Project B 的窗口在另一显示器上，用户可能看不到 BALLOON
+
+**解决方案**：我们的 `send()` 方法中已经增加了 `WindowManager.getInstance().getFrame(project).isActive` 检查。`SystemNotifications` 兜不住的多显示器场景，由我们的代码主动送 `SystemNotifications.getInstance().notify()`。效果：
+
+| 场景                            | IDE App  | 目标窗口 (frame) | SystemNotifications (内部) | 我们的额外逻辑 | 最终行为    |
+| ------------------------------- | -------- | ---------------- | -------------------------- | -------------- | ----------- |
+| IDE 聚焦 + 目标窗口有焦点       | active   | isActive=true    | 跳过                       | → 不送         | ✅ BALLOON  |
+| IDE 聚焦 + 目标窗口在另一显示器 | active   | isActive=false   | 跳过                       | → 主动送       | ✅ 系统通知 |
+| IDE 后台（浏览器）              | inactive | isActive=false   | → 送                       | → 主动送       | ✅ 系统通知 |
+| IDE 聚焦 + 目标窗口最小化       | active   | isActive=false   | 跳过                       | → 主动送       | ✅ 系统通知 |
+
+```kotlin
+fun shouldSuppressForActiveToolWindow(project: Project): Boolean {
+    val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
+        ?: return false         // 没有工具窗口 → 不抑制
+    if (!toolWindow.isVisible) return false  // 窗口没打开 → 不抑制
+    return toolWindow.isActive  // 工具窗口有焦点 → 抑制通知
+}
+```
+
+状态判断矩阵（针对当前 project）：
+
+| OpenCodeWeb 工具窗口状态 | 项目窗口状态 | 是否发通知                      |
+| ------------------------ | ------------ | ------------------------------- |
+| **聚焦活跃**（正在对话） | 聚焦         | ❌ 抑制（用户在聊，能看到回复） |
+| 打开但未聚焦（编辑器中） | 聚焦         | ✅ 发送                         |
+| 关闭（不在侧边栏）       | 聚焦         | ✅ 发送                         |
+| **聚焦活跃**（正在对话） | 后台/最小化  | ✅ 发送（跨窗口通过 Router）    |
+| 任意状态                 | 后台 visible | ✅ macOS 通知中心               |
+| 任意状态                 | minimized    | ⚠️ 平台限制                     |
+
+行为矩阵：
+
+| 项目窗口状态           | OpenCodeWeb 工具窗口 | 通知方式                                | 用户感知     |
+| ---------------------- | -------------------- | --------------------------------------- | ------------ |
+| focused                | **聚焦活跃**         | ❌ 抑制                                 | 不需要通知   |
+| focused                | 未聚焦               | ✅ BALLOON (Notification.notify)        | 右下角弹窗   |
+| 后台 visible(其他 App) | 任意                 | ✅ macOS 系统通知 (SystemNotifications) | 通知中心     |
+| minimized              | 任意                 | ⚠️ 依赖 macOS + IntelliJ 行为           | 可能通知中心 |
 
 **Alternatives Considered**:
 
-- 直接在 SSE Consumer 中写通知逻辑 → 违反单一职责
-- 注册为 IntelliJ Service → 无多消费者场景，不需要
+- 直接用 osascript 发送 macOS 系统通知（opencode-notifier 的做法）→ 点击后无法跳转到对应 IDE（用户原痛点）
+- 全部使用 SystemNotifications → 前台时也会走系统通知，不符合 IDE 内通知习惯
+- JNA 直接调用 NSUserNotification → 与 IntelliJ 内部 Foundation API 等效，但使用内部 API 更稳定
+- 改为 Per-project SSE 消费者 → 需重构 `OpenCodeServerManager`，超出本次变更范围
 
 ### Decision: plan_exit 和 question 通过 session.next.tool.called 检测（带 fallback）
 
@@ -207,11 +493,11 @@ session.status (type=idle)          → complete / subagent   "回答完成: {se
 session.idle (deprecated)           → complete / subagent   (兼容旧格式)
 session.error                       → error / user_cancelled
                                     (error.name==MessageAbortedError→user_cancelled)
-permission.asked                    → permission            "需要权限: {sessionTitle}"
+permission.asked                    → permission            "权限申请: {sessionTitle}"
 message.updated (role=user)         → user_message          "用户已发送消息"
 session.next.tool.called
-  └ tool="question"                 → question              "需要回答: {sessionTitle}"
-  └ tool="plan_exit"                → plan_exit             "Plan 完成: {sessionTitle}"
+  └ tool="question"                 → question              "询问用户: {sessionTitle}"
+  └ tool="plan_exit"                → plan_exit             "Plan 制定完成: {sessionTitle}"
 ── 以下无 SSE 映射，仅保留配置模型兼容 notifier ──
 (无)                                → interrupted           默认关闭
 ```
@@ -246,13 +532,16 @@ OpenCode Server
 
 ## Risks / Trade-offs
 
-| 风险                                      | 缓解措施                                                            |
-| ----------------------------------------- | ------------------------------------------------------------------- |
-| BusEvent 和 SyncEvent 同时到达            | 以 `payload.id` 去重，已处理的 ID 缓存在 LRU 集合                   |
-| 通知过多                                  | 默认只开启 permission/complete/error/client_connected 四个高频事件  |
-| SSE 重连丢失事件                          | 不补发，只处理实时事件，acceptable loss                             |
-| session.next.tool.called 不存在于 SSE 流  | 实现前实测确认；question 走 question.asked fallback，plan_exit 降级 |
-| session.idle 和 session.status 双事件冲突 | 先到者处理，后到者去重                                              |
+| 风险                                              | 缓解措施                                                                                         |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| BusEvent 和 SyncEvent 同时到达                    | 以 `payload.id` 去重，已处理的 ID 缓存在 LRU 集合                                                |
+| 通知过多                                          | 默认只开启 permission/complete/error/client_connected 四个高频事件                               |
+| SSE 重连丢失事件 + subagentSessionIds 清空        | 不补发实时事件；重连后清空 subagent 集合，idle 事件优先按 complete 处理                          |
+| session.next.tool.called 不存在于 SSE 流          | 实现前实测确认；question 走 question.asked fallback，plan_exit 降级                              |
+| session.idle 和 session.status 双事件冲突         | 先到者处理，后到者去重                                                                           |
+| LRU 缓存无限增长                                  | 使用 LinkedHashMap(accessOrder=true) + removeEldestEntry，最大 1000 条，synchronizedMap 保证并发 |
+| 多平台（Windows/Linux）SystemNotifications 未实测 | 实施后至少在 Windows CI 上验证一次；SystemNotifications 调用包在 try/catch 中                    |
+| Router 路径不匹配（符号链接/大小写）              | 使用 `File.canonicalPath` 规范化注册和查询的路径                                                 |
 
 ## Open Questions
 

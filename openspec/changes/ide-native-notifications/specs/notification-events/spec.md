@@ -47,7 +47,10 @@
 - **WHEN** SSE 收到 `payload.type == "session.next.tool.called"` 且 `properties.tool == "plan_exit"`
 - **THEN** 系统触发 `plan_exit` 通知
 
-#### Scenario: session.next.tool.called（SyncEvent 格式）
+#### Scenario: session.next.tool.called fallback — question.asked
+
+- **WHEN** 经实测 `session.next.tool.called` 不在 SSE 流中
+- **THEN** `question` 通知改为监听 `payload.type == "question.asked"` 总线事件
 
 - **WHEN** `syncEvent.type == "session.next.tool.called.1"` 且 `data.tool == "question"`
 - **THEN** 系统触发 `question` 通知（兼容 SyncEvent 字段路径）
@@ -76,6 +79,20 @@
 - **WHEN** SSE 收到 `session.deleted`
 - **THEN** 该 sessionID 从 `subagentSessionIds` 移除
 
+### Requirement: SyncEvent V2 解析
+
+系统 MUST 扩展 `SSEEventParser` 以支持 SyncEvent（V2）格式。
+
+#### Scenario: SyncEvent 格式检测
+
+- **WHEN** `payload.type == "sync"`
+- **THEN** 继续提取 `payload.syncEvent.type` 和 `payload.syncEvent.data`，去掉 `.N` 版本号后缀后作为 `syncEventType` 输出
+
+#### Scenario: Direct BusEvent 优先
+
+- **WHEN** 同一事件同时有 Direct BusEvent（`payload.type`）和 SyncEvent（`payload.type == "sync"`）两种格式到达
+- **THEN** Direct BusEvent 优先，SyncEvent 通过 `payload.id` 去重忽略
+
 ### Requirement: 事件去重
 
 系统 SHALL 避免同一事件被处理两次。
@@ -85,10 +102,15 @@
 - **WHEN** 同一 `payload.id` 的 BusEvent 和 SyncEvent 先后到达
 - **THEN** 以先到为准处理，后到者通过 `payload.id` 缓存忽略
 
-#### Scenario: LRU 缓存容量
+#### Scenario: LRU 实现方案
 
-- **WHEN** 去重缓存条目超过上限（建议 1000 条）
-- **THEN** 淘汰最久未使用的条目
+- **WHEN** 实现去重缓存
+- **THEN** 使用 `LinkedHashMap` 的子类（override `removeEldestEntry`），最大容量 1000 条，同时 `synchronizedMap` 保证线程安全
+
+#### Scenario: SSE 重连后缓存清空
+
+- **WHEN** SSE 连接断开后重连
+- **THEN** 去重缓存清空，subagentSessionIds 集合清空（重连后状态未知，优先按非 subagent 处理）
 
 #### Scenario: session.status idle debounce
 
