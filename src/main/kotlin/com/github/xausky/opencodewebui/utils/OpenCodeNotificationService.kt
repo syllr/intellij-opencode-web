@@ -54,9 +54,7 @@ object OpenCodeNotificationService {
                     val notification = Notification(NOTIFICATION_GROUP, title, body, resolveType(eventType))
                     addClickAction(notification, eventType, project)
                     notification.notify(project)
-                }
-
-                if (!projectWindowActive || !ApplicationManager.getApplication().isActive()) {
+                } else if (!ApplicationManager.getApplication().isActive()) {
                     SystemNotifications.getInstance().notify(NOTIFICATION_GROUP, title, body)
                 }
             } catch (e: Exception) {

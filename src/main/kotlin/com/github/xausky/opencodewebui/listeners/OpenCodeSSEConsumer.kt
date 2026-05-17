@@ -183,31 +183,34 @@ class OpenCodeSSEConsumer(
         OpenCodeNotificationRouter.notify(eventType, parsedMap, eventDir)
     }
 
-    // session idle 处理：350ms debounce，根据 subagentSessionIds 区分 complete/subagent_complete
-    private val idleDebounceTimers = ConcurrentHashMap<String, java.util.Timer?>()
+    // session idle 去重：同一 session 在时间窗口内只发一次 complete 通知
+    // 防止 session.status(idle) 和 session.idle 两个事件重复触发
+    private val idleLastFired = ConcurrentHashMap<String, Long>()
+    private val idleDedupWindowMs = 2000L
 
     private fun handleSessionIdle(parsedMap: Map<*, *>?, eventDir: String?) {
         val props = parsedMap?.get("payload") as? Map<*, *>
         val properties = props?.get("properties") as? Map<*, *>
         val sessionID = properties?.get("sessionID") as? String ?: return
         val eventType = if (sessionID in subagentSessionIds) "subagent_complete" else "complete"
+        val key = "$sessionID:$eventType"
 
-        // 取消已有的定时器（debounce）
-        idleDebounceTimers[sessionID]?.cancel()
-        val timer = java.util.Timer("notification-debounce", true)
-        idleDebounceTimers[sessionID] = timer
-        timer.schedule(object : java.util.TimerTask() {
-            override fun run() {
-                idleDebounceTimers.remove(sessionID)
-                dispatchNotification(eventType, parsedMap, eventDir)
-            }
-        }, 350L)
+        // 同一 session 在时间窗口内只发一次
+        val now = System.currentTimeMillis()
+        val last = idleLastFired.put(key, now)
+        if (last != null && now - last < idleDedupWindowMs) {
+            logger.debug("[OpenCodeSSEConsumer] Skipping duplicate idle notification for $key (last fired ${now - last}ms ago)")
+            return
+        }
+
+        dispatchNotification(eventType, parsedMap, eventDir)
     }
 
     override fun onClosed() {
         logger.info("[OpenCodeSSEConsumer] SSE connection closed")
         SSEEventParser.clearCache()
         subagentSessionIds.clear()
+        idleLastFired.clear()
     }
 
     private fun handleSessionDiff(props: SSESessionDiffProperties, projectDir: String) {
