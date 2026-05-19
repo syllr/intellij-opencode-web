@@ -115,16 +115,36 @@ object OpenCodeApi {
             conn.readTimeout = HTTP_TIMEOUT_MS
             val body = conn.inputStream.bufferedReader().readText()
             val array = com.google.gson.JsonParser.parseString(body).asJsonArray
+
+            // 记录第一个遇到的空 session 作为 fallback
+            var firstEmptyId: String? = null
+
             for (i in 0 until array.size()) {
                 val session = array[i].asJsonObject
                 val time = session.getAsJsonObject("time")
                 if (time == null) continue
                 if (time.has("archived")) continue
-                if (time.get("created") == time.get("updated")) continue
+                val created = time.get("created")?.asLong
+                val updated = time.get("updated")?.asLong
+                if (created != null && created == updated) {
+                    // 空 session：记录为 fallback，但不立即返回
+                    if (firstEmptyId == null) {
+                        firstEmptyId = session.get("id")?.asString
+                    }
+                    continue
+                }
+                // 找到有内容的 session，直接返回
                 val id = session.get("id")?.asString
                 if (id != null) return id
             }
-            thisLogger().info("[OpenCodeApi] No active session with content for $directory")
+
+            // 没有找到有内容的 session，返回最近的空 session（避免前端创建新的）
+            if (firstEmptyId != null) {
+                thisLogger().info("[OpenCodeApi] No active session with content for $directory, returning empty session: $firstEmptyId")
+                return firstEmptyId
+            }
+
+            thisLogger().info("[OpenCodeApi] No active session for $directory")
             null
         } catch (e: Exception) {
             thisLogger().warn("[OpenCodeApi] Failed to get latest session for $directory: ${e.message}")

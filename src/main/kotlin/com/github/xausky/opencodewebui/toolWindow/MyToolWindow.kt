@@ -37,6 +37,8 @@ class MyToolWindow(toolWindow: ToolWindow) {
     }
 
     private var isShowingStartButton = false
+    @Volatile
+    private var hasLoaded = false
 
     private val healthMonitor = HealthMonitor(
         onUnhealthy = { showServerNotRunning() },
@@ -57,6 +59,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
     }
 
     private fun showServerNotRunning() {
+        hasLoaded = false
         mainBrowser = null
         isShowingStartButton = true
         browserPanel.disposeBrowser()
@@ -141,6 +144,11 @@ class MyToolWindow(toolWindow: ToolWindow) {
     }
 
     private fun loadProjectPage() {
+        if (hasLoaded) {
+            logger.info("[loadProjectPage] Already loaded, skipping duplicate call")
+            return
+        }
+        hasLoaded = true
         isShowingStartButton = false
         val projectPath = project.basePath ?: return
 

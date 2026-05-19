@@ -10,8 +10,11 @@ import javax.swing.KeyStroke
 /**
  * JCEF 键盘快捷键拦截器。
  *
- * 拦截 JCEF 浏览器组件的键盘快捷键（ESC、Meta+,、Meta+K），
- * 阻止 IntelliJ 处理这些按键事件，使其自然传递给 JCEF 浏览器。
+ * 拦截 JCEF 浏览器组件的 ESC 快捷键，
+ * 阻止 IntelliJ 处理 ESC 按键事件，使其自然传递给 JCEF 浏览器。
+ *
+ * 注意：Cmd+, 和 Cmd+K 不在此拦截，采用 JS 注入方式在页面 DOM capture phase 拦截，
+ * 阻止 JCEF 页面消费这两个快捷键，确保 IDEA 原生快捷键系统正常响应。
  */
 object JcefKeyboardInterceptor {
 
@@ -22,8 +25,8 @@ object JcefKeyboardInterceptor {
     /**
      * 拦截单个组件的键盘快捷键。
      *
-     * 对指定组件注册空的 KeyStroke→Action 映射，以"消耗"掉 ESC、Meta+,、Meta+K 按键，
-     * 防止 IntelliJ 框架在 WHEN_IN_FOCUSED_WINDOW 条件下处理它们。
+     * 对指定组件注册空的 KeyStroke→Action 映射，以"消耗"掉 ESC 按键，
+     * 防止 IntelliJ 框架在 WHEN_IN_FOCUSED_WINDOW 条件下处理它。
      */
     fun interceptKeys(component: Component) {
         if (component !is JComponent) return
@@ -34,8 +37,6 @@ object JcefKeyboardInterceptor {
         val actionMap = component.actionMap
 
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "block")
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_COMMA, java.awt.event.InputEvent.META_DOWN_MASK), "block")
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_K, java.awt.event.InputEvent.META_DOWN_MASK), "block")
         actionMap.put("block", emptyAction)
     }
 

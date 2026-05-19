@@ -9,7 +9,8 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <actions>
-        <!-- 覆盖 Cmd+, (设置快捷键)，在 JCEF 有焦点时传递给 JCEF -->
+        <!-- 已注释：第一层 Action 覆盖机制，测试简化方案，只保留 JcefKeyboardInterceptor -->
+        <!--
         <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefSettings" 
                 class="com.github.xausky.opencodewebui.actions.JcefShortcutPassthroughAction" 
                 text="Pass Settings to JCEF">
@@ -17,13 +18,13 @@
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl COMMA" replace-all="true"/>
         </action>
         
-        <!-- 覆盖 Cmd+K，在 JCEF 有焦点时传递给 JCEF -->
         <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefCmdK" 
                 class="com.github.xausky.opencodewebui.actions.JcefShortcutPassthroughAction" 
                 text="Pass Cmd+K to JCEF">
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta K" replace-all="true"/>
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl K" replace-all="true"/>
         </action>
+        -->
         
         <!-- Copy as Prompt - 在编辑器右键菜单添加选项 -->
         <action id="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"

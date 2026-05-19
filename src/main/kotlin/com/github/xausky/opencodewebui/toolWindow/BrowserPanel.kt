@@ -110,6 +110,20 @@ class BrowserPanel(
             sharedClient.addLoadHandler(object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
                     thisLogger().info("onLoadEnd called, projectPath: $projectPath")
+                    // 仅在主 frame 加载完成时注入，避免 iframe 导致重复注入
+                    if (frame?.isMain != true) return
+                    // 注入 JS：在 DOM capture phase 拦截 Cmd+, 和 Cmd+K，
+                    // 阻止它们被 JCEF 页面（JS）消费，确保 IDEA 快捷键系统正常处理
+                    cefBrowser?.executeJavaScript("""
+                        (function() {
+                            document.addEventListener('keydown', function(e) {
+                                if (e.metaKey && (e.key === ',' || e.key === 'k' || e.key === 'K')) {
+                                    e.preventDefault();
+                                    e.stopImmediatePropagation();
+                                }
+                            }, true);
+                        })();
+                    """.trimIndent(), cefBrowser.url, 0)
                 }
             }, createdBrowser.cefBrowser)
             sharedClient.addDisplayHandler(object : CefDisplayHandlerAdapter() {
