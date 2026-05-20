@@ -7,6 +7,7 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
+import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
@@ -42,7 +43,11 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             toolWindow.activate(null)
         }
 
-        internal val sharedJBCefClient by lazy { JBCefApp.getInstance().createClient() }
+        internal val sharedJBCefClient by lazy {
+            Registry.get("ide.browser.jcef.gpu.disable").setValue(false)
+            System.setProperty("ide.browser.jcef.extra.args", "--enable-gpu-compositing,--use-gl=angle,--use-angle=metal")
+            JBCefApp.getInstance().createClient()
+        }
 
         internal val myToolWindowInstances: ConcurrentHashMap<Project, MyToolWindow> = ConcurrentHashMap()
 
