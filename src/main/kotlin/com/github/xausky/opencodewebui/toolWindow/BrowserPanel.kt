@@ -134,20 +134,12 @@ class BrowserPanel(
                     source: String?,
                     line: Int
                 ): Boolean {
-                    val levelStr = when (level) {
-                        CefSettings.LogSeverity.LOGSEVERITY_ERROR -> "ERROR"
-                        CefSettings.LogSeverity.LOGSEVERITY_WARNING -> "WARN"
-                        CefSettings.LogSeverity.LOGSEVERITY_INFO -> "INFO"
-                        CefSettings.LogSeverity.LOGSEVERITY_VERBOSE -> "VERBOSE"
-                        CefSettings.LogSeverity.LOGSEVERITY_DISABLE -> "DISABLE"
-                        else -> "UNKNOWN"
-                    }
-                    if (message?.contains("[OpenCode Plugin]") == true) {
-                        thisLogger().info("═══════════════════════════════════════════════════════════════")
-                        thisLogger().info("[JCEF Console] [$levelStr] $message (source: $source:$line)")
-                        thisLogger().info("═══════════════════════════════════════════════════════════════")
+                    // ERROR → warn；其余（WARNING/INFO/VERBOSE）→ debug，
+                    // 避免 OpenCode Web UI 的 JS console 高频打日志撑爆 IDE 日志
+                    if (level == CefSettings.LogSeverity.LOGSEVERITY_ERROR) {
+                        thisLogger().warn("[JCEF Console] [ERROR] $message (source: $source:$line)")
                     } else {
-                        thisLogger().info("[JCEF Console] [$levelStr] $message (source: $source:$line)")
+                        thisLogger().debug("[JCEF Console] ${level?.name ?: "UNKNOWN"} $message (source: $source:$line)")
                     }
                     return false
                 }

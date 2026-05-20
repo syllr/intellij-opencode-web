@@ -85,7 +85,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
                 }
             })
 
-            myToolWindow.setupBrowserKeyboardHandling()
             myToolWindow.checkAndLoadContent()
         }
     }

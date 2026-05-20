@@ -3,71 +3,53 @@ package com.github.xausky.opencodewebui.utils
 import com.github.xausky.opencodewebui.BROWSER_READY_MAX_RETRIES
 import com.github.xausky.opencodewebui.BROWSER_READY_RETRY_DELAY_MS
 import com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
+import com.intellij.util.Alarm
 
 /**
  * JCEF 浏览器 JavaScript 注入工具。
  * 将文本追加到 OpenCode Web 页面的输入框中。
  */
 object JcefJsInjector {
-    private const val MAX_RETRY_DEPTH = 3
 
     /**
      * 将文本追加到 OpenCode Web 页面的输入框。
      *
      * 快速路径——浏览器已就绪：EDT 上直接注入。
-     * 慢速路径——浏览器未就绪：后台线程轮询等待，找到后 invokeLater 回 EDT 注入。
-     * 绝不阻塞 EDT。
-     *
-     * @param depth 内部递归重试深度，调用方无需传此参数
+     * 慢速路径——浏览器未就绪：Alarm 非阻塞定时重试，不占用 BB 线程池。
      */
-    fun appendTextToEditor(project: Project, text: String, depth: Int = 0) {
-        if (depth > MAX_RETRY_DEPTH) {
-            thisLogger().warn("[JcefJsInjector] max retry depth ($MAX_RETRY_DEPTH) reached, giving up")
-            return
-        }
-
+    fun appendTextToEditor(project: Project, text: String) {
         MyToolWindowFactory.openOpenCodeWebToolWindow(project)
+        if (project.basePath == null) return
 
-        val projectPath = project.basePath ?: return
-
-        // 快速路径：浏览器已就绪 → EDT 直接注入
         val browser = MyToolWindowFactory.getMainBrowser(project)
         if (browser != null) {
             executeAppend(browser.cefBrowser, text)
             return
         }
 
-        // 慢速路径：浏览器未就绪 → 后台线程轮询，不阻塞 EDT
-        ApplicationManager.getApplication().executeOnPooledThread {
-            for (i in 1..BROWSER_READY_MAX_RETRIES) {
-                val b = MyToolWindowFactory.getMainBrowser(project)
-                if (b != null) {
-                    val cefBrowser = b.cefBrowser
-                    ApplicationManager.getApplication().invokeLater({
-                                            // 注：cefBrowser 在后台线程捕获，invokeLater 到 EDT 时可能已过时，
-                                            // 此处二次校验确保浏览器引用仍然可用
-                                            val current = MyToolWindowFactory.getMainBrowser(project)
-                                            if (current?.cefBrowser !== cefBrowser) {
-                                                if (depth > MAX_RETRY_DEPTH) {
-                                                    thisLogger().warn("[JcefJsInjector] max retry depth ($MAX_RETRY_DEPTH) reached, giving up")
-                                                    return@invokeLater
-                                                }
-                                                thisLogger().warn("[JcefJsInjector] browser changed between capture and inject, re-trying (depth=${depth + 1})")
-                                                appendTextToEditor(project, text, depth + 1)
-                                                return@invokeLater
-                                            }
-                                            executeAppend(cefBrowser, text)
-                                        }, ModalityState.any())
-                    return@executeOnPooledThread
-                }
-                Thread.sleep(BROWSER_READY_RETRY_DELAY_MS)
-            }
-            thisLogger().warn("[JcefJsInjector] browser not ready after retries")
+        scheduleRetry(project, text, retryCount = 0)
+    }
+
+    private fun scheduleRetry(project: Project, text: String, retryCount: Int) {
+        if (retryCount >= BROWSER_READY_MAX_RETRIES) {
+            thisLogger().warn("[JcefJsInjector] browser not ready after $retryCount retries, giving up")
+            return
         }
+
+        // Alarm 绑定到 project，project 关闭时自动取消所有待执行请求
+        val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, project)
+        alarm.addRequest({
+            if (project.isDisposed) return@addRequest
+
+            val browser = MyToolWindowFactory.getMainBrowser(project)
+            if (browser != null) {
+                executeAppend(browser.cefBrowser, text)
+            } else {
+                scheduleRetry(project, text, retryCount + 1)
+            }
+        }, BROWSER_READY_RETRY_DELAY_MS)
     }
 
     private fun executeAppend(cefBrowser: org.cef.browser.CefBrowser, text: String) {
