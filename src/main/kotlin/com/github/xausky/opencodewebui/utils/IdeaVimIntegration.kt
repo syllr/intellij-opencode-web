@@ -1,20 +1,21 @@
 package com.github.xausky.opencodewebui.utils
 
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.extensions.PluginId
 
 object IdeaVimIntegration {
     private val logger = thisLogger()
 
-    fun isIdeaVimInstalled(): Boolean {
-        return try {
-            PluginManagerCore.getPlugin(PluginId.getId("IdeaVIM")) != null
-        } catch (e: Exception) {
+    private val ideaVimAvailable: Boolean by lazy {
+        try {
+            Class.forName("com.maddyhome.idea.vim.VimPlugin")
+            true
+        } catch (_: ClassNotFoundException) {
             false
         }
     }
+
+    fun isIdeaVimInstalled(): Boolean = ideaVimAvailable
 
     /**
      * 获取 IdeaVim 的 injector 实例。

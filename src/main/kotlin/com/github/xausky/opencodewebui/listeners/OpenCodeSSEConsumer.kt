@@ -32,6 +32,9 @@ class OpenCodeSSEConsumer(
     // subagent 会话追踪：记录所有 subagent sessionID（有 parentID 的 session）
     companion object {
         private val subagentSessionIds = ConcurrentHashMap.newKeySet<String>()
+        // 已发送过 complete 通知的父 session 集合
+        // 用于抑制 agent 循环中的重复 idle 通知
+        private val sessionIdleFired = ConcurrentHashMap.newKeySet<String>()
     }
 
     fun start() {
@@ -103,8 +106,9 @@ class OpenCodeSSEConsumer(
         if (eventType == "session.deleted") {
             val sid = parsed.syncEventData?.get("sessionID") as? String
             if (sid != null) {
-                subagentSessionIds.remove(sid)
-                logger.debug("[OpenCodeSSEConsumer] Subagent session removed: $sid")
+                // 不移除 subagentSessionIds：防止 session.deleted 先于 session.status(idle) 到达时
+                // 子 agent 的 idle 事件被误判为 complete。集合仅在 SSE 重连时通过 onClosed() 清空。
+                logger.debug("[OpenCodeSSEConsumer] Subagent session removed (tracking preserved for idle detection): $sid")
             }
         }
 
@@ -144,6 +148,11 @@ class OpenCodeSSEConsumer(
                 val props = payload?.get("properties") as? Map<*, *>
                 val info = props?.get("info") as? Map<*, *>
                 if (info?.get("role") == "user") {
+                    val sessionID = props?.get("sessionID") as? String
+                    if (sessionID != null) {
+                        sessionIdleFired.remove(sessionID)
+                        logger.debug("[OpenCodeSSEConsumer] Reset sessionIdleFired for session $sessionID on user message")
+                    }
                     dispatchNotification("user_message", parsedMap, eventDir)
                 }
             }
@@ -192,10 +201,23 @@ class OpenCodeSSEConsumer(
         val props = parsedMap?.get("payload") as? Map<*, *>
         val properties = props?.get("properties") as? Map<*, *>
         val sessionID = properties?.get("sessionID") as? String ?: return
-        val eventType = if (sessionID in subagentSessionIds) "subagent_complete" else "complete"
-        val key = "$sessionID:$eventType"
 
-        // 同一 session 在时间窗口内只发一次
+        // 子 agent idle → subagent_complete（走配置开关，默认关闭）
+        if (sessionID in subagentSessionIds) {
+            dispatchNotification("subagent_complete", parsedMap, eventDir)
+            return
+        }
+
+        // 父 session 抑制：已发过 complete 则跳过
+        // 防止 agent 循环中的重复通知，按用户发消息（message.updated）重置
+        if (sessionID in sessionIdleFired) {
+            logger.debug("[OpenCodeSSEConsumer] Suppressing repeated complete for session $sessionID")
+            return
+        }
+
+        val key = "$sessionID:complete"
+
+        // 同一 session 在时间窗口内只发一次（防止 session.status(idle) 和 session.idle 双发）
         val now = System.currentTimeMillis()
         val last = idleLastFired.put(key, now)
         if (last != null && now - last < idleDedupWindowMs) {
@@ -203,7 +225,9 @@ class OpenCodeSSEConsumer(
             return
         }
 
-        dispatchNotification(eventType, parsedMap, eventDir)
+        dispatchNotification("complete", parsedMap, eventDir)
+        sessionIdleFired.add(sessionID)
+        logger.debug("[OpenCodeSSEConsumer] First complete for session $sessionID, added to sessionIdleFired")
     }
 
     override fun onClosed() {
@@ -211,6 +235,8 @@ class OpenCodeSSEConsumer(
         SSEEventParser.clearCache()
         subagentSessionIds.clear()
         idleLastFired.clear()
+        logger.debug("[OpenCodeSSEConsumer] Cleared sessionIdleFired (${sessionIdleFired.size} entries)")
+        sessionIdleFired.clear()
     }
 
     private fun handleSessionDiff(props: SSESessionDiffProperties, projectDir: String) {

@@ -26,23 +26,23 @@ intellij-opencode-web/
 
 ## WHERE TO LOOK
 
-| Task              | Location                              | Notes                          |
-| ----------------- | ------------------------------------- | ------------------------------ |
-| 工具窗口入口      | toolWindow/MyToolWindowFactory.kt     | JCEF + 服务器管理              |
-| 工具窗口面板      | toolWindow/MyToolWindow.kt            | 浏览器生命周期管理             |
-| 服务器管理        | toolWindow/OpenCodeServerManager.kt   | 单例对象，启停管理             |
-| IDE Actions       | actions/                              | 快捷键传递、Copy/Add to Prompt |
-| SSE 事件          | listeners/OpenCodeSSEConsumer.kt      | session.diff/file.edited 等    |
-| 文件刷新          | listeners/FullRefreshCoordinator.kt   | 生产者-消费者模式              |
-| 快捷键传递        | toolWindow/JcefKeyboardInterceptor.kt | ESC/Cmd+K/Cmd+, → JCEF         |
-| Emacs 按键        | toolWindow/EmacsKeyHandler.kt         | Ctrl+N/P/E/A/B/F               |
-| 右键菜单          | toolWindow/LinkContextMenuHandler.kt  | JCEF 右键菜单                  |
-| 健康监控          | toolWindow/HealthMonitor.kt           | 服务器定时轮询                 |
-| 常量定义          | root/OpenCodeConstants.kt             | 端口、超时等                   |
-| CI/CD             | .github/workflows/                    | 构建、发布、UI测试             |
-| 构建配置          | build.gradle.kts, gradle.properties   | 依赖、版本                     |
-| 测试              | src/test/                             | 单元测试 + 集成测试            |
-| **IntelliJ 参考** | `references/intellij-platform/`       | 官方文档                       |
+| Task                | Location                              | Notes                                        |
+| ------------------- | ------------------------------------- | -------------------------------------------- |
+| 工具窗口入口        | toolWindow/MyToolWindowFactory.kt     | JCEF + 服务器管理                            |
+| 工具窗口面板        | toolWindow/MyToolWindow.kt            | 浏览器生命周期管理                           |
+| 服务器管理          | toolWindow/OpenCodeServerManager.kt   | 单例对象，启停管理                           |
+| IDE Actions         | actions/                              | 快捷键传递、Copy/Add to Prompt               |
+| SSE 事件 + 通知降噪 | listeners/OpenCodeSSEConsumer.kt      | session.diff/file.edited + idle 事件抑制逻辑 |
+| 文件刷新            | listeners/FullRefreshCoordinator.kt   | 生产者-消费者模式                            |
+| 快捷键传递          | toolWindow/JcefKeyboardInterceptor.kt | ESC/Cmd+K/Cmd+, → JCEF                       |
+| Emacs 按键          | toolWindow/EmacsKeyHandler.kt         | Ctrl+N/P/E/A/B/F                             |
+| 右键菜单            | toolWindow/LinkContextMenuHandler.kt  | JCEF 右键菜单                                |
+| 健康监控            | toolWindow/HealthMonitor.kt           | 服务器定时轮询                               |
+| 常量定义            | root/OpenCodeConstants.kt             | 端口、超时等                                 |
+| CI/CD               | .github/workflows/                    | 构建、发布、UI测试                           |
+| 构建配置            | build.gradle.kts, gradle.properties   | 依赖、版本                                   |
+| 测试                | src/test/                             | 单元测试 + 集成测试                          |
+| **IntelliJ 参考**   | `references/intellij-platform/`       | 官方文档                                     |
 
 ## CODE MAP
 
@@ -121,6 +121,12 @@ intellij-opencode-web/
 - **禁止静态全局可变状态** - 使用 AtomicReference/AtomicBoolean 替代
 - **禁止 Regex 解析 JSON** - 必须用 Gson 或类似 JSON 解析器
 - **AddToPromptAction** 中 im-select 路径和输入法 ID 硬编码，需改为可配置（待处理）
+
+### 通知降噪设计决策
+
+- **`handleSessionIdle` 抑制逻辑**: 父 session 的 complete 通知使用 `sessionIdleFired` 集合抑制 agent 循环中的重复 idle。重置信号为 `message.updated(role=user)`，而非 `session.status(busy)`，以确保 agent 循环中的中间 idle 不重复通知
+- **`session.deleted`不移除追踪**: `session.deleted` 中不移除 `subagentSessionIds`，防止时序竞态导致子 agent idle 被误判为 `complete`。集合仅在 SSE 重连时通过 `onClosed()` 清空
+- **原则2通知不受影响**: `permission.asked`、`question.asked`、`session.next.tool.called(tool=question)` 在 `when(eventType)` 中是独立分支，不受 `sessionIdleFired` 抑制逻辑影响
 
 ## UNIQUE STYLES
 
