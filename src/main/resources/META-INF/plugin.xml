@@ -53,6 +53,5 @@
                                instance="com.github.xausky.opencodewebui.settings.OpenCodeConfigurable"
                                id="com.shenyuanlaolarou.opencodewebui.config"
                                displayName="OpenCode"/>
-        <applicationService serviceImplementation="com.github.xausky.opencodewebui.OpenCodeCefArgsProvider" preload="true"/>
     </extensions>
 </idea-plugin>
