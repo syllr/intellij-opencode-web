@@ -53,7 +53,7 @@ fun defaultEvents(): Map<String, Boolean> = mapOf(
     "permission" to true,
     "complete" to true,
     "error" to true,
-    "client_connected" to true,
+    "client_connected" to false,
     "subagent_complete" to false,
     "question" to true,
     "interrupted" to false,

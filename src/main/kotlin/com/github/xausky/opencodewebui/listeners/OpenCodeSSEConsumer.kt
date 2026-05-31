@@ -96,20 +96,35 @@ class OpenCodeSSEConsumer(
         // 使用 syncEventType 优先（SyncEvent V2），没有则用 payloadType（Direct BusEvent）
         val eventType = parsed.syncEventType ?: payloadType ?: return
 
-        // subagent 追踪 + session_started 通知
         if (eventType == "session.created") {
-            val info = parsed.syncEventData?.get("info") as? Map<*, *>
-            val parentID = info?.get("parentID") as? String
-            val sid = info?.get("id") as? String
-            if (parentID != null && sid != null) {
+            // Direct BusEvent: parsedMap.payload.properties.{sessionID,parentID}
+            // SyncEvent V2:   parsed.syncEventData.{id,parentID}
+            val payload = parsedMap?.get("payload") as? Map<*, *>
+            val props = payload?.get("properties") as? Map<*, *>
+            val data = parsed.syncEventData
+            val sid = props?.get("sessionID") as? String
+                ?: data?.get("sessionID") as? String
+                ?: data?.get("id") as? String
+                ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
+                ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
+            val parentID = props?.get("parentID") as? String
+                ?: data?.get("parentID") as? String
+                ?: (data?.get("info") as? Map<*, *>)?.get("parentID") as? String
+            if (sid != null && parentID != null) {
                 subagentSessionIds.add(sid)
                 logger.debug("[OpenCodeSSEConsumer] Subagent session tracked: $sid (parent=$parentID)")
-            } else if (parentID == null) {
+            } else if (sid != null && parentID == null) {
                 dispatchNotification("session_started", parsedMap, eventDir)
             }
         }
         if (eventType == "session.deleted") {
-            val sid = parsed.syncEventData?.get("sessionID") as? String
+            val payload = parsedMap?.get("payload") as? Map<*, *>
+            val props = payload?.get("properties") as? Map<*, *>
+            val data = parsed.syncEventData
+            val sid = props?.get("sessionID") as? String
+                ?: data?.get("sessionID") as? String
+                ?: data?.get("id") as? String
+                ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
             if (sid != null) {
                 // 不移除 subagentSessionIds：防止 session.deleted 先于 session.status(idle) 到达时
                 // 子 agent 的 idle 事件被误判为 complete。集合仅在 SSE 重连时通过 onClosed() 清空。
@@ -134,10 +149,10 @@ class OpenCodeSSEConsumer(
                 val props = payload?.get("properties") as? Map<*, *>
                 val statusObj = props?.get("status") as? Map<*, *>
                 if (statusObj?.get("type") == "idle") {
-                    handleSessionIdle(parsedMap, eventDir)
+                    handleSessionIdle(parsed, eventDir)
                 }
             }
-            "session.idle" -> handleSessionIdle(parsedMap, eventDir)
+            "session.idle" -> handleSessionIdle(parsed, eventDir)
             "session.next.tool.called" -> {
                 val payload = parsedMap?.get("payload") as? Map<*, *>
                 val properties = payload?.get("properties") as? Map<*, *>
@@ -151,12 +166,17 @@ class OpenCodeSSEConsumer(
             "message.updated" -> {
                 val payload = parsedMap?.get("payload") as? Map<*, *>
                 val props = payload?.get("properties") as? Map<*, *>
+                val data = parsed.syncEventData
                 val info = props?.get("info") as? Map<*, *>
+                    ?: (data as? Map<*, *>)?.get("info") as? Map<*, *>
                 if (info?.get("role") == "user") {
                     val sessionID = props?.get("sessionID") as? String
+                        ?: (data as? Map<*, *>)?.get("sessionID") as? String
+                        ?: (data as? Map<*, *>)?.get("id") as? String
+                        ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
+                        ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
                     if (sessionID != null) {
                         sessionIdleFired.remove(sessionID)
-                        logger.debug("[OpenCodeSSEConsumer] Reset sessionIdleFired for session $sessionID on user message")
                     }
                     dispatchNotification("user_message", parsedMap, eventDir)
                 }
@@ -207,10 +227,17 @@ class OpenCodeSSEConsumer(
     )
     private val idleDedupWindowMs = 2000L
 
-    private fun handleSessionIdle(parsedMap: Map<*, *>?, eventDir: String?) {
+    private fun handleSessionIdle(parsed: ParsedSSEEvent, eventDir: String?) {
+        val parsedMap = parsed.parsedMap
         val props = parsedMap?.get("payload") as? Map<*, *>
         val properties = props?.get("properties") as? Map<*, *>
-        val sessionID = properties?.get("sessionID") as? String ?: return
+        val data = parsed.syncEventData
+        val sessionID = properties?.get("sessionID") as? String
+            ?: data?.get("sessionID") as? String
+            ?: data?.get("id") as? String
+            ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
+            ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
+            ?: return
 
         // 子 agent idle → subagent_complete（走配置开关，默认关闭）
         if (sessionID in subagentSessionIds) {
@@ -221,7 +248,6 @@ class OpenCodeSSEConsumer(
         // 父 session 抑制：已发过 complete 则跳过
         // 防止 agent 循环中的重复通知，按用户发消息（message.updated）重置
         if (sessionID in sessionIdleFired) {
-            logger.debug("[OpenCodeSSEConsumer] Suppressing repeated complete for session $sessionID")
             return
         }
 
@@ -231,13 +257,11 @@ class OpenCodeSSEConsumer(
         val now = System.currentTimeMillis()
         val last = idleLastFired.put(key, now)
         if (last != null && now - last < idleDedupWindowMs) {
-            logger.debug("[OpenCodeSSEConsumer] Skipping duplicate idle notification for $key (last fired ${now - last}ms ago)")
             return
         }
 
         dispatchNotification("complete", parsedMap, eventDir)
         sessionIdleFired.add(sessionID)
-        logger.debug("[OpenCodeSSEConsumer] First complete for session $sessionID, added to sessionIdleFired")
     }
 
     override fun onClosed() {
