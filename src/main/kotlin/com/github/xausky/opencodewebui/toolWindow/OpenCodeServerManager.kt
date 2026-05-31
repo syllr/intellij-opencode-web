@@ -20,17 +20,42 @@ object OpenCodeServerManager {
     private val serverProcess = AtomicReference<Process?>(null)
     @Volatile
     private var sseConsumer: OpenCodeSSEConsumer? = null
+    // [Fix #3] 追踪 SSE consumer 所属 project（WeakRef），防止多项目场景下旧 consumer 泄漏
+    private val consumerProjectRef = AtomicReference<java.lang.ref.WeakReference<com.intellij.openapi.project.Project>?>(null)
 
     fun ensureSSEConsumer(project: com.intellij.openapi.project.Project): OpenCodeSSEConsumer {
+        // [Fix #3] 检查当前 consumer 是否属于同一 project，不同则停止旧的
+        val existingConsumer = sseConsumer
+        val existingProject = consumerProjectRef.get()?.get()
+        if (existingConsumer != null && existingProject != null && existingProject !== project) {
+            thisLogger().warn("[OpenCodeServerManager] SSE consumer belongs to different project (${existingProject.name}), stopping old consumer")
+            existingConsumer.stop()
+            sseConsumer = null
+        }
         if (sseConsumer == null) {
             synchronized(this) {
                 if (sseConsumer == null) {
-                    thisLogger().info("[OpenCodeServerManager] Creating SSE consumer via ensureSSEConsumer")
+                    thisLogger().info("[OpenCodeServerManager] Creating SSE consumer via ensureSSEConsumer, project=${project.name}")
                     sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
+                    consumerProjectRef.set(java.lang.ref.WeakReference(project))
                 }
             }
         }
         return sseConsumer!!
+    }
+
+    /**
+     * [Fix #3] 项目关闭时调用：停止该项目的 SSE consumer，断开引用链。
+     * 仅当 consumer 仍属于该 project 时才停止，避免误停其他 project 的 consumer。
+     */
+    fun disposeForProject(project: com.intellij.openapi.project.Project) {
+        val existingProject = consumerProjectRef.get()?.get()
+        if (existingProject === project) {
+            thisLogger().info("[OpenCodeServerManager] disposeForProject: stopping SSE consumer for project=${project.name}")
+            sseConsumer?.stop()
+            sseConsumer = null
+            consumerProjectRef.set(null)
+        }
     }
 
     fun startServer(
@@ -42,6 +67,7 @@ object OpenCodeServerManager {
             thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
             sseConsumer?.stop()
             sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
+            consumerProjectRef.set(java.lang.ref.WeakReference(project))
             onStarted()
             return
         }
@@ -60,6 +86,7 @@ object OpenCodeServerManager {
                         thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
                         sseConsumer?.stop()
                         sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
+                        consumerProjectRef.set(java.lang.ref.WeakReference(project))
                         onStarted()
                     } else {
                         // 健康检查超时，清理已启动的进程树（含 MCP 子进程）
@@ -78,31 +105,48 @@ object OpenCodeServerManager {
     }
 
     /**
-     * 关闭 OpenCode 服务器和所有子进程（MCP 服务等）。
-     *
-     * kill 策略：优先用 ProcessHandle API 从叶子杀到根；回退用 lsof+pgrep 递归遍历。
-     * 为什么不能只 kill 父进程：opencode serve 启动的 MCP 子进程（open-websearch、
-     * @playwright/mcp 等）通过 npm exec/npx 拉起，杀父进程后变为孤儿进程驻留。
-     * 关键：lsof 必须加 -sTCP:LISTEN 过滤，否则会误杀与端口有 ESTABLISHED 连接的
-     * JCEF Chromium 子进程，导致 IDE 崩溃退出。
+     * 停止本 IDE 实例启动的 opencode 进程（IDE 退出时调用）。
+     * 只杀 serverProcess 引用的进程树，不 fallback 到端口杀进程，
+     * 避免误杀其他 IDE 实例或用户手动启动的 opencode server。
      */
     fun stopServer() {
         try {
             thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
             sseConsumer?.stop()
             sseConsumer = null
+            consumerProjectRef.set(null)
 
-            thisLogger().info("[OpenCodeServerManager] Killing process tree on port $PORT")
-
-            // getAndSet(null) 原子性地获取并清空引用，防止与 startServer() 并发时的 TOCTOU 竞态
             val process = serverProcess.getAndSet(null)
             if (process != null && process.isAlive) {
+                thisLogger().info("[OpenCodeServerManager] Killing process tree (this IDE started), PID=${process.toHandle().pid()}")
                 killProcessTreeByHandle(process)
             } else {
-                killProcessTreeByPort()
+                thisLogger().info("[OpenCodeServerManager] No process reference to stop (server was externally started)")
             }
         } catch (e: Exception) {
             thisLogger().error("Error stopping OpenCode server: ${e.message}")
+        }
+    }
+
+    /**
+     * 关闭端口上的 opencode server（用户手动 Shutdown Server 时调用）。
+     * 通过端口查找并杀死进程树，不管是谁启动的。
+     *
+     * kill 策略：lsof -sTCP:LISTEN 找到监听进程，再用 pgrep 递归杀子进程。
+     * 关键：lsof 必须加 -sTCP:LISTEN 过滤，否则会误杀与端口有 ESTABLISHED 连接的
+     * JCEF Chromium 子进程，导致 IDE 崩溃退出。
+     */
+    fun shutdownServer() {
+        try {
+            thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
+            sseConsumer?.stop()
+            sseConsumer = null
+            consumerProjectRef.set(null)
+
+            thisLogger().info("[OpenCodeServerManager] Shutting down server on port $PORT")
+            killProcessTreeByPort()
+        } catch (e: Exception) {
+            thisLogger().error("Error shutting down OpenCode server: ${e.message}")
         }
     }
 

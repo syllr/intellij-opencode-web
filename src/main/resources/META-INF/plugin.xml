@@ -53,5 +53,6 @@
                                instance="com.github.xausky.opencodewebui.settings.OpenCodeConfigurable"
                                id="com.shenyuanlaolarou.opencodewebui.config"
                                displayName="OpenCode"/>
+        <postStartupActivity implementation="com.github.xausky.opencodewebui.toolWindow.OpenCodeProjectActivity"/>
     </extensions>
 </idea-plugin>

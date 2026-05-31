@@ -27,12 +27,13 @@ class MyToolWindow(toolWindow: ToolWindow) {
         MyToolWindowFactory.myToolWindowInstances[project] = this
 
         // 项目关闭时清理：移除 map 引用并释放资源，防止内存泄漏
-        // 注意：不关闭 opencode 服务器进程，它在 IDE 之外独立运行
         Disposer.register(project) {
             logger.info("[Lifecycle] Cleaning up MyToolWindow for project=${project.name}")
             MyToolWindowFactory.myToolWindowInstances.remove(project)
             healthMonitor.stop()
             browserPanel.disposeBrowser()
+            // [Fix #3] 停止该项目的 SSE consumer，断开 OpenCodeServerManager → SSEConsumer → Project 引用链
+            OpenCodeServerManager.disposeForProject(project)
         }
     }
 
@@ -66,16 +67,31 @@ class MyToolWindow(toolWindow: ToolWindow) {
         browserPanel.showStartButton { startOpenCodeServer() }
     }
 
+    // [Fix #4] 追踪已注册 listener 的 window，防止 hierarchy 变化时无限累积
+    private var focusListenerWindow: java.awt.Window? = null
+    private var focusListener: java.awt.event.WindowFocusListener? = null
+
     private fun setupWindowFocusListener(toolWindow: ToolWindow) {
         browserPanel.addHierarchyListener {
-            SwingUtilities.getWindowAncestor(browserPanel)?.let { window ->
-                window.addWindowFocusListener(object : WindowAdapter() {
-                    override fun windowGainedFocus(e: WindowEvent?) {
-                        if (toolWindow.isVisible) {
-                            requestBrowserFocus()
+            val newWindow = SwingUtilities.getWindowAncestor(browserPanel)
+            val oldWindow = focusListenerWindow
+            // 仅当 window 发生变化时才重新注册
+            if (newWindow !== oldWindow) {
+                // 移除旧 window 上的 listener
+                oldWindow?.let { w -> focusListener?.let { l -> w.removeWindowFocusListener(l) } }
+                // 在新 window 上注册
+                newWindow?.let { window ->
+                    val listener = object : WindowAdapter() {
+                        override fun windowGainedFocus(e: WindowEvent?) {
+                            if (toolWindow.isVisible) {
+                                requestBrowserFocus()
+                            }
                         }
                     }
-                })
+                    window.addWindowFocusListener(listener)
+                    focusListenerWindow = window
+                    focusListener = listener
+                }
             }
         }
     }

@@ -27,6 +27,9 @@ class BrowserPanel(
     @Volatile
     private var browser: JBCefBrowser? = null
 
+    // [Fix #6] 追踪注册的 handler，dispose 时移除
+    private var contextMenuHandler: LinkContextMenuHandler? = null
+
     private var startButtonPanel: JPanel? = null
     private var startCallback: (() -> Unit)? = null
 
@@ -106,7 +109,9 @@ class BrowserPanel(
             val createdBrowser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
             this.browser = createdBrowser
             add(createdBrowser.component, BorderLayout.CENTER)
-            sharedClient.addContextMenuHandler(LinkContextMenuHandler(), createdBrowser.cefBrowser)
+            val handler = LinkContextMenuHandler()
+            sharedClient.addContextMenuHandler(handler, createdBrowser.cefBrowser)
+            contextMenuHandler = handler
             sharedClient.addLoadHandler(object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
                     thisLogger().info("onLoadEnd called, projectPath: $projectPath")
@@ -155,6 +160,13 @@ class BrowserPanel(
 
     fun disposeBrowser() {
         browser?.cefBrowser?.stopLoad()
+        // [Fix #6] 移除 context menu handler，防止 handler 累积
+        contextMenuHandler?.let { handler ->
+            browser?.cefBrowser?.let { cefBrowser ->
+                sharedClient.removeContextMenuHandler(handler, cefBrowser)
+            }
+            contextMenuHandler = null
+        }
         browser?.dispose()
         removeAll()
         browser = null

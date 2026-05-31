@@ -5,8 +5,6 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.project.ProjectManager
-import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -17,24 +15,20 @@ import com.intellij.ui.jcef.JBCefClient
 import com.intellij.util.messages.MessageBusConnection
 import java.util.concurrent.ConcurrentHashMap
 
-@Suppress("DEPRECATION", "EXPERIMENTAL_API_USAGE")
 class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
     init {
-        // 项目打开时注册到 Router（双保险注册的第一道保险）
         val connection: MessageBusConnection = ApplicationManager.getApplication().messageBus.connect()
-        connection.subscribe(ProjectManager.TOPIC, object : ProjectManagerListener {
-            override fun projectOpened(project: Project) {
-                OpenCodeNotificationRouter.register(project)
-            }
-            override fun projectClosing(project: Project) {
-                OpenCodeNotificationRouter.unregister(project)
+        connection.subscribe(com.intellij.ide.AppLifecycleListener.TOPIC, object : com.intellij.ide.AppLifecycleListener {
+            override fun appWillBeClosed(isRestart: Boolean) {
+                thisLogger().info("[Lifecycle] Application closing (isRestart=$isRestart), stopping server")
+                OpenCodeServerManager.stopServer()
             }
         })
     }
 
     companion object {
-        private const val OPCODE_WEB_TOOL_WINDOW_ID = "OpenCodeWeb"
+        internal const val OPCODE_WEB_TOOL_WINDOW_ID = "OpenCodeWeb"
 
         fun openOpenCodeWebToolWindow(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
@@ -51,9 +45,8 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         internal val myToolWindowInstances: ConcurrentHashMap<Project, MyToolWindow> = ConcurrentHashMap()
 
-        /**
-         * 获取当前项目中主浏览器实例，用于在其他组件中执行 JavaScript
-         */
+        internal val contentManagerListeners: ConcurrentHashMap<Project, com.intellij.ui.content.ContentManagerListener> = ConcurrentHashMap()
+
         fun getMainBrowser(project: Project): JBCefBrowser? {
             return myToolWindowInstances[project]?.getBrowser()
         }
@@ -66,29 +59,38 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             }
         }
 
+        fun shutdownServer() {
+            try {
+                OpenCodeServerManager.shutdownServer()
+            } catch (e: Exception) {
+                thisLogger().error("Error shutting down OpenCode server: ${e.message}")
+            }
+        }
+
     }
 
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         thisLogger().info("[Lifecycle] createToolWindowContent called, project=${project.name}")
-        OpenCodeNotificationRouter.register(project)
         val contentManager = toolWindow.contentManager
 
         // 创建 MyToolWindow，触发 init 块设置 myToolWindowInstance
         val myToolWindow = MyToolWindow(toolWindow)
         thisLogger().info("[Lifecycle] MyToolWindow instance created, myToolWindowInstance set")
         ApplicationManager.getApplication().invokeLater {
+            if (project.isDisposed) return@invokeLater
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
             toolWindow.contentManager.addContent(content)
 
-            toolWindow.contentManager.addContentManagerListener(object :
-                com.intellij.ui.content.ContentManagerListener {
+            val listener = object : com.intellij.ui.content.ContentManagerListener {
                 override fun selectionChanged(event: com.intellij.ui.content.ContentManagerEvent) {
                     if (event.content === content) {
                         myToolWindow.requestBrowserFocus()
                     }
                 }
-            })
+            }
+            toolWindow.contentManager.addContentManagerListener(listener)
+            contentManagerListeners[project] = listener
 
             myToolWindow.checkAndLoadContent()
         }

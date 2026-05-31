@@ -1,6 +1,5 @@
 package com.github.xausky.opencodewebui.listeners
 
-import com.github.xausky.opencodewebui.DEDUP_WINDOW_MS
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.SSE_CONNECT_TIMEOUT_SECONDS
@@ -21,13 +20,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 class OpenCodeSSEConsumer(
-    private val project: Project
+    project: Project
 ) : BackgroundEventHandler {
+    private val projectBasePath: String? = project.basePath
 
     private val gson = Gson()
     private val eventSourceRef = AtomicReference<BackgroundEventSource?>(null)
     private val logger = thisLogger()
-    private val refreshDeduplicator = RefreshDeduplicator()
 
     // subagent 会话追踪：记录所有 subagent sessionID（有 parentID 的 session）
     companion object {
@@ -39,9 +38,9 @@ class OpenCodeSSEConsumer(
 
     fun start() {
         val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
-        logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, project.basePath='${project.basePath}', uri=$uri")
+        logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, projectBasePath='$projectBasePath', uri=$uri")
 
-        FullRefreshCoordinator.start(project.basePath ?: "")
+        FullRefreshCoordinator.start(projectBasePath ?: "")
 
         val connectStrategy = ConnectStrategy.http(uri)
             .connectTimeout(SSE_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -61,7 +60,13 @@ class OpenCodeSSEConsumer(
     fun stop() {
         FullRefreshCoordinator.stop()
         eventSourceRef.getAndSet(null)?.close()
-        logger.info("[OpenCodeSSEConsumer] SSE consumer stopped")
+        // [Fix #2] 清理静态集合，防止 stop() 后 companion object 集合继续增长
+        // onClosed() 只在 SSE 连接关闭时调用，stop() 主动关闭时也需要清理
+        SSEEventParser.clearCache()
+        subagentSessionIds.clear()
+        sessionIdleFired.clear()
+        idleLastFired.clear()
+        logger.info("[OpenCodeSSEConsumer] SSE consumer stopped, static collections cleared")
     }
 
     override fun onOpen() {
@@ -75,7 +80,7 @@ class OpenCodeSSEConsumer(
         val payloadType = parsed.payloadType
         val eventDir = parsed.directory
         val fileProperty = parsed.file
-        val projectDir = project.basePath
+        val projectDir = projectBasePath
 
         if (payloadType == "message.part.delta") {
             if (fileProperty != null) logger.debug("[OpenCodeSSEConsumer] *** FILE CHANGE DETECTED *** payloadType=$payloadType, file=$fileProperty")
@@ -180,12 +185,12 @@ class OpenCodeSSEConsumer(
         }
 
         if (isSessionDiff) {
-            try { handleSessionDiff(gson.fromJson(message, SSEEventWrapper::class.java).payload.properties, projectDir) }
-            catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to parse session.diff: ${e.message}", e) }
+            try { FullRefreshCoordinator.request() }
+            catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to handle session.diff: ${e.message}", e) }
             return
         }
-        if (isFileEdited) { handleFileEdited(eventDir, fileProperty, projectDir, parsedMap, message); return }
-        if (isFileWatcherUpdated) { handleFileWatcherUpdated(eventDir, fileProperty, projectDir, parsedMap); return }
+        if (isFileEdited) { FullRefreshCoordinator.request(); return }
+        if (isFileWatcherUpdated) { FullRefreshCoordinator.request(); return }
     }
 
     private fun dispatchNotification(eventType: String, parsedMap: Map<*, *>?, eventDir: String?) {
@@ -194,7 +199,12 @@ class OpenCodeSSEConsumer(
 
     // session idle 去重：同一 session 在时间窗口内只发一次 complete 通知
     // 防止 session.status(idle) 和 session.idle 两个事件重复触发
-    private val idleLastFired = ConcurrentHashMap<String, Long>()
+    // [Fix #7] 使用有界 LRU Map 防止无界增长
+    private val idleLastFired = java.util.Collections.synchronizedMap(
+        object : java.util.LinkedHashMap<String, Long>(500, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > 500
+        }
+    )
     private val idleDedupWindowMs = 2000L
 
     private fun handleSessionIdle(parsedMap: Map<*, *>?, eventDir: String?) {
@@ -238,48 +248,6 @@ class OpenCodeSSEConsumer(
         logger.debug("[OpenCodeSSEConsumer] Cleared sessionIdleFired (${sessionIdleFired.size} entries)")
         sessionIdleFired.clear()
     }
-
-    private fun handleSessionDiff(props: SSESessionDiffProperties, projectDir: String) {
-        logger.debug("[OpenCodeSSEConsumer] session.diff: ${props.diff.size} files")
-        props.diff.forEachIndexed { i, f -> logger.debug("[OpenCodeSSEConsumer]   diff[$i]: file='${f.file}', status=${f.status}") }
-        if (props.diff.isNotEmpty()) { logger.debug("[OpenCodeSSEConsumer] Refreshing ${props.diff.size} files from session.diff"); OpenCodeDiffRefresher.refreshFiles(projectDir, props.diff) }
-    }
-
-    private fun handleFileEdited(eventDir: String?, fileProperty: String?, projectDir: String, parsedMap: Map<*, *>?, message: String) {
-        try {
-            val absolutePath = gson.fromJson(message, SSEFileEditedEvent::class.java).payload.properties.file
-            val relativePath = computeRelativePath(eventDir, absolutePath)
-            logger.debug("[OpenCodeSSEConsumer] file.edited: absolute='$absolutePath', relative='$relativePath'")
-            OpenCodeDiffRefresher.refreshFiles(projectDir, listOf(DiffFile(relativePath, 0, 0, "modified")))
-            FullRefreshCoordinator.request()
-        } catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to parse file.edited: ${e.message}", e) }
-    }
-
-    private fun handleFileWatcherUpdated(eventDir: String?, fileProperty: String?, projectDir: String, parsedMap: Map<*, *>?) {
-        try {
-            val props = (parsedMap?.get("payload") as? Map<*, *>)?.get("properties") as? Map<*, *>
-            val absolutePath = props?.get("file") as? String
-                ?: run { logger.warn("[OpenCodeSSEConsumer] file.watcher.updated missing file property"); return }
-            val eventType = props.get("event") as? String
-            val relativePath = computeRelativePath(eventDir, absolutePath)
-            logger.debug("[OpenCodeSSEConsumer] file.watcher.updated: event=$eventType, absolute='$absolutePath', relative='$relativePath'")
-            if (!refreshDeduplicator.shouldRefresh(absolutePath, DEDUP_WINDOW_MS)) {
-                logger.debug("[OpenCodeSSEConsumer] Skipping duplicate refresh for $absolutePath"); return
-            }
-            OpenCodeDiffRefresher.refreshFiles(projectDir, listOf(DiffFile(relativePath, 0, 0,
-                when (eventType) { "add" -> "created"; "unlink" -> "deleted"; else -> "modified" })))
-            FullRefreshCoordinator.request()
-        } catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to parse file.watcher.updated: ${e.message}", e) }
-    }
-
-    private fun computeRelativePath(eventDir: String?, absolutePath: String): String =
-        if (eventDir != null && absolutePath.startsWith(eventDir)) {
-            try { java.io.File(eventDir).toPath().relativize(java.io.File(absolutePath).toPath()).toString() }
-            catch (e: Exception) {
-                logger.warn("[OpenCodeSSEConsumer] Failed to relativize path: ${e.message}")
-                absolutePath.removePrefix(eventDir).removePrefix("/")
-            }
-        } else absolutePath
 
     override fun onComment(comment: String) {
         // BackgroundEventHandler 接口强制实现。

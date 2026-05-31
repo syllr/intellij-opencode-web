@@ -58,7 +58,7 @@ class LinkContextMenuHandler : CefContextMenuHandlerAdapter() {
             return true
         }
         if (commandId == SHUTDOWN_COMMAND_ID) {
-            MyToolWindowFactory.stopServer()
+            MyToolWindowFactory.shutdownServer()
             return true
         }
         return false

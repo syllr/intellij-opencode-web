@@ -3,7 +3,6 @@ package com.github.xausky.opencodewebui.listeners
 import com.google.gson.Gson
 import com.intellij.openapi.diagnostic.thisLogger
 import java.util.Collections
-import java.util.LinkedList
 import java.util.LinkedHashMap
 
 data class ParsedSSEEvent(
@@ -14,42 +13,6 @@ data class ParsedSSEEvent(
     val syncEventType: String? = null,
     val syncEventData: Map<*, *>? = null,
     val parsedMap: Map<*, *>? = null
-)
-
-data class SSEEventWrapper(
-    val directory: String? = null,
-    val payload: SSESessionDiffPayload
-)
-
-data class SSESessionDiffPayload(
-    val type: String,
-    val properties: SSESessionDiffProperties
-)
-
-data class SSESessionDiffProperties(
-    val sessionID: String,
-    val diff: List<DiffFile>
-)
-
-data class DiffFile(
-    val file: String,
-    val additions: Int,
-    val deletions: Int,
-    val status: String
-)
-
-data class SSEFileEditedEvent(
-    val directory: String? = null,
-    val payload: SSEFileEditedPayload
-)
-
-data class SSEFileEditedPayload(
-    val type: String,
-    val properties: SSEFileEditedProperties
-)
-
-data class SSEFileEditedProperties(
-    val file: String
 )
 
 object SSEEventParser {
