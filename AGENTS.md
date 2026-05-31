@@ -1,8 +1,8 @@
 # PROJECT KNOWLEDGE BASE
 
 **Generated:** 2026-05-10
-**Commit:** f5a95b4
-**Branch:** 1.0.17
+**Commit:** e7e3c9b
+**Branch:** 1.0.18
 
 ## OVERVIEW
 
@@ -15,12 +15,12 @@ intellij-opencode-web/
 ├── src/main/kotlin/com/github/xausky/opencodewebui/
 │   ├── toolWindow/      # JCEF 浏览器 + 服务器管理 + 键盘处理【核心】
 │   ├── listeners/       # SSE 事件消费 + 文件刷新协调
-│   │   └── 参考/         # OpenCode Message API 参考文档
 │   ├── actions/         # IDE actions（快捷键传递、Copy/Add to Prompt）
-│   └── utils/           # HTTP API、JS 注入、IdeaVim 集成
+│   ├── utils/           # HTTP API、JS 注入、IdeaVim 集成
+│   └── settings/        # 插件配置页面
 ├── src/main/resources/  # plugin.xml、图标、i18n 消息
 ├── src/test/            # 单元测试 + 集成测试
-├── .github/workflows/   # CI/CD（构建、发布、UI测试）
+├── .github/workflows/   # CI/CD（构建、发布、UI测试）【本地缺少，依赖上游仓库】
 └── references/          # IntelliJ 平台参考文档
 ```
 
@@ -38,6 +38,7 @@ intellij-opencode-web/
 | Emacs 按键          | toolWindow/EmacsKeyHandler.kt         | Ctrl+N/P/E/A/B/F                             |
 | 右键菜单            | toolWindow/LinkContextMenuHandler.kt  | JCEF 右键菜单                                |
 | 健康监控            | toolWindow/HealthMonitor.kt           | 服务器定时轮询                               |
+| 项目启动活动        | toolWindow/OpenCodeProjectActivity.kt | 项目启动/关闭事件处理，注册通知路由          |
 | 常量定义            | root/OpenCodeConstants.kt             | 端口、超时等                                 |
 | CI/CD               | .github/workflows/                    | 构建、发布、UI测试                           |
 | 构建配置            | build.gradle.kts, gradle.properties   | 依赖、版本                                   |
@@ -46,7 +47,7 @@ intellij-opencode-web/
 
 ## CODE MAP
 
-### toolWindow/（8 文件，核心模块）
+### toolWindow/（9 文件，核心模块）
 
 | Symbol                  | Type                         | Role                                      |
 | ----------------------- | ---------------------------- | ----------------------------------------- |
@@ -58,34 +59,35 @@ intellij-opencode-web/
 | JcefKeyboardInterceptor | Class                        | 将 ESC/Cmd+K/Cmd+, 传递给 JCEF 浏览器     |
 | EmacsKeyHandler         | Object                       | Emacs 风格按键映射（Ctrl+N/P/E/A/B/F）    |
 | LinkContextMenuHandler  | CefContextMenuHandlerAdapter | JCEF 右键菜单（刷新/浏览器打开/复制链接） |
+| OpenCodeProjectActivity | ProjectActivity              | 项目启动/关闭事件处理，注册通知路由       |
 
-### listeners/（6 文件 + 参考/，SSE + 文件事件）
+### listeners/（4 文件，SSE + 文件事件）
 
 | Symbol                 | Type                   | Role                                        |
 | ---------------------- | ---------------------- | ------------------------------------------- |
 | OpenCodeSSEConsumer    | BackgroundEventHandler | SSE 事件消费（session.diff/file.edited 等） |
 | FullRefreshCoordinator | Object                 | 全量刷新协调器（生产者-消费者）             |
-| RefreshDeduplicator    | Class                  | 文件刷新去重（时间窗口）                    |
-| SSEEventParser         | Object                 | SSE 事件 JSON 解析                          |
 | BashCommandHandler     | Object                 | Bash 工具 SSE 事件处理                      |
-| OpenCodeDiffRefresher  | Object                 | 文件刷新器（LocalFileSystem）               |
+| SSEEventParser         | Object                 | SSE 事件 JSON 解析                          |
 
-### actions/（3 文件）
+### actions/（2 文件）
 
-| Symbol                        | Type     | Role                                       |
-| ----------------------------- | -------- | ------------------------------------------ |
-| JcefShortcutPassthroughAction | AnAction | 快捷键传递（ESC/Cmd+K/Cmd+,）到 JCEF       |
-| CopyAsPromptAction            | AnAction | 复制选中文本为 Prompt 格式（带路径和行号） |
-| AddToPromptAction             | AnAction | 添加选中代码到 Prompt 编辑器，支持 IdeaVim |
+| Symbol             | Type     | Role                                       |
+| ------------------ | -------- | ------------------------------------------ |
+| CopyAsPromptAction | AnAction | 复制选中文本为 Prompt 格式（带路径和行号） |
+| AddToPromptAction  | AnAction | 添加选中代码到 Prompt 编辑器，支持 IdeaVim |
 
-### utils/（4 文件）
+### utils/（7 文件）
 
-| Symbol             | Type   | Role                                   |
-| ------------------ | ------ | -------------------------------------- |
-| OpenCodeApi        | Object | HTTP API 调用（健康检查/获取 session） |
-| JcefJsInjector     | Object | 向 JCEF 页面注入 JavaScript            |
-| IdeaVimIntegration | Object | IdeaVim 集成（获取 visual 模式选区）   |
-| SSEConsumerFactory | Object | OpenCodeSSEConsumer 工厂               |
+| Symbol                      | Type   | Role                                   |
+| --------------------------- | ------ | -------------------------------------- |
+| OpenCodeApi                 | Object | HTTP API 调用（健康检查/获取 session） |
+| JcefJsInjector              | Object | 向 JCEF 页面注入 JavaScript            |
+| IdeaVimIntegration          | Object | IdeaVim 集成（获取 visual 模式选区）   |
+| SSEConsumerFactory          | Object | OpenCodeSSEConsumer 工厂               |
+| OpenCodeConfig              | Object | 插件配置管理                           |
+| OpenCodeNotificationRouter  | Object | 通知路由（分发不同类型的事件）         |
+| OpenCodeNotificationService | Object | 通知服务（管理 IDE 通知）              |
 
 ### root
 
@@ -97,7 +99,7 @@ intellij-opencode-web/
 ## CONVENTIONS
 
 - Gradle 版本目录 (`gradle/libs.versions.toml`)
-- JDK 21, Kotlin 2.3.20, IntelliJ Platform 2.14.0
+- Gradle 9.3.1, JDK 21, Kotlin 2.3.20, IntelliJ Platform 2.14.0
 - 平台版本 2026.1 (sinceBuild 261)
 - Qodana + Kover 代码质量，CodeCov 覆盖率上传
 - SemVer 版本格式
@@ -107,13 +109,14 @@ intellij-opencode-web/
 - **包名不匹配**: 源码 `com.github.xausky.opencodewebui` vs `pluginGroup = com.shenyuanlaolarou`（已知问题，暂未修复）
 - **Git 提交**: Agent 禁止自动提交，必须用户显式调用
 - **发布**: Agent 禁止自动发布，必须用户显式调用
+- **CI/CD**: 本地缺少 `.github/workflows` 目录，依赖上游仓库 CI
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
 - ~~静态全局服务器状态~~ → 已修复：使用 `AtomicReference<Process>` + `AtomicBoolean` / `@Volatile`
 - ~~弃用的 JBCefBrowser~~ → 已修复：使用 `JBCefBrowserBuilder`
 - ~~SQLite JDBC 会话管理~~ → 已修复：通过 HTTP API (`OpenCodeApi.getLatestSessionId`) 实现会话持久化
-- ~~单个大文件 (MyToolWindowFactory.kt 900+ 行)~~ → 已修复：拆分为多个文件（toolWindow/ 8 文件）
+- ~~单个大文件 (MyToolWindowFactory.kt 900+ 行)~~ → 已修复：拆分为多个文件（toolWindow/ 9 文件）
 - ~~正则表达式解析 HTTP 响应体~~ → 已修复：统一使用 Gson 解析 JSON 响应。所有 HTTP API 返回的 body 必须通过 Gson 或类似的 JSON 解析器处理，禁止使用 `Regex` / `Pattern` / 字符串操作来提取 JSON 字段
 
 ### 开发注意事项
@@ -173,6 +176,7 @@ intellij-opencode-web/
 - 测试数据放在 `src/test/testData/` 目录
 - 集成测试继承 `BasePlatformTestCase`，使用 `@TestDataPath`
 - Kover 代码覆盖率集成至 `check` 任务
+- **UI 测试**：依赖 `.github/workflows` 目录，本地缺少，需从上游仓库获取
 
 ## NOTES
 
