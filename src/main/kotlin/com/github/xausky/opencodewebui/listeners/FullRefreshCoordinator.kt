@@ -26,10 +26,13 @@ object FullRefreshCoordinator {
     fun start(projectPath: String) {
         projectRoot = projectPath
         if (scheduler != null) return
-        val s = Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "FullRefreshWorker")
+        synchronized(this) {
+            if (scheduler != null) return
+            val s = Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "FullRefreshWorker")
+            }
+            scheduler = s
         }
-        scheduler = s
         logger.info("[FullRefresh] Started, debounce=${DEBOUNCE_MS}ms, root=$projectPath")
     }
 
@@ -66,19 +69,24 @@ object FullRefreshCoordinator {
             return
         }
         logger.debug("[FullRefresh] Executing full refresh for $root")
-        LocalFileSystem.getInstance().refreshIoFiles(
-            listOf(dir),
-            true,
-            true,
-            Runnable {
-        refreshInProgress.set(false)
-        refreshRequestedWhileBusy = false
-                if (refreshRequestedWhileBusy) {
-                    refreshRequestedWhileBusy = false
-                    request()
+        // 必须 try-catch:refreshIoFiles 同步抛异常时回调不执行,refreshInProgress 永锁会导致 IDE 文件刷新永久失效
+        try {
+            LocalFileSystem.getInstance().refreshIoFiles(
+                listOf(dir),
+                true,
+                true,
+                Runnable {
+                    refreshInProgress.set(false)
+                    if (refreshRequestedWhileBusy) {
+                        refreshRequestedWhileBusy = false
+                        request()
+                    }
+                    logger.debug("[FullRefresh] Refresh completed")
                 }
-                logger.debug("[FullRefresh] Refresh completed")
-            }
-        )
+            )
+        } catch (e: Exception) {
+            logger.error("[FullRefresh] refreshIoFiles failed: ${e.message}", e)
+            refreshInProgress.set(false)
+        }
     }
 }

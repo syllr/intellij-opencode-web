@@ -1,10 +1,6 @@
 package com.github.xausky.opencodewebui.utils
 
-import com.github.xausky.opencodewebui.HTTP_TIMEOUT_MS
-import com.github.xausky.opencodewebui.OPENCODE_HOST
-import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.intellij.ide.util.PropertiesComponent
-import java.net.URI
 
 object OpenCodeConfig {
 

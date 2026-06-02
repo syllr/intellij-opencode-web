@@ -18,17 +18,17 @@ object BashCommandHandler {
             val status = state?.get("status") as? String
 
             if (partType == "tool" && toolName == "bash" && status == "completed") {
-                val input = state?.get("input") as? Map<*, *>
+                val input = state.get("input") as? Map<*, *>
                 val command = input?.get("command") as? String ?: ""
 
                 if (command.isNotBlank()) {
                     val exitCode = try {
-                        val metadata = state?.get("metadata") as? Map<*, *>
+                        val metadata = state.get("metadata") as? Map<*, *>
                         (metadata?.get("exit") as? Double)?.toInt() ?: -1
                     } catch (e: Exception) { -1 }
 
                     if (exitCode == 0 && projectDir != null) {
-                        val segments = command.split(Regex("&&|;|\n"))
+                        val segments = command.split(Regex("&&|;|\n|\\|"))
                         val allReadOnly = segments.all { segment ->
                             val base = segment.trimStart().split(WHITESPACE_REGEX).firstOrNull()?.trim() ?: ""
                             base.isEmpty() || base in READ_ONLY_COMMANDS
@@ -52,7 +52,7 @@ object BashCommandHandler {
 
     val READ_ONLY_COMMANDS = setOf(
         "ls", "cat", "head", "tail", "less", "more", "tree", "stat", "file", "du", "df",
-        "grep", "find", "wc", "sort", "uniq", "cut", "diff", "awk", "sed",
+        "grep", "find", "wc", "sort", "uniq", "cut", "diff", "awk",
         "pwd", "which", "type", "echo", "printf", "env", "printenv",
         "whoami", "id", "date", "uname", "hostname", "uptime",
         "ps", "pgrep", "pidof", "lsof",

@@ -5,12 +5,16 @@ import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.SERVER_START_TIMEOUT_MS
 import com.github.xausky.opencodewebui.listeners.OpenCodeSSEConsumer
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
+import com.github.xausky.opencodewebui.utils.OpenCodeApiResult
 import com.github.xausky.opencodewebui.utils.SSEConsumerFactory
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.openapi.project.Project
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 object OpenCodeServerManager {
@@ -22,39 +26,44 @@ object OpenCodeServerManager {
     private var sseConsumer: OpenCodeSSEConsumer? = null
     // [Fix #3] 追踪 SSE consumer 所属 project（WeakRef），防止多项目场景下旧 consumer 泄漏
     private val consumerProjectRef = AtomicReference<java.lang.ref.WeakReference<com.intellij.openapi.project.Project>?>(null)
+    // 防 stopServer/shutdownServer 重入:用户连续点 Shutdown 按钮时,第二次以后短路返回
+    private val shutdownInProgress = AtomicBoolean(false)
 
     fun ensureSSEConsumer(project: com.intellij.openapi.project.Project): OpenCodeSSEConsumer {
-        // [Fix #3] 检查当前 consumer 是否属于同一 project，不同则停止旧的
-        val existingConsumer = sseConsumer
-        val existingProject = consumerProjectRef.get()?.get()
-        if (existingConsumer != null && existingProject != null && existingProject !== project) {
-            thisLogger().warn("[OpenCodeServerManager] SSE consumer belongs to different project (${existingProject.name}), stopping old consumer")
-            existingConsumer.stop()
-            sseConsumer = null
-        }
-        if (sseConsumer == null) {
-            synchronized(this) {
-                if (sseConsumer == null) {
-                    thisLogger().info("[OpenCodeServerManager] Creating SSE consumer via ensureSSEConsumer, project=${project.name}")
-                    sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
-                    consumerProjectRef.set(java.lang.ref.WeakReference(project))
-                }
+        // [Fix #3] 检查 + 停止旧 consumer 必须在 synchronized 内,避免 DCL race
+        // [Fix #4] return 也必须在 synchronized 块内,否则 disposeForProject 在块外置 sseConsumer=null 会导致 NPE(TOCTOU race)
+        synchronized(this) {
+            val existingConsumer = sseConsumer
+            val existingProject = consumerProjectRef.get()?.get()
+            if (existingConsumer != null && existingProject != null && existingProject !== project) {
+                thisLogger().warn("[OpenCodeServerManager] SSE consumer belongs to different project (${existingProject.name}), stopping old consumer")
+                existingConsumer.stop()
+                sseConsumer = null
+                consumerProjectRef.set(null)
             }
+            if (sseConsumer == null) {
+                thisLogger().info("[OpenCodeServerManager] Creating SSE consumer via ensureSSEConsumer, project=${project.name}")
+                sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
+                consumerProjectRef.set(java.lang.ref.WeakReference(project))
+            }
+            return sseConsumer!!
         }
-        return sseConsumer!!
     }
 
     /**
      * [Fix #3] 项目关闭时调用：停止该项目的 SSE consumer，断开引用链。
      * 仅当 consumer 仍属于该 project 时才停止，避免误停其他 project 的 consumer。
+     * 必须在 synchronized 内,否则与 ensureSSEConsumer 竞态会导致 NPE。
      */
     fun disposeForProject(project: com.intellij.openapi.project.Project) {
-        val existingProject = consumerProjectRef.get()?.get()
-        if (existingProject === project) {
-            thisLogger().info("[OpenCodeServerManager] disposeForProject: stopping SSE consumer for project=${project.name}")
-            sseConsumer?.stop()
-            sseConsumer = null
-            consumerProjectRef.set(null)
+        synchronized(this) {
+            val existingProject = consumerProjectRef.get()?.get()
+            if (existingProject === project) {
+                thisLogger().info("[OpenCodeServerManager] disposeForProject: stopping SSE consumer for project=${project.name}")
+                sseConsumer?.stop()
+                sseConsumer = null
+                consumerProjectRef.set(null)
+            }
         }
     }
 
@@ -65,9 +74,7 @@ object OpenCodeServerManager {
     ) {
         if (OpenCodeApi.isServerHealthySync()) {
             thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
-            sseConsumer?.stop()
-            sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
-            consumerProjectRef.set(java.lang.ref.WeakReference(project))
+            ensureSSEConsumer(project)
             onStarted()
             return
         }
@@ -83,10 +90,9 @@ object OpenCodeServerManager {
                     val healthy = OpenCodeApi.waitForServerHealthy(SERVER_START_TIMEOUT_MS)
 
                     if (healthy) {
+                        thisLogger().info("[OpenCodeServerManager] Server started, PID=${process.toHandle().pid()}, port=$PORT")
                         thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
-                        sseConsumer?.stop()
-                        sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
-                        consumerProjectRef.set(java.lang.ref.WeakReference(project))
+                        ensureSSEConsumer(project)
                         onStarted()
                     } else {
                         // 健康检查超时，清理已启动的进程树（含 MCP 子进程）
@@ -108,23 +114,112 @@ object OpenCodeServerManager {
      * 停止本 IDE 实例启动的 opencode 进程（IDE 退出时调用）。
      * 只杀 serverProcess 引用的进程树，不 fallback 到端口杀进程，
      * 避免误杀其他 IDE 实例或用户手动启动的 opencode server。
+     *
+     * 关闭策略(fire-and-forget dispose + 等 process 退出):
+     * 1. 后台线程 POST /global/dispose → server 内部清理 MCP/PTY/SSE/LSP(不阻塞用户)
+     * 2. 主线程等 process onExit(最多 5s)
+     * 3. 兜底 SIGTERM(handle.destroy)+ 再等 2s
+     * 4. 最后兜底 SIGKILL(杀进程树)
+     *
+     * 与早期版本的差异:不再串行等 /global/dispose HTTP 响应(2s 超时常不够),
+     * 改为并行 dispose + wait process exit,user-perceived time = 真实退出时间。
      */
     fun stopServer() {
+        if (!shutdownInProgress.compareAndSet(false, true)) {
+            thisLogger().info("[OpenCodeServerManager] Stop already in progress, skipping")
+            return
+        }
         try {
             thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
-            sseConsumer?.stop()
-            sseConsumer = null
-            consumerProjectRef.set(null)
-
-            val process = serverProcess.getAndSet(null)
-            if (process != null && process.isAlive) {
-                thisLogger().info("[OpenCodeServerManager] Killing process tree (this IDE started), PID=${process.toHandle().pid()}")
-                killProcessTreeByHandle(process)
-            } else {
-                thisLogger().info("[OpenCodeServerManager] No process reference to stop (server was externally started)")
+            // 与 ensureSSEConsumer/disposeForProject 共享锁,避免 IDE 退出与项目 Disposer
+            // 并发触发时 sseConsumer 出现 NPE / 重复 stop
+            synchronized(this) {
+                sseConsumer?.stop()
+                sseConsumer = null
+                consumerProjectRef.set(null)
             }
+
+            val process = serverProcess.getAndSet(null) ?: run {
+                thisLogger().info("[OpenCodeServerManager] No process reference to stop (server was externally started)")
+                return
+            }
+            if (!process.isAlive) {
+                thisLogger().info("[OpenCodeServerManager] Process already exited")
+                return
+            }
+
+            val handle = process.toHandle()
+            val pid = handle.pid()
+            thisLogger().info("[OpenCodeServerManager] Graceful shutdown starting, PID=$pid")
+
+            // fire-and-forget:dispose HTTP 异步发,不让用户等 HTTP 响应
+            startDisposeThread()
+
+            val startMs = System.currentTimeMillis()
+            try {
+                handle.onExit().get(5, TimeUnit.SECONDS)
+                thisLogger().info("[OpenCodeServerManager] Server exited after ${System.currentTimeMillis() - startMs}ms, PID=$pid")
+                return
+            } catch (_: TimeoutException) {
+                thisLogger().info("[OpenCodeServerManager] Server still alive 5s, sending SIGTERM, PID=$pid")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, sending SIGTERM, PID=$pid")
+            }
+
+            val sigtermStartMs = System.currentTimeMillis()
+            handle.destroy()
+            try {
+                handle.onExit().get(2, TimeUnit.SECONDS)
+                thisLogger().info("[OpenCodeServerManager] Server exited after SIGTERM in ${System.currentTimeMillis() - sigtermStartMs}ms, PID=$pid")
+                return
+            } catch (_: TimeoutException) {
+                thisLogger().info("[OpenCodeServerManager] Server did not exit 2s after SIGTERM, force killing process tree, PID=$pid")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, force killing, PID=$pid")
+            }
+
+            killProcessTreeByHandle(process)
         } catch (e: Exception) {
             thisLogger().error("Error stopping OpenCode server: ${e.message}")
+        } finally {
+            shutdownInProgress.set(false)
+        }
+    }
+
+    /**
+     * 在后台线程发起 POST /global/dispose,记录结果但不阻塞当前调用者。
+     * 与关闭策略解耦:dispose 成功/失败都不影响主线程等待 process 退出;
+     * process 退出由 SIGTERM 兜底保证。
+     */
+    private fun startDisposeThread() {
+        Thread({ requestGracefulDispose() }, "opencode-dispose").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun requestGracefulDispose() {
+        when (val result = OpenCodeApi.disposeServer()) {
+            is OpenCodeApiResult.Success -> {
+                thisLogger().info("[OpenCodeServerManager] /global/dispose succeeded, server will exit shortly")
+            }
+            is OpenCodeApiResult.Failure -> {
+                if (result.code == 404) {
+                    // 老版 opencode 可能没这个端点;降级为 debug 避免每次 shutdown 都刷警告
+                    thisLogger().debug("[OpenCodeServerManager] /global/dispose not available (404, old opencode?)")
+                } else {
+                    thisLogger().warn("[OpenCodeServerManager] /global/dispose failed: code=${result.code}")
+                }
+            }
+            is OpenCodeApiResult.Unavailable -> {
+                // 2s 客户端超时或连接拒绝。server 仍可能在清理中,主线程继续等 process 退出。
+                thisLogger().info("[OpenCodeServerManager] /global/dispose unavailable (timeout/connection refused), process exit wait continues")
+            }
+            is OpenCodeApiResult.Unauthorized -> {
+                thisLogger().warn("[OpenCodeServerManager] /global/dispose 401 unauthorized")
+            }
         }
     }
 
@@ -132,21 +227,83 @@ object OpenCodeServerManager {
      * 关闭端口上的 opencode server（用户手动 Shutdown Server 时调用）。
      * 通过端口查找并杀死进程树，不管是谁启动的。
      *
-     * kill 策略：lsof -sTCP:LISTEN 找到监听进程，再用 pgrep 递归杀子进程。
-     * 关键：lsof 必须加 -sTCP:LISTEN 过滤，否则会误杀与端口有 ESTABLISHED 连接的
-     * JCEF Chromium 子进程，导致 IDE 崩溃退出。
+     * 关闭策略(fire-and-forget dispose + 等 process 退出):
+     * 1. 后台线程 POST /global/dispose → server 内部清理 MCP/PTY/SSE/LSP(不阻塞用户)
+     * 2. 主线程通过 lsof 找 PID,等 process onExit(最多 5s)
+     * 3. 兜底 SIGTERM(handle.destroy)+ 再等 2s
+     * 4. 最后兜底 SIGKILL(杀进程树)
      */
     fun shutdownServer() {
+        if (!shutdownInProgress.compareAndSet(false, true)) {
+            thisLogger().info("[OpenCodeServerManager] Shutdown already in progress, skipping")
+            return
+        }
         try {
             thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
-            sseConsumer?.stop()
-            sseConsumer = null
-            consumerProjectRef.set(null)
+            // 与 ensureSSEConsumer/disposeForProject/stopServer 共享锁
+            synchronized(this) {
+                sseConsumer?.stop()
+                sseConsumer = null
+                consumerProjectRef.set(null)
+            }
 
-            thisLogger().info("[OpenCodeServerManager] Shutting down server on port $PORT")
+            // fire-and-forget dispose
+            startDisposeThread()
+
+            thisLogger().info("[OpenCodeServerManager] Graceful shutdown on port $PORT")
+            val handle = findProcessByPort()
+            if (handle == null) {
+                thisLogger().info("[OpenCodeServerManager] Port $PORT already free, no process to wait for")
+                return
+            }
+            thisLogger().info("[OpenCodeServerManager] Waiting for process exit, PID=${handle.pid()}")
+
+            val startMs = System.currentTimeMillis()
+            try {
+                handle.onExit().get(5, TimeUnit.SECONDS)
+                thisLogger().info("[OpenCodeServerManager] Server exited after ${System.currentTimeMillis() - startMs}ms, PID=${handle.pid()}")
+                return
+            } catch (_: TimeoutException) {
+                thisLogger().info("[OpenCodeServerManager] Server still alive 5s, sending SIGTERM, PID=${handle.pid()}")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, sending SIGTERM, PID=${handle.pid()}")
+            }
+
+            val sigtermStartMs = System.currentTimeMillis()
+            handle.destroy()
+            try {
+                handle.onExit().get(2, TimeUnit.SECONDS)
+                thisLogger().info("[OpenCodeServerManager] Server exited after SIGTERM in ${System.currentTimeMillis() - sigtermStartMs}ms, PID=${handle.pid()}")
+                return
+            } catch (_: TimeoutException) {
+                thisLogger().info("[OpenCodeServerManager] Server did not exit 2s after SIGTERM, force killing, PID=${handle.pid()}")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, force killing, PID=${handle.pid()}")
+            }
+
             killProcessTreeByPort()
         } catch (e: Exception) {
             thisLogger().error("Error shutting down OpenCode server: ${e.message}")
+        } finally {
+            shutdownInProgress.set(false)
+        }
+    }
+
+    /**
+     * 通过 lsof 查找监听 PORT 的进程,返回 ProcessHandle;找不到返 null。
+     */
+    private fun findProcessByPort(): ProcessHandle? {
+        return try {
+            val script = "lsof -tiTCP:$PORT -sTCP:LISTEN | head -1"
+            val proc = Runtime.getRuntime().exec(arrayOf("/bin/sh", "-c", script))
+            val pidStr = proc.inputStream.bufferedReader().readText().trim()
+            if (pidStr.isEmpty()) return null
+            ProcessHandle.of(pidStr.toLong()).orElse(null)
+        } catch (e: Exception) {
+            thisLogger().warn("[OpenCodeServerManager] findProcessByPort failed: ${e.message}")
+            null
         }
     }
 
@@ -229,11 +386,26 @@ object OpenCodeServerManager {
         val homeDir = System.getProperty("user.home", System.getenv("HOME") ?: "/tmp")
         val processBuilder = ProcessBuilder(command)
         processBuilder.directory(java.io.File(homeDir))
-        // 不要继承 IDE 的 stdout/stderr，否则 IDE 退出时子进程写入日志会收到 SIGPIPE
-        processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-        processBuilder.redirectError(ProcessBuilder.Redirect.DISCARD)
+        processBuilder.redirectOutput(ProcessBuilder.Redirect.PIPE)
+        processBuilder.redirectError(ProcessBuilder.Redirect.PIPE)
         thisLogger().info("[startOpenCodeProcess] Working directory: $homeDir, command: $command")
-        return processBuilder.start()
+        val process = processBuilder.start()
+        pipeToLogger(process, "[opencode]")
+        return process
+    }
+
+    private fun pipeToLogger(process: Process, prefix: String) {
+        val logger = thisLogger()
+        Thread({
+            try {
+                process.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.info("$prefix $it") }
+            } catch (_: Exception) { }
+        }, "opencode-stdout-relay").apply { isDaemon = true }.start()
+        Thread({
+            try {
+                process.errorStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.warn("$prefix $it") }
+            } catch (_: Exception) { }
+        }, "opencode-stderr-relay").apply { isDaemon = true }.start()
     }
 
     private fun getOpenCodeCommand(): List<String> {

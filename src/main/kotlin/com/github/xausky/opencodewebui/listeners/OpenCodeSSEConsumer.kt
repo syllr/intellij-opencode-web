@@ -3,6 +3,8 @@ package com.github.xausky.opencodewebui.listeners
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.SSE_CONNECT_TIMEOUT_SECONDS
+import com.github.xausky.opencodewebui.SSE_IDLE_TIMEOUT_MS
+import com.github.xausky.opencodewebui.SSE_WATCHDOG_INTERVAL_MS
 import com.github.xausky.opencodewebui.listeners.SSEEventParser
 import com.github.xausky.opencodewebui.utils.OpenCodeNotificationRouter
 import com.google.gson.Gson
@@ -15,8 +17,8 @@ import com.launchdarkly.eventsource.MessageEvent
 import com.launchdarkly.eventsource.background.BackgroundEventHandler
 import com.launchdarkly.eventsource.background.BackgroundEventSource
 import java.net.URI
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class OpenCodeSSEConsumer(
@@ -26,38 +28,43 @@ class OpenCodeSSEConsumer(
 
     private val gson = Gson()
     private val eventSourceRef = AtomicReference<BackgroundEventSource?>(null)
+    private val connectionGen = AtomicLong(0)
+    @Volatile private var activeConnectionGen: Long = -1
     private val logger = thisLogger()
 
-    // subagent 会话追踪：记录所有 subagent sessionID（有 parentID 的 session）
-    companion object {
-        private val subagentSessionIds = ConcurrentHashMap.newKeySet<String>()
+    // 任何 SSE 事件到达(onMessage)或连接刚建(onOpen)时刷新,watchdog 超时则强制重连。
+    private val lastEventAt = AtomicLong(System.currentTimeMillis())
+    @Volatile
+    private var watchdogThread: Thread? = null
+
+    private companion object {
+        private const val MAX_TRACKED_SESSIONS = 1000
+
+        private fun newLruSet(): MutableSet<String> = java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(
+                object : LinkedHashMap<String, Boolean>(MAX_TRACKED_SESSIONS, 0.75f, true) {
+                    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean = size > MAX_TRACKED_SESSIONS
+                }
+            )
+        )
+
+        // subagent 会话追踪：记录所有 subagent sessionID（有 parentID 的 session）
+        private val subagentSessionIds: MutableSet<String> = newLruSet()
         // 已发送过 complete 通知的父 session 集合
         // 用于抑制 agent 循环中的重复 idle 通知
-        private val sessionIdleFired = ConcurrentHashMap.newKeySet<String>()
+        private val sessionIdleFired: MutableSet<String> = newLruSet()
     }
 
     fun start() {
-        val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
-        logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, projectBasePath='$projectBasePath', uri=$uri")
-
+        logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, projectBasePath='$projectBasePath'")
         FullRefreshCoordinator.start(projectBasePath ?: "")
-
-        val connectStrategy = ConnectStrategy.http(uri)
-            .connectTimeout(SSE_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.MILLISECONDS)
-
-        val esBuilder = EventSource.Builder(connectStrategy)
-            .errorStrategy(ErrorStrategy.alwaysContinue())
-
-        val bgBuilder = BackgroundEventSource.Builder(this, esBuilder)
-        val bgEventSource = bgBuilder.build()
-
-        eventSourceRef.set(bgEventSource)
-        bgEventSource.start()
-        logger.info("[OpenCodeSSEConsumer] SSE consumer started")
+        startSseConnection()
+        startWatchdog()
     }
 
     fun stop() {
+        watchdogThread?.interrupt()
+        watchdogThread = null
         FullRefreshCoordinator.stop()
         eventSourceRef.getAndSet(null)?.close()
         // [Fix #2] 清理静态集合，防止 stop() 后 companion object 集合继续增长
@@ -69,11 +76,56 @@ class OpenCodeSSEConsumer(
         logger.info("[OpenCodeSSEConsumer] SSE consumer stopped, static collections cleared")
     }
 
+    private fun startSseConnection() {
+        val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
+        val connectStrategy = ConnectStrategy.http(uri)
+            .connectTimeout(SSE_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+        val esBuilder = EventSource.Builder(connectStrategy)
+            .errorStrategy(ErrorStrategy.alwaysContinue())
+        val bgEventSource = BackgroundEventSource.Builder(this, esBuilder).build()
+        val gen = connectionGen.incrementAndGet()
+        activeConnectionGen = gen
+        eventSourceRef.set(bgEventSource)
+        bgEventSource.start()
+        lastEventAt.set(System.currentTimeMillis())
+        logger.info("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, uri=$uri")
+    }
+
+    private fun reconnect() {
+        val idle = System.currentTimeMillis() - lastEventAt.get()
+        logger.warn("[OpenCodeSSEConsumer] No event for ${idle}ms, forcing reconnect")
+        val old = eventSourceRef.getAndSet(null)
+        startSseConnection()
+        old?.close()
+    }
+
+    private fun startWatchdog() {
+        watchdogThread?.interrupt()
+        watchdogThread = Thread {
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(SSE_WATCHDOG_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                val idle = System.currentTimeMillis() - lastEventAt.get()
+                if (idle > SSE_IDLE_TIMEOUT_MS) reconnect()
+            }
+        }.apply {
+            isDaemon = true
+            name = "SSE-Watchdog"
+            start()
+        }
+    }
+
     override fun onOpen() {
+        lastEventAt.set(System.currentTimeMillis())
         logger.info("[OpenCodeSSEConsumer] SSE connection opened")
     }
 
     override fun onMessage(event: String, messageEvent: MessageEvent) {
+        lastEventAt.set(System.currentTimeMillis())
         val message = messageEvent.data
         val parsed = SSEEventParser.parse(event, message)
         val parsedMap = parsed.parsedMap
@@ -168,11 +220,11 @@ class OpenCodeSSEConsumer(
                 val props = payload?.get("properties") as? Map<*, *>
                 val data = parsed.syncEventData
                 val info = props?.get("info") as? Map<*, *>
-                    ?: (data as? Map<*, *>)?.get("info") as? Map<*, *>
+                    ?: (data?.get("info") as? Map<*, *>)
                 if (info?.get("role") == "user") {
                     val sessionID = props?.get("sessionID") as? String
-                        ?: (data as? Map<*, *>)?.get("sessionID") as? String
-                        ?: (data as? Map<*, *>)?.get("id") as? String
+                        ?: (data?.get("sessionID") as? String)
+                        ?: (data?.get("id") as? String)
                         ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
                         ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
                     if (sessionID != null) {
@@ -193,14 +245,19 @@ class OpenCodeSSEConsumer(
         if (projectDir == null) { logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh"); return }
 
         if (eventDir != null) {
-            try {
-                if (java.io.File(eventDir).canonicalPath != java.io.File(projectDir).canonicalPath) {
-                    logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
-                    return
-                }
+            val matches = try {
+                val eventPath = java.nio.file.Paths.get(eventDir).toRealPath()
+                val projectPath = java.nio.file.Paths.get(projectDir).toRealPath()
+                // ignoreCase:macOS HFS+/APFS、Windows NTFS 默认 case-insensitive 但 case-preserving,
+                // 同一目录可能有 "/Users/.../foo" 和 "/users/.../Foo" 两种写法。
+                eventPath.toString().equals(projectPath.toString(), ignoreCase = true)
             } catch (e: Exception) {
-                logger.warn("[OpenCodeSSEConsumer] Directory canonical path check failed: ${e.message}")
-                if (eventDir != projectDir) { logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH (fallback): event='$eventDir' vs project='$projectDir'"); return }
+                logger.warn("[OpenCodeSSEConsumer] Path toRealPath failed: ${e.message}, falling back to string compare")
+                eventDir == projectDir
+            }
+            if (!matches) {
+                logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
+                return
             }
         }
 
@@ -265,12 +322,20 @@ class OpenCodeSSEConsumer(
     }
 
     override fun onClosed() {
-        logger.info("[OpenCodeSSEConsumer] SSE connection closed")
+        val currentGen = activeConnectionGen
+        val latestGen = connectionGen.get()
+        if (currentGen != latestGen) {
+            logger.info("[OpenCodeSSEConsumer] SSE onClosed for stale connection (gen=$currentGen, latest=$latestGen), skipping cleanup")
+            return
+        }
+        logger.info("[OpenCodeSSEConsumer] SSE connection closed (gen=$currentGen)")
         SSEEventParser.clearCache()
+        val idleSize = sessionIdleFired.size
+        val subagentSize = subagentSessionIds.size
         subagentSessionIds.clear()
         idleLastFired.clear()
-        logger.debug("[OpenCodeSSEConsumer] Cleared sessionIdleFired (${sessionIdleFired.size} entries)")
         sessionIdleFired.clear()
+        logger.debug("[OpenCodeSSEConsumer] Cleared sessionIdleFired ($idleSize entries), subagentSessionIds ($subagentSize entries)")
     }
 
     override fun onComment(comment: String) {

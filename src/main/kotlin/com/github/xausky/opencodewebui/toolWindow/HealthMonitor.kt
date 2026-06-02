@@ -4,11 +4,8 @@ import com.github.xausky.opencodewebui.HEALTH_CHECK_INTERVAL_MS
 import com.github.xausky.opencodewebui.HEALTH_CHECK_START_DELAY_MS
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
 import com.intellij.openapi.application.ApplicationManager
+import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * OpenCode 服务器健康监控器。
- * 定期轮询服务器健康状态，在状态变化时通过回调通知调用方。
- */
 class HealthMonitor(
     private val onUnhealthy: () -> Unit,
     private val onRecovered: () -> Unit
@@ -24,12 +21,15 @@ class HealthMonitor(
 
     private var monitorThread: Thread? = null
 
+    // Debounce 连续 N 次翻转,消除网络抖动导致的"状态闪烁"。
+    private val healthyStreak = AtomicInteger(0)
+    private val unhealthyStreak = AtomicInteger(0)
+
     fun start() {
         if (started) return
         started = true
         running = true
         monitorThread = Thread {
-            // 如果上次状态是健康的，等 10 秒再开始检查，给服务器稳定窗口期
             if (lastHealthState == true) {
                 try {
                     Thread.sleep(HEALTH_CHECK_START_DELAY_MS)
@@ -45,14 +45,25 @@ class HealthMonitor(
                     Thread.currentThread().interrupt()
                     return@Thread
                 }
-                // [O5] 健康检查（HealthMonitor 已在后台线程，直接调用同步方法，避免 CompletableFuture 包装的额外线程切换）
                 val healthy = OpenCodeApi.isServerHealthySync()
-                if (healthy != lastHealthState) {
-                    lastHealthState = healthy
-                    if (!healthy) {
-                        ApplicationManager.getApplication().invokeLater { onUnhealthy() }
-                    } else {
+                if (healthy) {
+                    healthyStreak.incrementAndGet()
+                    unhealthyStreak.set(0)
+                    if (lastHealthState == null) {
+                        // 首次检测不回调,等 debounce 后再触发(避免启动期 false 导致 UI 闪红)
+                        lastHealthState = true
+                    } else if (lastHealthState != true && healthyStreak.get() >= DEBOUNCE_THRESHOLD) {
+                        lastHealthState = true
                         ApplicationManager.getApplication().invokeLater { onRecovered() }
+                    }
+                } else {
+                    unhealthyStreak.incrementAndGet()
+                    healthyStreak.set(0)
+                    if (lastHealthState == null) {
+                        lastHealthState = false
+                    } else if (lastHealthState != false && unhealthyStreak.get() >= DEBOUNCE_THRESHOLD) {
+                        lastHealthState = false
+                        ApplicationManager.getApplication().invokeLater { onUnhealthy() }
                     }
                 }
             }
@@ -69,4 +80,9 @@ class HealthMonitor(
         monitorThread?.interrupt()
         monitorThread = null
     }
+
+    private companion object {
+        private const val DEBOUNCE_THRESHOLD = 3
+    }
 }
+

@@ -26,7 +26,7 @@ object OpenCodeNotificationService {
         if ((eventType == "complete" || eventType == "subagent_complete") && OpenCodeConfig.minDuration > 0) {
             val sessionID = extractSessionID(properties)
             if (sessionID != null) {
-                val info = OpenCodeApi.getSession(sessionID)
+                val info = OpenCodeApi.getSession(sessionID).dataOrNull()
                 if (info != null) {
                     val now = System.currentTimeMillis()
                     val duration = if (info.timeCreated != null) (now - info.timeCreated) / 1000 else 0L
@@ -115,7 +115,7 @@ object OpenCodeNotificationService {
         // 重试 1 次
         for (attempt in 0..1) {
             try {
-                val info = OpenCodeApi.getSession(sessionID)
+                val info = OpenCodeApi.getSession(sessionID).dataOrNull()
                 if (info != null) return info.title
             } catch (_: Exception) {
                 if (attempt < 1) Thread.sleep(200L)
@@ -124,12 +124,14 @@ object OpenCodeNotificationService {
         return null
     }
 
+    private val SUBAGENT_REGEX = Regex("""\s*\(@([^\s)]+)\s+subagent\)\s*$""")
+
     private fun lookupAgentName(properties: Map<*, *>?): String? {
         val sessionID = extractSessionID(properties) ?: return null
         try {
-            val info = OpenCodeApi.getSession(sessionID)
+            val info = OpenCodeApi.getSession(sessionID).dataOrNull()
             if (info != null && info.title != null) {
-                val match = Regex("""\s*\(@([^\s)]+)\s+subagent\)\s*$""").find(info.title!!)
+                val match = SUBAGENT_REGEX.find(info.title)
                 if (match != null) return match.groupValues[1]
             }
         } catch (_: Exception) { }

@@ -3,6 +3,7 @@ package com.github.xausky.opencodewebui.toolWindow
 import com.github.xausky.opencodewebui.OPENCODE_HOST
 import com.github.xausky.opencodewebui.OPENCODE_PORT
 import com.github.xausky.opencodewebui.utils.OpenCodeApi
+import com.github.xausky.opencodewebui.utils.dataOrNull
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.util.Disposer
@@ -160,7 +161,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
         val projectPath = project.basePath ?: return
 
         // 获取已有 session 恢复，否则让前端创建新的
-        val latestSessionId = OpenCodeApi.getLatestSessionId(projectPath)
+        val latestSessionId = OpenCodeApi.getLatestSessionId(projectPath).dataOrNull()
 
         val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
         val url = if (latestSessionId != null) {
