@@ -100,6 +100,8 @@ class MyToolWindow(toolWindow: ToolWindow) {
 
     fun getBrowser() = browserPanel.getBrowser()
 
+    fun isPageLoaded() = browserPanel.isPageLoaded()
+
     private fun setupBrowserComponent(browser: JBCefBrowser) {
         val osrComponent = browser.cefBrowser.uiComponent
 

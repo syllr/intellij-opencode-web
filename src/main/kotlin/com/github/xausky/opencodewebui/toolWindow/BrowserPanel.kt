@@ -14,6 +14,7 @@ import java.awt.Color
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -27,8 +28,13 @@ class BrowserPanel(
     @Volatile
     private var browser: JBCefBrowser? = null
 
+    // [O6] 页面加载完成标志，供 JcefJsInjector 判断是否可安全注入 JS
+    private val pageLoaded = AtomicBoolean(false)
+
     // [Fix #6] 追踪注册的 handler，dispose 时移除
     private var contextMenuHandler: LinkContextMenuHandler? = null
+    private var loadHandler: CefLoadHandlerAdapter? = null
+    private var displayHandler: CefDisplayHandlerAdapter? = null
 
     private var startButtonPanel: JPanel? = null
     private var startCallback: (() -> Unit)? = null
@@ -106,19 +112,25 @@ class BrowserPanel(
     fun createMainTab(url: String, projectPath: String): JBCefBrowser {
         thisLogger().info("[Lifecycle] createMainTab: browser is ${if (browser == null) "null (creating new)" else "existing (will reuse)"}, url=$url")
         if (browser == null) {
-            val createdBrowser = JBCefBrowserBuilder().setClient(sharedClient).setUrl(url).build()
+            pageLoaded.set(false) // [O6] 新建浏览器时重置就绪标志
+            // [O2] 显式禁用 DevTools 菜单项,减少 ~50-100MB 内存占用,防止用户误开
+            val createdBrowser = JBCefBrowserBuilder()
+                .setClient(sharedClient)
+                .setUrl(url)
+                .setEnableOpenDevToolsMenuItem(false)
+                .build()
             this.browser = createdBrowser
             add(createdBrowser.component, BorderLayout.CENTER)
             val handler = LinkContextMenuHandler()
             sharedClient.addContextMenuHandler(handler, createdBrowser.cefBrowser)
             contextMenuHandler = handler
-            sharedClient.addLoadHandler(object : CefLoadHandlerAdapter() {
+            val myLoadHandler = object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
                     thisLogger().info("onLoadEnd called, projectPath: $projectPath")
-                    // 仅在主 frame 加载完成时注入，避免 iframe 导致重复注入
+                    if (frame?.isMain == true) {
+                        pageLoaded.set(true) // [O6] 主 frame 加载完成，标记就绪
+                    }
                     if (frame?.isMain != true) return
-                    // 注入 JS：在 DOM capture phase 拦截 Cmd+, 和 Cmd+K，
-                    // 阻止它们被 JCEF 页面（JS）消费，确保 IDEA 快捷键系统正常处理
                     cefBrowser?.executeJavaScript("""
                         (function() {
                             document.addEventListener('keydown', function(e) {
@@ -130,8 +142,10 @@ class BrowserPanel(
                         })();
                     """.trimIndent(), cefBrowser.url, 0)
                 }
-            }, createdBrowser.cefBrowser)
-            sharedClient.addDisplayHandler(object : CefDisplayHandlerAdapter() {
+            }
+            sharedClient.addLoadHandler(myLoadHandler, createdBrowser.cefBrowser)
+            loadHandler = myLoadHandler
+            val myDisplayHandler = object : CefDisplayHandlerAdapter() {
                 override fun onConsoleMessage(
                     browser: CefBrowser?,
                     level: CefSettings.LogSeverity?,
@@ -148,9 +162,12 @@ class BrowserPanel(
                     }
                     return false
                 }
-            }, createdBrowser.cefBrowser)
+            }
+            sharedClient.addDisplayHandler(myDisplayHandler, createdBrowser.cefBrowser)
+            displayHandler = myDisplayHandler
             return createdBrowser
         } else {
+            pageLoaded.set(false) // [O6] 重新加载时重置就绪标志
             browser?.loadURL(url)
             return browser!!
         }
@@ -158,14 +175,25 @@ class BrowserPanel(
 
     fun getBrowser(): JBCefBrowser? = browser
 
+    fun isPageLoaded(): Boolean = pageLoaded.get()
+
     fun disposeBrowser() {
+        pageLoaded.set(false) // [O6] 浏览器销毁时重置就绪标志
         browser?.cefBrowser?.stopLoad()
-        // [Fix #6] 移除 context menu handler，防止 handler 累积
-        contextMenuHandler?.let { handler ->
-            browser?.cefBrowser?.let { cefBrowser ->
-                sharedClient.removeContextMenuHandler(handler, cefBrowser)
+        browser?.cefBrowser?.let { cefBrowser ->
+            // [Fix #6] 移除所有 handler，防止 handler 累积泄漏
+            contextMenuHandler?.let {
+                sharedClient.removeContextMenuHandler(it, cefBrowser)
+                contextMenuHandler = null
             }
-            contextMenuHandler = null
+            loadHandler?.let {
+                sharedClient.removeLoadHandler(it, cefBrowser)
+                loadHandler = null
+            }
+            displayHandler?.let {
+                sharedClient.removeDisplayHandler(it, cefBrowser)
+                displayHandler = null
+            }
         }
         browser?.dispose()
         removeAll()

@@ -1,5 +1,6 @@
 package com.github.xausky.opencodewebui.toolWindow
 
+import com.intellij.openapi.diagnostic.thisLogger
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.KeyEvent
@@ -29,7 +30,10 @@ object JcefKeyboardInterceptor {
      * 防止 IntelliJ 框架在 WHEN_IN_FOCUSED_WINDOW 条件下处理它。
      */
     fun interceptKeys(component: Component) {
-        if (component !is JComponent) return
+        if (component !is JComponent) {
+            thisLogger().debug("JCEF component is not JComponent, key interception skipped")
+            return
+        }
 
         component.focusTraversalKeysEnabled = false
 

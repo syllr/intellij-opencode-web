@@ -10,6 +10,10 @@ import com.intellij.openapi.diagnostic.thisLogger
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
 
 data class SessionInfo(
     val id: String,
@@ -19,6 +23,19 @@ data class SessionInfo(
 )
 
 object OpenCodeApi {
+    // [O5] 共享 HttpClient 实例，复用 TCP 连接（keep-alive），避免每次健康检查都新建连接
+    private val sharedHttpClient: HttpClient by lazy {
+        HttpClient.newBuilder()
+            .connectTimeout(Duration.ofMillis(HTTP_TIMEOUT_MS.toLong()))
+            .build()
+    }
+
+    private val healthCheckUrl = "http://$OPENCODE_HOST:$OPENCODE_PORT/global/health"
+
+    /**
+     * 同步健康检查（保持向后兼容）。
+     * 内部使用共享 HttpClient 复用连接，替代原来每次新建 HttpURLConnection 的方式。
+     */
     fun isServerHealthySync(): Boolean {
         // 先检查端口连通性（比 HTTP 请求更轻量）
         val portOk = try {
@@ -38,20 +55,18 @@ object OpenCodeApi {
             return false
         }
 
-        // 端口正常，再尝试 HTTP 健康检查
-        var connection: HttpURLConnection? = null
+        // 端口正常，使用共享 HttpClient 做 HEAD 请求（比 GET 更轻量）
         return try {
-            val url = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/health").toURL()
-            connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = HTTP_TIMEOUT_MS
-            connection.readTimeout = HTTP_TIMEOUT_MS
-            val responseCode = connection.responseCode
-            responseCode == 200
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create(healthCheckUrl))
+                .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                .timeout(Duration.ofMillis(HTTP_TIMEOUT_MS.toLong()))
+                .build()
+            val response = sharedHttpClient.send(request, HttpResponse.BodyHandlers.discarding())
+            response.statusCode() == 200
         } catch (e: Exception) {
             // HTTP 检查失败但端口正常，仍认为健康（可能只是 /global/health 有问题）
             true
-        } finally {
-            connection?.disconnect()
         }
     }
 

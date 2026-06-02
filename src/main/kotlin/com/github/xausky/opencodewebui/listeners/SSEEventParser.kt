@@ -1,6 +1,8 @@
 package com.github.xausky.opencodewebui.listeners
 
 import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.thisLogger
 import java.util.Collections
 import java.util.LinkedHashMap
@@ -27,66 +29,78 @@ object SSEEventParser {
         }
     )
 
-    /**
-     * 检查 eventID 是否已处理过。已处理返回 true，否则记录并返回 false。
-     */
+    // [O7] 高频事件类型集合，这些事件在 onMessage 中会被立即跳过，无需完整 Map 转换
+    private val SKIP_PARSE_EVENT_TYPES = setOf("message.part.delta")
+
     fun isEventProcessed(eventID: String): Boolean {
         if (eventID.isEmpty()) return false
         return dedupCache.put(eventID, System.currentTimeMillis()) != null
     }
 
-    /**
-     * SSE 重连时清空缓存
-     */
     fun clearCache() {
         dedupCache.clear()
     }
 
     fun parse(eventType: String, message: String): ParsedSSEEvent {
         val logger = thisLogger()
-        var parsedMap: Map<*, *>? = null
-        var payloadType: String? = null
-        var eventDir: String? = null
-        var fileProperty: String? = null
-        var syncEventType: String? = null
-        var syncEventData: Map<*, *>? = null
 
         try {
-            parsedMap = gson.fromJson(message, Map::class.java)
-            eventDir = parsedMap?.get("directory") as? String
-            val payload = parsedMap?.get("payload") as? Map<*, *>
-            payloadType = payload?.get("type") as? String
+            // [O7] 先解析为 JsonObject（树模型），提取轻量字段
+            val jsonElement = JsonParser.parseString(message)
+            if (jsonElement !is JsonObject) {
+                return ParsedSSEEvent(eventType = eventType, directory = null, file = null, payloadType = null)
+            }
+            val root = jsonElement
+            val eventDir = root.get("directory")?.asString
 
-            // SyncEvent (V2) 格式检测：payload.type == "sync"
+            val payload = root.getAsJsonObject("payload")
+            val payloadType = payload?.get("type")?.asString
+
+            // [O7] 高频事件快速路径：只提取必要字段，跳过 Map<*, *> 转换
+            if (payloadType in SKIP_PARSE_EVENT_TYPES) {
+                return ParsedSSEEvent(
+                    eventType = eventType,
+                    directory = eventDir,
+                    file = null,
+                    payloadType = payloadType
+                )
+            }
+
+            // 非高频事件：转换为 Map<*, *> 供下游使用
+            val parsedMap: Map<*, *> = gson.fromJson(root, Map::class.java)
+            val payloadMap = parsedMap["payload"] as? Map<*, *>
+
+            var syncEventType: String? = null
+            var syncEventData: Map<*, *>? = null
+
             if (payloadType == "sync") {
-                val syncEvent = payload?.get("syncEvent") as? Map<*, *>
+                val syncEvent = payloadMap?.get("syncEvent") as? Map<*, *>
                 syncEventType = syncEvent?.get("type") as? String
-                // 去掉版本号后缀 ".N"（如 "session.created.1" → "session.created"）
                 syncEventType = syncEventType?.replace(Regex("\\.\\d+$"), "")
                 syncEventData = syncEvent?.get("data") as? Map<*, *>
             }
 
-            // 非 SyncEvent 时，尝试提取 properties（文件事件、权限事件等）
-            val properties = payload?.get("properties") as? Map<*, *>
-            fileProperty = properties?.get("file") as? String
+            val properties = payloadMap?.get("properties") as? Map<*, *>
+            var fileProperty = properties?.get("file") as? String
             if (fileProperty == null) {
                 fileProperty = properties?.get("filePath") as? String
             }
             if (fileProperty != null) {
                 logger.info("[SSEEventParser] *** FILE EVENT *** type=$payloadType, file=$fileProperty, eventDir=$eventDir")
             }
+
+            return ParsedSSEEvent(
+                eventType = eventType,
+                directory = eventDir,
+                file = fileProperty,
+                payloadType = payloadType,
+                syncEventType = syncEventType,
+                syncEventData = syncEventData,
+                parsedMap = parsedMap
+            )
         } catch (e: Exception) {
             logger.warn("[SSEEventParser] Failed to parse JSON: ${e.message}")
+            return ParsedSSEEvent(eventType = eventType, directory = null, file = null, payloadType = null)
         }
-
-        return ParsedSSEEvent(
-            eventType = eventType,
-            directory = eventDir,
-            file = fileProperty,
-            payloadType = payloadType,
-            syncEventType = syncEventType,
-            syncEventData = syncEventData,
-            parsedMap = parsedMap
-        )
     }
 }

@@ -51,6 +51,10 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             return myToolWindowInstances[project]?.getBrowser()
         }
 
+        fun isBrowserPageLoaded(project: Project): Boolean {
+            return myToolWindowInstances[project]?.isPageLoaded() ?: false
+        }
+
         fun stopServer() {
             try {
                 OpenCodeServerManager.stopServer()

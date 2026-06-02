@@ -23,10 +23,13 @@ object JcefJsInjector {
         MyToolWindowFactory.openOpenCodeWebToolWindow(project)
         if (project.basePath == null) return
 
-        val browser = MyToolWindowFactory.getMainBrowser(project)
-        if (browser != null) {
-            executeAppend(browser.cefBrowser, text)
-            return
+        // [O6] 快速路径：页面已加载完成且 browser 存在，直接注入
+        if (MyToolWindowFactory.isBrowserPageLoaded(project)) {
+            val browser = MyToolWindowFactory.getMainBrowser(project)
+            if (browser != null) {
+                executeAppend(browser.cefBrowser, text)
+                return
+            }
         }
 
         scheduleRetry(project, text, retryCount = 0)
@@ -38,17 +41,19 @@ object JcefJsInjector {
             return
         }
 
-        // Alarm 绑定到 project，project 关闭时自动取消所有待执行请求
         val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, project)
         alarm.addRequest({
             if (project.isDisposed) return@addRequest
 
-            val browser = MyToolWindowFactory.getMainBrowser(project)
-            if (browser != null) {
-                executeAppend(browser.cefBrowser, text)
-            } else {
-                scheduleRetry(project, text, retryCount + 1)
+            // [O6] 检查 pageLoaded 标志，页面就绪时 browser 一定存在
+            if (MyToolWindowFactory.isBrowserPageLoaded(project)) {
+                val browser = MyToolWindowFactory.getMainBrowser(project)
+                if (browser != null) {
+                    executeAppend(browser.cefBrowser, text)
+                    return@addRequest
+                }
             }
+            scheduleRetry(project, text, retryCount + 1)
         }, BROWSER_READY_RETRY_DELAY_MS)
     }
 

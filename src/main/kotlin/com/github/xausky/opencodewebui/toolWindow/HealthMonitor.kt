@@ -45,6 +45,7 @@ class HealthMonitor(
                     Thread.currentThread().interrupt()
                     return@Thread
                 }
+                // [O5] 健康检查（HealthMonitor 已在后台线程，直接调用同步方法，避免 CompletableFuture 包装的额外线程切换）
                 val healthy = OpenCodeApi.isServerHealthySync()
                 if (healthy != lastHealthState) {
                     lastHealthState = healthy
