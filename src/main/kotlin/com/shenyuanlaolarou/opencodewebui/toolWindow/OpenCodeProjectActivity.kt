@@ -1,0 +1,31 @@
+package com.shenyuanlaolarou.opencodewebui.toolWindow
+
+import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeNotificationRouter
+import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManagerListener
+import com.intellij.openapi.startup.ProjectActivity
+
+class OpenCodeProjectActivity : ProjectActivity {
+
+    override suspend fun execute(project: Project) {
+        thisLogger().info("[Lifecycle] Project opened: ${project.name}")
+        OpenCodeNotificationRouter.register(project)
+
+        val connection = project.messageBus.connect(project)
+        connection.subscribe(com.intellij.openapi.project.ProjectManager.TOPIC, object : ProjectManagerListener {
+            override fun projectClosing(project: Project) {
+                thisLogger().info("[Lifecycle] Project closing: ${project.name}")
+                OpenCodeNotificationRouter.unregister(project)
+                MyToolWindowFactory.contentManagerListeners.remove(project)?.let { listener ->
+                    try {
+                        com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+                            .getToolWindow(MyToolWindowFactory.OPCODE_WEB_TOOL_WINDOW_ID)
+                            ?.contentManager
+                            ?.removeContentManagerListener(listener)
+                    } catch (_: Exception) { }
+                }
+            }
+        })
+    }
+}

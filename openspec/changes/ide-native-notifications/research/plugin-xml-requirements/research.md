@@ -31,7 +31,7 @@
 
 ```xml
 <applicationConfigurable parentId="tools"
-                         instance="com.github.xausky.opencodewebui.config.OpenCodeConfigurable"
+                         instance="com.shenyuanlaolarou.opencodewebui.config.OpenCodeConfigurable"
                          id="com.shenyuanlaolarou.opencodewebui.config"
                          displayName="OpenCode"/>
 ```

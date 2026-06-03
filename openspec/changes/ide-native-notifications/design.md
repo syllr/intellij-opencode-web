@@ -475,7 +475,7 @@ notifier 的 `minDuration` 配置：会话完成耗时小于该值时跳过 comp
 
 ```xml
 <applicationConfigurable parentId="tools"
-                         instance="com.github.xausky.opencodewebui.config.OpenCodeConfigurable"
+                         instance="com.shenyuanlaolarou.opencodewebui.config.OpenCodeConfigurable"
                          id="com.shenyuanlaolarou.opencodewebui.config"
                          displayName="OpenCode"/>
 ```

@@ -1,32 +1,31 @@
-# PROJECT KNOWLEDGE BASE
+# AGENTS.md
 
 IntelliJ Platform 插件 (Kotlin)，为 OpenCode Web UI 提供 JetBrains IDE 集成。
-Fork 自 `xausky/intellij-opencode-web-ui`；本仓库 `syllr/intellij-opencode-web`。
 
 ## STACK
 
 - Gradle 9.3.1 · JDK 21 · Kotlin 2.3.20 · IntelliJ Platform Gradle Plugin 2.14.0
 - 目标平台: 2026.1（`pluginSinceBuild=261`，`pluginUntilBuild` 留空）
-- 依赖: Gson 2.10.1（JSON 解析）、okhttp-eventsource 4.1.0（SSE）、JUnit 4.13.2
+- 依赖: Gson 2.10.1（JSON）、okhttp-eventsource 4.1.0（SSE）、JUnit 4.13.2
 - Qodana（`qodana-jvm-community:2024.3`）+ Kover 0.9.5 + CodeCov
 - 版本号在 `gradle.properties` 的 `pluginVersion`；分支名（如 `1.0.18`）常与 `pluginVersion` 不同步，不要据此推断
 - `CHANGELOG.md` 由 `org.jetbrains.changelog` Gradle 插件管理（`patchChangelog` 任务），不要手改
 
 ## STRUCTURE
 
-源码根: `src/main/kotlin/com/github/xausky/opencodewebui/`
+源码根: `src/main/kotlin/com/shenyuanlaolarou/opencodewebui/`
 
-| 目录                           | 内容                                                                                              |
-| ------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `toolWindow/`                  | JCEF 浏览器 + 服务器进程管理 + 键盘拦截（核心，9 文件）                                           |
-| `listeners/`                   | SSE 事件消费 + 文件刷新协调（4 文件）                                                             |
-| `actions/`                     | IDE Actions：复制/添加到 Prompt、IdeaVim 集成（2 文件）                                           |
-| `utils/`                       | HTTP API、JS 注入、通知路由/服务、配置（8 文件）                                                  |
-| `settings/`                    | Settings UI：`OpenCodeConfigurable`（1 文件）                                                     |
-| 根                             | `OpenCodeConstants`（端口 12396 等）+ `MyBundle`（i18n）                                          |
-| `src/main/resources/META-INF/` | `plugin.xml`：toolWindow / notificationGroup / applicationConfigurable / postStartupActivity 注册 |
+| 目录                           | 内容                                                                        |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `toolWindow/`                  | JCEF 浏览器 + 服务器进程管理 + 键盘拦截（核心，9 文件）                     |
+| `listeners/`                   | SSE 事件消费 + 文件刷新协调（4 文件）                                       |
+| `actions/`                     | IDE Actions：复制/添加到 Prompt、IdeaVim 集成（2 文件）                     |
+| `utils/`                       | HTTP API、JS 注入、通知路由/服务、配置（8 文件）                            |
+| `settings/`                    | Settings UI：`OpenCodeConfigurable`（1 文件）                               |
+| 根                             | `OpenCodeConstants`（端口 12396 等）+ `MyBundle`（i18n）                    |
+| `src/main/resources/META-INF/` | `plugin.xml`：toolWindow / notificationGroup / applicationConfigurable 注册 |
 
-`src/test/kotlin/.../{actions,utils,listeners}/` 含 JUnit 4 单测；`MyPluginTest` 继承 `BasePlatformTestCase`，测试数据在 `src/test/testData/`。
+测试根: `src/test/kotlin/.../{actions,utils,listeners}/`（JUnit 4）+ `MyPluginTest`（`BasePlatformTestCase`）
 
 ## WHERE TO LOOK
 
@@ -56,7 +55,7 @@ Fork 自 `xausky/intellij-opencode-web-ui`；本仓库 `syllr/intellij-opencode-
 
 ## HARD RULES
 
-- **包名不匹配（已知）**: 源码在 `com.github.xausky.opencodewebui`，但 `pluginGroup=com.shenyuanlaolarou`。`plugin.xml` 用 FQN 引用类，不要"修复"成 `com.shenyuanlaolarou.*`
+- **包名 = `com.shenyuanlaolarou.opencodewebui`**: 本仓库规范包名，**也**是 `pluginGroup`/`plugin id`/`vendor` 的命名空间。新代码必须用 `com.shenyuanlaolarou.*`
 - **禁止静态全局可变状态**: 用 `AtomicReference<Process>` / `AtomicBoolean` / `@Volatile`，不要 `object` 里挂 `var`
 - **禁止 Regex 解析 HTTP/JSON**: 所有 HTTP 响应体走 Gson（或同等 JSON 解析器），禁止 `Regex` / `Pattern` / 字符串切割取字段
 - **Git 提交/push**: AI 禁止自动 commit/push，必须用户显式调用（项目根另有 `git-commit-block` rule）
@@ -71,19 +70,19 @@ Fork 自 `xausky/intellij-opencode-web-ui`；本仓库 `syllr/intellij-opencode-
 2. **`session.deleted` 不移除追踪**: 不在 `session.deleted` 中移除 `subagentSessionIds`，避免时序竞态导致子 agent idle 被误判为 `complete`。该集合仅在 SSE 重连时通过 `onClosed()` 清空
 3. **原则 2 通知不受影响**: `permission.asked` / `question.asked` / `session.next.tool.called(tool=question)` 是 `when(eventType)` 的独立分支，**不受** `sessionIdleFired` 抑制逻辑控制
 
-## UNIQUE STYLES / 约定
+## 关闭策略（`OpenCodeServerManager.shutdownServer/stopServer`）
 
-- 端口 **12396**（非标准，避免与 4096 冲突）
-- 首次打开工具窗口时自动重启服务器，确保 opencode 是最新版本
-- 外部链接走系统浏览器
-- 会话恢复通过 HTTP API（`OpenCodeApi.getLatestSessionId`），不用 SQLite/JDBC
-- 工具窗口锚定 `right`，实现 `DumbAware`
-- 多项目实例用 `ConcurrentHashMap<Project, MyToolWindow>` 管理
-- 共享 JBCefClient 实例（`sharedJBCefClient`）
-- `AddToPromptAction` 中 im-select 路径和输入法 ID 是硬编码（待重构为可配置）
-- 日志: `thisLogger().info/warn/error()`；日志文件: `build/idea-sandbox/IU-2026.1/log/`
+采用 **fire-and-forget dispose + 等 process 退出**：
 
-## OPENSPEC 工作流（重要）
+1. 后台 daemon 线程 `POST /global/dispose`（不阻塞用户，~2s 客户端超时即可）
+2. 主线程等 `process.onExit(5s)` —— user-perceived 时间 = 真实进程退出时间，**不**等 dispose HTTP 响应
+3. 兜底 SIGTERM + `onExit(2s)`
+4. 兜底 SIGKILL 进程树
+5. `AtomicBoolean shutdownInProgress` 防重入（用户连点 Shutdown 按钮时第二次起短路返回）
+
+**不要**改回"等 dispose HTTP 响应再等 process 退出"——之前 `DISPOSE_TIMEOUT_MS=2s` 不够用，opencode server 的 dispose 是同步阻塞的（清理 MCP/PTY/SSE/LSP 才返回 200），会卡满 2s。
+
+## OPENSPEC 工作流
 
 本仓库用 **OpenSpec** 管理所有变更（不只是文档）。CLI: `openspec`（已安装 v1.4.0）。
 
@@ -98,8 +97,6 @@ openspec/
 │   │   └── research/              # 调研材料
 │   └── archive/                   # 已完成的 change
 └── specs/                         # 已同步到主 spec 的 capability
-    ├── idle-notification-suppression/
-    └── subagent-complete-detection-fix/
 ```
 
 **触发方式**: 用户说"创建 change / 继续 / 实现 / 验证 / 归档"等任何 OpenSpec 意图时，**必须调用对应 skill**（`.opencode/skills/openspec-*`），禁止自编自写 artifact。
@@ -119,8 +116,6 @@ openspec/
 
 **禁止**: 跳过 skill 直接生成 artifact 文件 / 自创 todo 列表冒充 change。
 
-`.opencode/skills/` 里有 11 个项目级 openspec-\* skills，可直接 `skill(name="openspec-new-change")` 等加载。
-
 ## COMMANDS
 
 ```bash
@@ -129,31 +124,41 @@ openspec/
 ./gradlew verifyPlugin           # 验证插件结构
 ./gradlew runIde                 # 启动带插件的 IDE（开发调试）
 ./gradlew runIdeForUiTests       # UI 测试专用 IDE（robot-server 端口 8082）
-./gradlew publishPlugin          # 发布到 Marketplace（需 env: PUBLISH_TOKEN, CERTIFICATE_CHAIN, PRIVATE_KEY, PRIVATE_KEY_PASSWORD）
+./gradlew publishPlugin          # 发布到 Marketplace（需 env: PUBLISH_TOKEN 等）
 ./gradlew qodana                 # 代码质量（独立任务）
 ./gradlew patchChangelog         # CHANGELOG.md → publishPlugin 自动依赖
 ```
 
-**签名/发布 env**（定义在 `local.properties`，已 gitignore）: `PUBLISH_TOKEN`、`CERTIFICATE_CHAIN`、`PRIVATE_KEY`、`PRIVATE_KEY_PASSWORD`。`cert/` 目录也在 gitignore。本地签名材料绝不能进 git。
+**签名/发布 env**（定义在 `local.properties`，已 gitignore）: `PUBLISH_TOKEN`、`CERTIFICATE_CHAIN`、`PRIVATE_KEY`、`PRIVATE_KEY_PASSWORD`。`cert/` 也在 gitignore。**绝对不能**进 git。**优先用环境变量**（Gradle `providers.environmentVariable()` 已支持），不要长期把私钥/令牌明文落在磁盘。
 
-**单测**: 走 IntelliJ Platform TestFramework。`./gradlew check` 跑全部；要跑单个测试类，目前配置下用 IDE 测试运行器或 `./gradlew check --tests "<FQCN>"`（需先确认 `test` 任务的 filter 配置）。
+**单测**: 走 IntelliJ Platform TestFramework。`./gradlew check` 跑全部；要跑单个测试类用 `./gradlew check --tests "<FQCN>"`。
 
-## TESTING
+**调试日志**: `build/idea-sandbox/IU-2026.1/log/idea.log`（`./gradlew runIde` 启动后生成）。JCEF 浏览器日志级别在 `JcefJsInjector` / `BrowserPanel` 中控制。HTTP/SSE 错误用 Gson 解析体，定位到 `OpenCodeApi` / `SSEEventParser`。
 
-| 类型     | 框架                                     | 位置                                                 |
-| -------- | ---------------------------------------- | ---------------------------------------------------- |
-| 单元测试 | JUnit 4 + opentest4j                     | `src/test/.../actions/FormatAsPromptTest.kt`         |
-|          |                                          | `src/test/.../listeners/SSEEventParserTest.kt`       |
-| 集成测试 | `BasePlatformTestCase` + `@TestDataPath` | `src/test/.../MyPluginTest.kt`                       |
-| UI 测试  | Robot Server（`runIdeForUiTests`）       | CI: `run-ui-tests.yml` workflow（本地无 `.github/`） |
+## TESTING + CI
 
-**CI 状态**: `.github/` 在 gitignore —— 本地没有 workflows 目录。所有 CI（Build / Publish / UI Tests）由**上游仓库** `syllr/intellij-opencode-web` GitHub Actions 跑。改 workflow 不在本仓库内。
+| 类型     | 框架                               | 位置                                                 |
+| -------- | ---------------------------------- | ---------------------------------------------------- |
+| 单元测试 | JUnit 4 + opentest4j               | `src/test/.../actions/FormatAsPromptTest.kt`         |
+|          |                                    | `src/test/.../listeners/SSEEventParserTest.kt`       |
+| 集成测试 | `BasePlatformTestCase`             | `src/test/.../MyPluginTest.kt`                       |
+| UI 测试  | Robot Server（`runIdeForUiTests`） | CI: `run-ui-tests.yml` workflow（本地无 `.github/`） |
 
-## DEBUGGING
+**CI**: `.github/` 在 gitignore —— 本地没有 workflows 目录。所有 CI（Build / Publish / UI Tests）由**本仓库** `syllr/intellij-opencode-web` GitHub Actions 跑。改 workflow 不在本仓库内。
 
-- 插件日志: `build/idea-sandbox/IU-2026.1/log/idea.log`（`./gradlew runIde` 启动后生成）
-- JCEF 浏览器日志级别在 `JcefJsInjector` / `BrowserPanel` 中控制
-- HTTP/SSE 错误: 用 Gson 解析错误体，定位到 `OpenCodeApi` / `SSEEventParser`
+## UNIQUE STYLES / 约定
+
+- 端口 **12396**（非标准，避免与 4096 冲突）
+- 首次打开工具窗口时自动重启服务器，确保 opencode 是最新版本
+- 外部链接走系统浏览器
+- 会话恢复通过 HTTP API（`OpenCodeApi.getLatestSessionId`），不用 SQLite/JDBC
+- 工具窗口锚定 `right`，实现 `DumbAware`
+- 多项目实例用 `ConcurrentHashMap<Project, MyToolWindow>` 管理
+- 共享 JBCefClient 实例（`sharedJBCefClient`）
+- `AddToPromptAction` 中 im-select 路径和输入法 ID 是硬编码（待重构为可配置）
+- 日志: `thisLogger().info/warn/error()`；日志文件: `build/idea-sandbox/IU-2026.1/log/`
+- `OpenCodeApiResult` sealed class（`Success` / `Failure` / `Unavailable` / `Unauthorized`）统一 HTTP 调用错误处理，调用方用 `.dataOrNull()` 取值
+- SSE watchdog: `lastEventAt` 30s 没更新 → 强制重连（`SSE_WATCHDOG_INTERVAL_MS=5s`, `SSE_IDLE_TIMEOUT_MS=30s`）
 
 ## ANTI-PATTERNS THAT ARE NOW FIXED（不要再走回头路）
 
@@ -163,10 +168,18 @@ openspec/
 - ~~单文件 900+ 行（MyToolWindowFactory）~~ → 拆成 `toolWindow/` 9 个文件
 - ~~正则解析 HTTP body~~ → 统一 Gson
 - ~~JCEF GPU 在多 IDE 下导致 CPU 飙升（`OpenCodeCefArgsProvider`）~~ → 1.0.18 启用 Metal ANGLE，旧方案已 revert
+- ~~多端口（按 IDE 类型分配 12396-12412）~~ → 全部用 12396。多 server 并发反而更卡（实测确认）
+
+## 注意事项（容易踩的坑）
+
+- **`local.properties` 已 gitignore 但含明文 RSA 私钥 + 完整证书链 + 发布令牌**。安全风险持续存在；改用 env vars 消除
+- **`.omo/` 已在 `.gitignore` 中，但 10 个文件（2 plans + 8 `run-continuation/ses_*.json`）已意外提交**。要清理需 `git rm --cached -r .omo/`
+- **`research/archive/`** 是已归档的规划文档（idea-plugin-integration 9 个、performance 2 个），**不要**当作当前代码参考来读
+- **`research/jcef-focus-ime/` 是当前活跃参考**：描述的 `FocusAdapter` / `cefBrowser.setFocus(true)` 修复**尚未实施**，`requestBrowserFocus()` 仍只调 Swing `requestFocus()`
 
 ## REFERENCES
 
 - 官方开发指南: https://plugins.jetbrains.com/docs/intellij/
 - JCEF 文档: https://chromiumembedded.github.io/java-cef/
 - 本地参考: `references/intellij-platform/`（含 `PLATFORM_ACTIONS_SUMMARY.md`）
-- 上游 CI: `syllr/intellij-opencode-web` GitHub Actions
+- 本仓库 CI: `syllr/intellij-opencode-web` GitHub Actions

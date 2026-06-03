@@ -12,14 +12,14 @@
         <!-- 已注释：第一层 Action 覆盖机制，测试简化方案，只保留 JcefKeyboardInterceptor -->
         <!--
         <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefSettings" 
-                class="com.github.xausky.opencodewebui.actions.JcefShortcutPassthroughAction" 
+                class="com.shenyuanlaolarou.opencodewebui.actions.JcefShortcutPassthroughAction" 
                 text="Pass Settings to JCEF">
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta COMMA" replace-all="true"/>
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl COMMA" replace-all="true"/>
         </action>
         
         <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefCmdK" 
-                class="com.github.xausky.opencodewebui.actions.JcefShortcutPassthroughAction" 
+                class="com.shenyuanlaolarou.opencodewebui.actions.JcefShortcutPassthroughAction" 
                 text="Pass Cmd+K to JCEF">
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta K" replace-all="true"/>
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl K" replace-all="true"/>
@@ -28,7 +28,7 @@
         
         <!-- Copy as Prompt - 在编辑器右键菜单添加选项 -->
         <action id="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"
-                class="com.github.xausky.opencodewebui.actions.CopyAsPromptAction"
+                class="com.shenyuanlaolarou.opencodewebui.actions.CopyAsPromptAction"
                 text="Copy as Prompt"
                 description="Copy selected text as prompt to clipboard">
             <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="$Paste"/>
@@ -37,7 +37,7 @@
 
         <!-- Add to Prompt - 添加到 Prompt 编辑器 -->
         <action id="com.shenyuanlaolarou.opencodewebui.AddToPrompt"
-                class="com.github.xausky.opencodewebui.actions.AddToPromptAction"
+                class="com.shenyuanlaolarou.opencodewebui.actions.AddToPromptAction"
                 text="Add to Prompt"
                 description="Add selected text to Prompt editor">
             <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"/>
@@ -47,12 +47,12 @@
     </actions>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.xausky.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
+        <toolWindow factoryClass="com.shenyuanlaolarou.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
         <notificationGroup id="OpenCodeWeb.notifications" displayType="TOOL_WINDOW" toolWindowId="OpenCodeWeb"/>
         <applicationConfigurable parentId="tools"
-                               instance="com.github.xausky.opencodewebui.settings.OpenCodeConfigurable"
+                               instance="com.shenyuanlaolarou.opencodewebui.settings.OpenCodeConfigurable"
                                id="com.shenyuanlaolarou.opencodewebui.config"
                                displayName="OpenCode"/>
-        <postStartupActivity implementation="com.github.xausky.opencodewebui.toolWindow.OpenCodeProjectActivity"/>
+        <postStartupActivity implementation="com.shenyuanlaolarou.opencodewebui.toolWindow.OpenCodeProjectActivity"/>
     </extensions>
 </idea-plugin>
