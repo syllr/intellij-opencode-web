@@ -115,18 +115,71 @@ object OpenCodeServerManager {
      * 只杀 serverProcess 引用的进程树，不 fallback 到端口杀进程，
      * 避免误杀其他 IDE 实例或用户手动启动的 opencode server。
      *
+     * 关闭策略由 [gracefulShutdown] 统一实现。
+     */
+    fun stopServer() {
+        gracefulShutdown(
+            acquireHandle = ::acquireServerProcessHandle,
+            killFallback = { killProcessTreeByPort() },
+            errorTag = "stopping"
+        )
+    }
+
+    /**
+     * 关闭端口上的 opencode server（用户手动 Shutdown Server 时调用）。
+     * 通过端口查找并杀死进程树，不管是谁启动的。
+     *
+     * 关闭策略由 [gracefulShutdown] 统一实现。
+     */
+    fun shutdownServer() {
+        gracefulShutdown(
+            acquireHandle = ::acquirePortProcessHandle,
+            killFallback = { killProcessTreeByPort() },
+            errorTag = "shutting down"
+        )
+    }
+
+    private fun acquireServerProcessHandle(): ProcessHandle? {
+        val process = serverProcess.getAndSet(null) ?: run {
+            thisLogger().info("[OpenCodeServerManager] No process reference to stop (server was externally started)")
+            return null
+        }
+        if (!process.isAlive) {
+            thisLogger().info("[OpenCodeServerManager] Process already exited")
+            return null
+        }
+        return process.toHandle()
+    }
+
+    private fun acquirePortProcessHandle(): ProcessHandle? {
+        thisLogger().info("[OpenCodeServerManager] Graceful shutdown on port $PORT")
+        val handle = findProcessByPort()
+        if (handle == null) {
+            thisLogger().info("[OpenCodeServerManager] Port $PORT already free, no process to wait for")
+        }
+        return handle
+    }
+
+    /**
+     * 优雅关闭 server 的统一流程。被 [stopServer] 与 [shutdownServer] 共享。
+     *
      * 关闭策略(fire-and-forget dispose + 等 process 退出):
-     * 1. 后台线程 POST /global/dispose → server 内部清理 MCP/PTY/SSE/LSP(不阻塞用户)
-     * 2. 主线程等 process onExit(最多 5s)
-     * 3. 兜底 SIGTERM(handle.destroy)+ 再等 2s
-     * 4. 最后兜底 SIGKILL(杀进程树)
+     * 1. 停 SSE consumer(共享锁,与 ensureSSEConsumer/disposeForProject 一致)
+     * 2. 后台线程 POST /global/dispose → server 内部清理 MCP/PTY/SSE/LSP(不阻塞用户)
+     * 3. 主线程通过 [acquireHandle] 拿 ProcessHandle,等 onExit(最多 5s)
+     * 4. 兜底 SIGTERM(handle.destroy)+ 再等 2s
+     * 5. 最后兜底调 [killFallback](杀进程树)
      *
      * 与早期版本的差异:不再串行等 /global/dispose HTTP 响应(2s 超时常不够),
      * 改为并行 dispose + wait process exit,user-perceived time = 真实退出时间。
      */
-    fun stopServer() {
+    private fun gracefulShutdown(
+        acquireHandle: () -> ProcessHandle?,
+        killFallback: () -> Unit,
+        errorTag: String
+    ) {
         if (!shutdownInProgress.compareAndSet(false, true)) {
-            thisLogger().info("[OpenCodeServerManager] Stop already in progress, skipping")
+            thisLogger().info("[OpenCodeServerManager] Shutdown already in progress, skipping")
             return
         }
         try {
@@ -139,50 +192,40 @@ object OpenCodeServerManager {
                 consumerProjectRef.set(null)
             }
 
-            val process = serverProcess.getAndSet(null) ?: run {
-                thisLogger().info("[OpenCodeServerManager] No process reference to stop (server was externally started)")
-                return
-            }
-            if (!process.isAlive) {
-                thisLogger().info("[OpenCodeServerManager] Process already exited")
-                return
-            }
-
-            val handle = process.toHandle()
-            val pid = handle.pid()
-            thisLogger().info("[OpenCodeServerManager] Graceful shutdown starting, PID=$pid")
-
             // fire-and-forget:dispose HTTP 异步发,不让用户等 HTTP 响应
             startDisposeThread()
+
+            val handle = acquireHandle() ?: return
+            thisLogger().info("[OpenCodeServerManager] Waiting for process exit, PID=${handle.pid()}")
 
             val startMs = System.currentTimeMillis()
             try {
                 handle.onExit().get(5, TimeUnit.SECONDS)
-                thisLogger().info("[OpenCodeServerManager] Server exited after ${System.currentTimeMillis() - startMs}ms, PID=$pid")
+                thisLogger().info("[OpenCodeServerManager] Server exited after ${System.currentTimeMillis() - startMs}ms, PID=${handle.pid()}")
                 return
             } catch (_: TimeoutException) {
-                thisLogger().info("[OpenCodeServerManager] Server still alive 5s, sending SIGTERM, PID=$pid")
+                thisLogger().info("[OpenCodeServerManager] Server still alive 5s, sending SIGTERM, PID=${handle.pid()}")
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
-                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, sending SIGTERM, PID=$pid")
+                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, sending SIGTERM, PID=${handle.pid()}")
             }
 
             val sigtermStartMs = System.currentTimeMillis()
             handle.destroy()
             try {
                 handle.onExit().get(2, TimeUnit.SECONDS)
-                thisLogger().info("[OpenCodeServerManager] Server exited after SIGTERM in ${System.currentTimeMillis() - sigtermStartMs}ms, PID=$pid")
+                thisLogger().info("[OpenCodeServerManager] Server exited after SIGTERM in ${System.currentTimeMillis() - sigtermStartMs}ms, PID=${handle.pid()}")
                 return
             } catch (_: TimeoutException) {
-                thisLogger().info("[OpenCodeServerManager] Server did not exit 2s after SIGTERM, force killing process tree, PID=$pid")
+                thisLogger().info("[OpenCodeServerManager] Server did not exit 2s after SIGTERM, force killing, PID=${handle.pid()}")
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
-                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, force killing, PID=$pid")
+                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, force killing, PID=${handle.pid()}")
             }
 
-            killProcessTreeByHandle(process)
+            killFallback()
         } catch (e: Exception) {
-            thisLogger().error("Error stopping OpenCode server: ${e.message}")
+            thisLogger().error("Error $errorTag OpenCode server: ${e.message}")
         } finally {
             shutdownInProgress.set(false)
         }
@@ -220,74 +263,6 @@ object OpenCodeServerManager {
             is OpenCodeApiResult.Unauthorized -> {
                 thisLogger().warn("[OpenCodeServerManager] /global/dispose 401 unauthorized")
             }
-        }
-    }
-
-    /**
-     * 关闭端口上的 opencode server（用户手动 Shutdown Server 时调用）。
-     * 通过端口查找并杀死进程树，不管是谁启动的。
-     *
-     * 关闭策略(fire-and-forget dispose + 等 process 退出):
-     * 1. 后台线程 POST /global/dispose → server 内部清理 MCP/PTY/SSE/LSP(不阻塞用户)
-     * 2. 主线程通过 lsof 找 PID,等 process onExit(最多 5s)
-     * 3. 兜底 SIGTERM(handle.destroy)+ 再等 2s
-     * 4. 最后兜底 SIGKILL(杀进程树)
-     */
-    fun shutdownServer() {
-        if (!shutdownInProgress.compareAndSet(false, true)) {
-            thisLogger().info("[OpenCodeServerManager] Shutdown already in progress, skipping")
-            return
-        }
-        try {
-            thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
-            // 与 ensureSSEConsumer/disposeForProject/stopServer 共享锁
-            synchronized(this) {
-                sseConsumer?.stop()
-                sseConsumer = null
-                consumerProjectRef.set(null)
-            }
-
-            // fire-and-forget dispose
-            startDisposeThread()
-
-            thisLogger().info("[OpenCodeServerManager] Graceful shutdown on port $PORT")
-            val handle = findProcessByPort()
-            if (handle == null) {
-                thisLogger().info("[OpenCodeServerManager] Port $PORT already free, no process to wait for")
-                return
-            }
-            thisLogger().info("[OpenCodeServerManager] Waiting for process exit, PID=${handle.pid()}")
-
-            val startMs = System.currentTimeMillis()
-            try {
-                handle.onExit().get(5, TimeUnit.SECONDS)
-                thisLogger().info("[OpenCodeServerManager] Server exited after ${System.currentTimeMillis() - startMs}ms, PID=${handle.pid()}")
-                return
-            } catch (_: TimeoutException) {
-                thisLogger().info("[OpenCodeServerManager] Server still alive 5s, sending SIGTERM, PID=${handle.pid()}")
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, sending SIGTERM, PID=${handle.pid()}")
-            }
-
-            val sigtermStartMs = System.currentTimeMillis()
-            handle.destroy()
-            try {
-                handle.onExit().get(2, TimeUnit.SECONDS)
-                thisLogger().info("[OpenCodeServerManager] Server exited after SIGTERM in ${System.currentTimeMillis() - sigtermStartMs}ms, PID=${handle.pid()}")
-                return
-            } catch (_: TimeoutException) {
-                thisLogger().info("[OpenCodeServerManager] Server did not exit 2s after SIGTERM, force killing, PID=${handle.pid()}")
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                thisLogger().info("[OpenCodeServerManager] Shutdown interrupted, force killing, PID=${handle.pid()}")
-            }
-
-            killProcessTreeByPort()
-        } catch (e: Exception) {
-            thisLogger().error("Error shutting down OpenCode server: ${e.message}")
-        } finally {
-            shutdownInProgress.set(false)
         }
     }
 
@@ -399,12 +374,20 @@ object OpenCodeServerManager {
         Thread({
             try {
                 process.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.info("$prefix $it") }
-            } catch (_: Exception) { }
+            } catch (_: java.io.IOException) {
+                // 进程退出后 stream 关闭,预期行为,静默退出
+            } catch (e: Exception) {
+                logger.warn("$prefix stdout relay unexpected error: ${e.message}")
+            }
         }, "opencode-stdout-relay").apply { isDaemon = true }.start()
         Thread({
             try {
                 process.errorStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.warn("$prefix $it") }
-            } catch (_: Exception) { }
+            } catch (_: java.io.IOException) {
+                // 进程退出后 stream 关闭,预期行为,静默退出
+            } catch (e: Exception) {
+                logger.warn("$prefix stderr relay unexpected error: ${e.message}")
+            }
         }, "opencode-stderr-relay").apply { isDaemon = true }.start()
     }
 

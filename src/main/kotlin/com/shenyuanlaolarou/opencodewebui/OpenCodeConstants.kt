@@ -23,3 +23,9 @@ const val HTTP_TIMEOUT_MS = 8000
 const val SSE_CONNECT_TIMEOUT_SECONDS = 5L
 const val SSE_WATCHDOG_INTERVAL_MS = 5_000L
 const val SSE_IDLE_TIMEOUT_MS = 30_000L
+
+// TODO: 临时方案——以下两个常量应改为可配置(设置页面)。当前硬编码仅适用于开发者本人机器。
+// 后续需抽离为插件配置,其他开发者 clone 后可能直接失败(im-select 不存在时降级为 noop)。
+// 依赖项目:https://github.com/daijro/im-select(macOS 切换输入法的 CLI 工具)
+const val IM_SELECT_PATH = "/Users/yutao/Desktop/software/bin/im-select"
+const val IM_SELECT_ARG_EN = "com.apple.keylayout.ABC"

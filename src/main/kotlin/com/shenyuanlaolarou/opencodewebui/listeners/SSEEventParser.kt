@@ -17,6 +17,44 @@ data class ParsedSSEEvent(
     val parsedMap: Map<*, *>? = null
 )
 
+/**
+ * 从 ParsedSSEEvent 提取 sessionID,使用五级 fallback 兼容 opencode server 不同版本的字段位置。
+ *
+ * 提取优先级(高到低):
+ *  1. Direct BusEvent 的 `payload.properties.sessionID` —— 老版本/特定事件类型
+ *  2. SyncEvent V2 的顶层 `data.sessionID` —— 大多数 SyncEvent 事件
+ *  3. SyncEvent V2 的顶层 `data.id` —— session 创建/删除事件用 id 而非 sessionID
+ *  4. SyncEvent V2 嵌套 `data.info.sessionID` —— 部分事件把 sessionID 嵌在 info 里
+ *  5. SyncEvent V2 嵌套 `data.info.id` —— 同上,但用 id 字段
+ *
+ * 返回 `null` 表示事件不携带 sessionID(可能是全局事件如 server.connected)。
+ *
+ * 任何修改请同步检查 OpenCodeSSEConsumer 中所有 sessionID 提取点(原本有 4 处重复,现已统一到此处)。
+ */
+fun ParsedSSEEvent.extractSessionID(): String? {
+    val payload = parsedMap?.get("payload") as? Map<*, *>
+    val props = payload?.get("properties") as? Map<*, *>
+    val data = syncEventData
+    return props?.get("sessionID") as? String
+        ?: data?.get("sessionID") as? String
+        ?: data?.get("id") as? String
+        ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
+        ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
+}
+
+/**
+ * 从 ParsedSSEEvent 提取 parentID(三级 fallback,字段位置比 sessionID 稳定)。
+ * 返回 `null` 表示该 session 不是 subagent(顶层 session 没有 parentID)。
+ */
+fun ParsedSSEEvent.extractParentID(): String? {
+    val payload = parsedMap?.get("payload") as? Map<*, *>
+    val props = payload?.get("properties") as? Map<*, *>
+    val data = syncEventData
+    return props?.get("parentID") as? String
+        ?: data?.get("parentID") as? String
+        ?: (data?.get("info") as? Map<*, *>)?.get("parentID") as? String
+}
+
 object SSEEventParser {
     private val gson = Gson()
 

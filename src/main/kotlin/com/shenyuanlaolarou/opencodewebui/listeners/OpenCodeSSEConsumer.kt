@@ -48,10 +48,14 @@ class OpenCodeSSEConsumer(
             )
         )
 
-        // subagent 会话追踪：记录所有 subagent sessionID（有 parentID 的 session）
+        // 故意放在 companion object(违反 AGENTS.md "禁止静态全局可变状态" 的 HARD RULE):
+        // OpenCodeServerManager 保证同一时间只有一个 SSE consumer,放在实例字段会被
+        // stop()/onClosed() 清空,导致通知风暴。多项目并发前不要改成实例字段。
+
+        // 有 parentID 的 session —— handleSessionIdle 据此区分子 agent/父 session。
         private val subagentSessionIds: MutableSet<String> = newLruSet()
-        // 已发送过 complete 通知的父 session 集合
-        // 用于抑制 agent 循环中的重复 idle 通知
+        // 已发过 complete 通知的父 session —— 抑制 agent 循环中的重复 idle 通知。
+        // 重置信号是 message.updated(role=user),由用户发新消息触发。
         private val sessionIdleFired: MutableSet<String> = newLruSet()
     }
 
@@ -149,19 +153,8 @@ class OpenCodeSSEConsumer(
         val eventType = parsed.syncEventType ?: payloadType ?: return
 
         if (eventType == "session.created") {
-            // Direct BusEvent: parsedMap.payload.properties.{sessionID,parentID}
-            // SyncEvent V2:   parsed.syncEventData.{id,parentID}
-            val payload = parsedMap?.get("payload") as? Map<*, *>
-            val props = payload?.get("properties") as? Map<*, *>
-            val data = parsed.syncEventData
-            val sid = props?.get("sessionID") as? String
-                ?: data?.get("sessionID") as? String
-                ?: data?.get("id") as? String
-                ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
-                ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
-            val parentID = props?.get("parentID") as? String
-                ?: data?.get("parentID") as? String
-                ?: (data?.get("info") as? Map<*, *>)?.get("parentID") as? String
+            val sid = parsed.extractSessionID()
+            val parentID = parsed.extractParentID()
             if (sid != null && parentID != null) {
                 subagentSessionIds.add(sid)
                 logger.debug("[OpenCodeSSEConsumer] Subagent session tracked: $sid (parent=$parentID)")
@@ -170,13 +163,7 @@ class OpenCodeSSEConsumer(
             }
         }
         if (eventType == "session.deleted") {
-            val payload = parsedMap?.get("payload") as? Map<*, *>
-            val props = payload?.get("properties") as? Map<*, *>
-            val data = parsed.syncEventData
-            val sid = props?.get("sessionID") as? String
-                ?: data?.get("sessionID") as? String
-                ?: data?.get("id") as? String
-                ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
+            val sid = parsed.extractSessionID()
             if (sid != null) {
                 // 不移除 subagentSessionIds：防止 session.deleted 先于 session.status(idle) 到达时
                 // 子 agent 的 idle 事件被误判为 complete。集合仅在 SSE 重连时通过 onClosed() 清空。
@@ -222,11 +209,7 @@ class OpenCodeSSEConsumer(
                 val info = props?.get("info") as? Map<*, *>
                     ?: (data?.get("info") as? Map<*, *>)
                 if (info?.get("role") == "user") {
-                    val sessionID = props?.get("sessionID") as? String
-                        ?: (data?.get("sessionID") as? String)
-                        ?: (data?.get("id") as? String)
-                        ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
-                        ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
+                    val sessionID = parsed.extractSessionID()
                     if (sessionID != null) {
                         sessionIdleFired.remove(sessionID)
                     }
@@ -286,31 +269,18 @@ class OpenCodeSSEConsumer(
 
     private fun handleSessionIdle(parsed: ParsedSSEEvent, eventDir: String?) {
         val parsedMap = parsed.parsedMap
-        val props = parsedMap?.get("payload") as? Map<*, *>
-        val properties = props?.get("properties") as? Map<*, *>
-        val data = parsed.syncEventData
-        val sessionID = properties?.get("sessionID") as? String
-            ?: data?.get("sessionID") as? String
-            ?: data?.get("id") as? String
-            ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
-            ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
-            ?: return
+        val sessionID = parsed.extractSessionID() ?: return
 
-        // 子 agent idle → subagent_complete（走配置开关，默认关闭）
+        // 三层去重:子 agent → 父 session 抑制 → 2s 时间窗口,详见 AGENTS.md "通知降噪设计决策"。
         if (sessionID in subagentSessionIds) {
             dispatchNotification("subagent_complete", parsedMap, eventDir)
             return
         }
-
-        // 父 session 抑制：已发过 complete 则跳过
-        // 防止 agent 循环中的重复通知，按用户发消息（message.updated）重置
         if (sessionID in sessionIdleFired) {
             return
         }
 
         val key = "$sessionID:complete"
-
-        // 同一 session 在时间窗口内只发一次（防止 session.status(idle) 和 session.idle 双发）
         val now = System.currentTimeMillis()
         val last = idleLastFired.put(key, now)
         if (last != null && now - last < idleDedupWindowMs) {

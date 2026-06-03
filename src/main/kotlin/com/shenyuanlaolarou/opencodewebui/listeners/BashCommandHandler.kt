@@ -28,6 +28,8 @@ object BashCommandHandler {
                     } catch (e: Exception) { -1 }
 
                     if (exitCode == 0 && projectDir != null) {
+                        // bash 语法切分(非 JSON 解析,不违反 AGENTS.md Regex 规则)。
+                        // 边界 case:引号内的 &&/|/; 会被误切,但方向保守(假阳性触发刷新是幂等的)。
                         val segments = command.split(Regex("&&|;|\n|\\|"))
                         val allReadOnly = segments.all { segment ->
                             val base = segment.trimStart().split(WHITESPACE_REGEX).firstOrNull()?.trim() ?: ""

@@ -1,5 +1,7 @@
 package com.shenyuanlaolarou.opencodewebui.actions
 
+import com.shenyuanlaolarou.opencodewebui.IM_SELECT_ARG_EN
+import com.shenyuanlaolarou.opencodewebui.IM_SELECT_PATH
 import com.shenyuanlaolarou.opencodewebui.toolWindow.MyToolWindowFactory
 import com.shenyuanlaolarou.opencodewebui.utils.IdeaVimIntegration
 import com.shenyuanlaolarou.opencodewebui.utils.JcefJsInjector
@@ -20,11 +22,8 @@ import javax.swing.SwingUtilities
 class AddToPromptAction : AnAction(), DumbAware {
 
     companion object {
-        // TODO: 临时方案——im-select 路径和输入法 ID 应改为可配置（设置页面）。
-        // 当前硬编码仅适用于开发者本人机器，后续需抽离为插件配置。
-        private val IM_SELECT_PATH = "/Users/yutao/Desktop/software/bin/im-select"
-        private val IM_SELECT_ARG_EN = "com.apple.keylayout.ABC"
-        // 插件启动时检查一次 im-select 是否存在，结果缓存到进程退出
+        // 插件启动时检查一次 im-select 是否存在,结果缓存到进程退出。
+        // 不存在时降级为 noop,不会抛错。im-select 配置集中在 OpenCodeConstants,见那里 TODO。
         private val imSelectAvailable by lazy { File(IM_SELECT_PATH).exists() }
     }
 
