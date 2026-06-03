@@ -30,14 +30,16 @@ object BashCommandHandler {
                     if (exitCode == 0 && projectDir != null) {
                         // bash 语法切分(非 JSON 解析,不违反 AGENTS.md Regex 规则)。
                         // 边界 case:引号内的 &&/|/; 会被误切,但方向保守(假阳性触发刷新是幂等的)。
-                        val segments = command.split(Regex("&&|;|\n|\\|"))
+                        val segments = command.split(BASH_SPLIT_REGEX)
                         val allReadOnly = segments.all { segment ->
                             val base = segment.trimStart().split(WHITESPACE_REGEX).firstOrNull()?.trim() ?: ""
                             base.isEmpty() || base in READ_ONLY_COMMANDS
                         }
 
                         if (!allReadOnly) {
-                            logger.debug("[BashCommandHandler] Bash requires refresh: '${command.take(100)}'")
+                            if (logger.isDebugEnabled) {
+                                logger.debug("[BashCommandHandler] Bash requires refresh: '${command.take(100)}'")
+                            }
                             FullRefreshCoordinator.request()
                             return true
                         }
@@ -50,6 +52,8 @@ object BashCommandHandler {
         return false
     }
 
+    // bash 操作符切分(非 JSON 解析):静态化避免每事件 Pattern.compile。
+    private val BASH_SPLIT_REGEX = Regex("&&|;|\n|\\|")
     private val WHITESPACE_REGEX = "\\s+".toRegex()
 
     val READ_ONLY_COMMANDS = setOf(
@@ -62,3 +66,4 @@ object BashCommandHandler {
         "true", "false", "sleep",
     )
 }
+

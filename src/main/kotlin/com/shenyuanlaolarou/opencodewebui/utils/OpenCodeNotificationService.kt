@@ -9,11 +9,40 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.ui.SystemNotifications
+import java.util.concurrent.ConcurrentHashMap
 
 object OpenCodeNotificationService {
 
     private const val NOTIFICATION_GROUP = "OpenCodeWeb.notifications"
     private val logger = thisLogger()
+
+    /**
+     * SessionInfo LRU 缓存(30s TTL),消除通知路径上的同步 HTTP 调用。
+     * 只缓存 timeCreated(不变)和 title(stale 30s 可接受),避免阻塞 SSE 事件线程。
+     */
+    private object SessionInfoCache {
+        private const val TTL_MS = 30_000L
+        private data class Entry(val info: SessionInfo, val cachedAt: Long)
+        private val cache = ConcurrentHashMap<String, Entry>()
+
+        fun get(sessionID: String): SessionInfo? {
+            val entry = cache[sessionID] ?: return null
+            if (System.currentTimeMillis() - entry.cachedAt > TTL_MS) {
+                cache.remove(sessionID)
+                return null
+            }
+            return entry.info
+        }
+
+        fun getOrFetch(sessionID: String): SessionInfo? {
+            get(sessionID)?.let { return it }
+            val info = OpenCodeApi.getSession(sessionID).dataOrNull() ?: return null
+            cache[sessionID] = Entry(info, System.currentTimeMillis())
+            return info
+        }
+
+        fun clear() = cache.clear()
+    }
 
     fun send(eventType: String, properties: Map<*, *>?, project: Project) {
         if (!OpenCodeConfig.notificationEnabled) return
@@ -26,7 +55,7 @@ object OpenCodeNotificationService {
         if ((eventType == "complete" || eventType == "subagent_complete") && OpenCodeConfig.minDuration > 0) {
             val sessionID = extractSessionID(properties)
             if (sessionID != null) {
-                val info = OpenCodeApi.getSession(sessionID).dataOrNull()
+                val info = SessionInfoCache.getOrFetch(sessionID)
                 if (info != null) {
                     val now = System.currentTimeMillis()
                     val duration = if (info.timeCreated != null) (now - info.timeCreated) / 1000 else 0L
@@ -112,16 +141,7 @@ object OpenCodeNotificationService {
     private fun lookupSessionTitle(properties: Map<*, *>?): String? {
         if (!OpenCodeConfig.showSessionTitle) return null
         val sessionID = extractSessionID(properties) ?: return null
-        // 重试 1 次
-        for (attempt in 0..1) {
-            try {
-                val info = OpenCodeApi.getSession(sessionID).dataOrNull()
-                if (info != null) return info.title
-            } catch (_: Exception) {
-                if (attempt < 1) Thread.sleep(200L)
-            }
-        }
-        return null
+        return SessionInfoCache.getOrFetch(sessionID)?.title
     }
 
     private val SUBAGENT_REGEX = Regex("""\s*\(@([^\s)]+)\s+subagent\)\s*$""")
@@ -129,12 +149,14 @@ object OpenCodeNotificationService {
     private fun lookupAgentName(properties: Map<*, *>?): String? {
         val sessionID = extractSessionID(properties) ?: return null
         try {
-            val info = OpenCodeApi.getSession(sessionID).dataOrNull()
+            val info = SessionInfoCache.getOrFetch(sessionID)
             if (info != null && info.title != null) {
                 val match = SUBAGENT_REGEX.find(info.title)
                 if (match != null) return match.groupValues[1]
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            logger.debug("[OpenCodeNotificationService] Agent name lookup failed: ${e.message}")
+        }
         return null
     }
 }

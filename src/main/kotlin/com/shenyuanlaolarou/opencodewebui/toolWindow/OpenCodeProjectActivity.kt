@@ -23,7 +23,11 @@ class OpenCodeProjectActivity : ProjectActivity {
                             .getToolWindow(MyToolWindowFactory.OPCODE_WEB_TOOL_WINDOW_ID)
                             ?.contentManager
                             ?.removeContentManagerListener(listener)
-                    } catch (_: Exception) { }
+                    } catch (_: IllegalStateException) {
+                        // 项目已 dispose,清理无意义
+                    } catch (e: Exception) {
+                        thisLogger().debug("[OpenCodeProjectActivity] Listener removal failed: ${e.message}")
+                    }
                 }
             }
         })

@@ -7,7 +7,6 @@ import com.shenyuanlaolarou.opencodewebui.SSE_IDLE_TIMEOUT_MS
 import com.shenyuanlaolarou.opencodewebui.SSE_WATCHDOG_INTERVAL_MS
 import com.shenyuanlaolarou.opencodewebui.listeners.SSEEventParser
 import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeNotificationRouter
-import com.google.gson.Gson
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.launchdarkly.eventsource.ConnectStrategy
@@ -26,7 +25,6 @@ class OpenCodeSSEConsumer(
 ) : BackgroundEventHandler {
     private val projectBasePath: String? = project.basePath
 
-    private val gson = Gson()
     private val eventSourceRef = AtomicReference<BackgroundEventSource?>(null)
     private val connectionGen = AtomicLong(0)
     @Volatile private var activeConnectionGen: Long = -1
@@ -139,11 +137,15 @@ class OpenCodeSSEConsumer(
         val projectDir = projectBasePath
 
         if (payloadType == "message.part.delta") {
-            if (fileProperty != null) logger.debug("[OpenCodeSSEConsumer] *** FILE CHANGE DETECTED *** payloadType=$payloadType, file=$fileProperty")
+            if (fileProperty != null && logger.isDebugEnabled) {
+                logger.debug("[OpenCodeSSEConsumer] *** FILE CHANGE DETECTED *** payloadType=$payloadType, file=$fileProperty")
+            }
             return
         }
 
-        logger.debug("[OpenCodeSSEConsumer] Event: type='$payloadType', syncEventType='${parsed.syncEventType}', eventDir=$eventDir, projectDir=$projectDir, file=$fileProperty")
+        if (logger.isDebugEnabled) {
+            logger.debug("[OpenCodeSSEConsumer] Event: type='$payloadType', syncEventType='${parsed.syncEventType}', eventDir=$eventDir, projectDir=$projectDir, file=$fileProperty")
+        }
 
         // 事件去重：按 payload.id 去重
         val payloadId = (parsedMap?.get("payload") as? Map<*, *>)?.get("id") as? String
@@ -157,7 +159,9 @@ class OpenCodeSSEConsumer(
             val parentID = parsed.extractParentID()
             if (sid != null && parentID != null) {
                 subagentSessionIds.add(sid)
-                logger.debug("[OpenCodeSSEConsumer] Subagent session tracked: $sid (parent=$parentID)")
+                if (logger.isDebugEnabled) {
+                    logger.debug("[OpenCodeSSEConsumer] Subagent session tracked: $sid (parent=$parentID)")
+                }
             } else if (sid != null && parentID == null) {
                 dispatchNotification("session_started", parsedMap, eventDir)
             }
@@ -167,7 +171,9 @@ class OpenCodeSSEConsumer(
             if (sid != null) {
                 // 不移除 subagentSessionIds：防止 session.deleted 先于 session.status(idle) 到达时
                 // 子 agent 的 idle 事件被误判为 complete。集合仅在 SSE 重连时通过 onClosed() 清空。
-                logger.debug("[OpenCodeSSEConsumer] Subagent session removed (tracking preserved for idle detection): $sid")
+                if (logger.isDebugEnabled) {
+                    logger.debug("[OpenCodeSSEConsumer] Subagent session removed (tracking preserved for idle detection): $sid")
+                }
             }
         }
 
@@ -239,7 +245,9 @@ class OpenCodeSSEConsumer(
                 eventDir == projectDir
             }
             if (!matches) {
-                logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
+                if (logger.isDebugEnabled) {
+                    logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
+                }
                 return
             }
         }
@@ -305,7 +313,9 @@ class OpenCodeSSEConsumer(
         subagentSessionIds.clear()
         idleLastFired.clear()
         sessionIdleFired.clear()
-        logger.debug("[OpenCodeSSEConsumer] Cleared sessionIdleFired ($idleSize entries), subagentSessionIds ($subagentSize entries)")
+        if (logger.isDebugEnabled) {
+            logger.debug("[OpenCodeSSEConsumer] Cleared sessionIdleFired ($idleSize entries), subagentSessionIds ($subagentSize entries)")
+        }
     }
 
     override fun onComment(comment: String) {

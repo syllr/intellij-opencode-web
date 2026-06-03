@@ -58,21 +58,25 @@ fun ParsedSSEEvent.extractParentID(): String? {
 object SSEEventParser {
     private val gson = Gson()
 
-    // LRU 去重缓存：按 payload.id 去重，最大 1000 条
+    // LRU 去重缓存：按 payload.id 去重，最大 1000 条。值用 Boolean 占位（时间戳从未被读取）
+    // 而非 Long：避免每事件 Long 装箱,~200-500 obj/s。
     private val dedupCache = Collections.synchronizedMap(
-        object : LinkedHashMap<String, Long>(1000, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean {
+        object : LinkedHashMap<String, Boolean>(1000, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean {
                 return size > 1000
             }
         }
     )
+
+    // 静态化避免每事件重新 Pattern.compile（剥离 syncEventType 的版本号后缀,如 .idle.0 → .idle）。
+    private val SYNC_EVENT_TYPE_VERSION_REGEX = Regex("\\.\\d+$")
 
     // [O7] 高频事件类型集合，这些事件在 onMessage 中会被立即跳过，无需完整 Map 转换
     private val SKIP_PARSE_EVENT_TYPES = setOf("message.part.delta")
 
     fun isEventProcessed(eventID: String): Boolean {
         if (eventID.isEmpty()) return false
-        return dedupCache.put(eventID, System.currentTimeMillis()) != null
+        return dedupCache.put(eventID, true) != null
     }
 
     fun clearCache() {
@@ -114,7 +118,7 @@ object SSEEventParser {
             if (payloadType == "sync") {
                 val syncEvent = payloadMap?.get("syncEvent") as? Map<*, *>
                 syncEventType = syncEvent?.get("type") as? String
-                syncEventType = syncEventType?.replace(Regex("\\.\\d+$"), "")
+                syncEventType = syncEventType?.replace(SYNC_EVENT_TYPE_VERSION_REGEX, "")
                 syncEventData = syncEvent?.get("data") as? Map<*, *>
             }
 

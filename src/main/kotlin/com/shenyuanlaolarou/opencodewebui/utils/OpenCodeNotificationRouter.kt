@@ -13,14 +13,18 @@ object OpenCodeNotificationRouter {
     fun register(project: Project) {
         val path = normalize(project.basePath) ?: return
         projectRegistry[path] = project
-        logger.debug("[OpenCodeNotificationRouter] Registered project: ${project.name} ($path)")
+        if (logger.isDebugEnabled) {
+            logger.debug("[OpenCodeNotificationRouter] Registered project: ${project.name} ($path)")
+        }
     }
 
     fun unregister(project: Project) {
         val path = normalize(project.basePath)
         if (path != null) {
             projectRegistry.remove(path)
-            logger.debug("[OpenCodeNotificationRouter] Unregistered project: ${project.name} ($path)")
+            if (logger.isDebugEnabled) {
+                logger.debug("[OpenCodeNotificationRouter] Unregistered project: ${project.name} ($path)")
+            }
         }
     }
 

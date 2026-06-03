@@ -82,8 +82,6 @@ object OpenCodeServerManager {
         val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
             override fun run(indicator: ProgressIndicator) {
                 try {
-                    logDiagnosticEnvironment()
-
                     val process = startOpenCodeProcess()
                     serverProcess.set(process)
 
@@ -273,9 +271,14 @@ object OpenCodeServerManager {
         return try {
             val script = "lsof -tiTCP:$PORT -sTCP:LISTEN | head -1"
             val proc = Runtime.getRuntime().exec(arrayOf("/bin/sh", "-c", script))
-            val pidStr = proc.inputStream.bufferedReader().readText().trim()
-            if (pidStr.isEmpty()) return null
-            ProcessHandle.of(pidStr.toLong()).orElse(null)
+            try {
+                val pidStr = proc.inputStream.bufferedReader().readText().trim()
+                if (pidStr.isEmpty()) return null
+                ProcessHandle.of(pidStr.toLong()).orElse(null)
+            } finally {
+                proc.waitFor(3, TimeUnit.SECONDS)
+                if (proc.isAlive) proc.destroyForcibly()
+            }
         } catch (e: Exception) {
             thisLogger().warn("[OpenCodeServerManager] findProcessByPort failed: ${e.message}")
             null
@@ -341,18 +344,6 @@ object OpenCodeServerManager {
             thisLogger().info("[OpenCodeServerManager] Process tree killed via port-based lookup")
         } catch (e: Exception) {
             thisLogger().warn("[OpenCodeServerManager] Port-based process tree kill failed: ${e.message}")
-        }
-    }
-
-    private fun logDiagnosticEnvironment() {
-        try {
-            val cmd = listOf("/bin/zsh", "-l", "-c", "echo '---WHICH opencode---' && which opencode 2>&1 || echo 'NOT FOUND' && echo '---PATH---' && echo \$PATH && echo '---NODE---' && (which node 2>&1 || echo 'NOT FOUND') && echo '---NVM---' && (which nvm 2>&1 || echo 'NOT FOUND') && echo '---HOME---' && echo \$HOME && echo '---SHELL---' && echo \$SHELL && echo '---ENV---' && env | sort")
-            val proc = Runtime.getRuntime().exec(cmd.toTypedArray())
-            val output = proc.inputStream.bufferedReader().readText()
-            val exitCode = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-            thisLogger().info("[OpenCodeServerManager] Diagnostic environment (exit=$exitCode):\n$output")
-        } catch (e: Exception) {
-            thisLogger().warn("[OpenCodeServerManager] Diagnostic failed: ${e.message}")
         }
     }
 

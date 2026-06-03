@@ -54,7 +54,7 @@ class AddToPromptAction : AnAction(), DumbAware {
             return
         }
 
-        val editor: Editor?
+        val editor: Editor? = e.getData(CommonDataKeys.EDITOR)
 
         var selectedText: String?
         var selStart: Int
@@ -64,7 +64,6 @@ class AddToPromptAction : AnAction(), DumbAware {
 
         // 优先尝试从 IdeaVim visual mode 获取选中文本
         if (IdeaVimIntegration.isIdeaVimInstalled()) {
-            editor = e.getData(CommonDataKeys.EDITOR)
             val result = IdeaVimIntegration.getVisualSelection(editor)
             if (result != null) {
                 selectedText = result.first
@@ -76,7 +75,6 @@ class AddToPromptAction : AnAction(), DumbAware {
                 selEnd = editor?.selectionModel?.selectionEnd ?: -1
             }
         } else {
-            editor = e.getData(CommonDataKeys.EDITOR)
             selectedText = editor?.selectionModel?.selectedText
             selStart = editor?.selectionModel?.selectionStart ?: -1
             selEnd = editor?.selectionModel?.selectionEnd ?: -1
@@ -88,11 +86,12 @@ class AddToPromptAction : AnAction(), DumbAware {
             MyToolWindowFactory.openOpenCodeWebToolWindow(project)
             return
         }
+        val safeEditor = editor ?: return
 
-        val psiFile: PsiFile = PsiDocumentManager.getInstance(project).getPsiFile(editor!!.document) ?: return
+        val psiFile: PsiFile = PsiDocumentManager.getInstance(project).getPsiFile(safeEditor.document) ?: return
         val filePath = psiFile.virtualFile?.path ?: return
 
-        val document = editor.document
+        val document = safeEditor.document
         val startLine = document.getLineNumber(selStart) + 1
         val endLine = document.getLineNumber(selEnd) + 1
 
@@ -104,10 +103,10 @@ class AddToPromptAction : AnAction(), DumbAware {
         switchInputMethod(IM_SELECT_ARG_EN)
 
         // 清除选中
-        if (IdeaVimIntegration.isIdeaVimInstalled() && IdeaVimIntegration.isInVisualMode(editor)) {
-            IdeaVimIntegration.exitVisualMode(editor)
+        if (IdeaVimIntegration.isIdeaVimInstalled() && IdeaVimIntegration.isInVisualMode(safeEditor)) {
+            IdeaVimIntegration.exitVisualMode(safeEditor)
         } else {
-            editor.caretModel.primaryCaret.removeSelection()
+            safeEditor.caretModel.primaryCaret.removeSelection()
         }
     }
 

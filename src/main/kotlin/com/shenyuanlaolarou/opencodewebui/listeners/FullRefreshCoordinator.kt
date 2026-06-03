@@ -19,8 +19,7 @@ object FullRefreshCoordinator {
     private val refreshInProgress = AtomicBoolean(false)
     @Volatile
     private var pendingTask: ScheduledFuture<*>? = null
-    @Volatile
-    private var refreshRequestedWhileBusy = false
+    private val refreshRequestedWhileBusy = AtomicBoolean(false)
     private const val DEBOUNCE_MS = 2000L
 
     fun start(projectPath: String) {
@@ -38,7 +37,7 @@ object FullRefreshCoordinator {
 
     fun request() {
         if (refreshInProgress.get()) {
-            refreshRequestedWhileBusy = true
+            refreshRequestedWhileBusy.set(true)
             return
         }
         pendingTask?.cancel(false)
@@ -68,7 +67,9 @@ object FullRefreshCoordinator {
             refreshInProgress.set(false)
             return
         }
-        logger.debug("[FullRefresh] Executing full refresh for $root")
+        if (logger.isDebugEnabled) {
+            logger.debug("[FullRefresh] Executing full refresh for $root")
+        }
         // 必须 try-catch:refreshIoFiles 同步抛异常时回调不执行,refreshInProgress 永锁会导致 IDE 文件刷新永久失效
         try {
             LocalFileSystem.getInstance().refreshIoFiles(
@@ -77,11 +78,13 @@ object FullRefreshCoordinator {
                 true,
                 Runnable {
                     refreshInProgress.set(false)
-                    if (refreshRequestedWhileBusy) {
-                        refreshRequestedWhileBusy = false
+                    if (refreshRequestedWhileBusy.get()) {
+                        refreshRequestedWhileBusy.set(false)
                         request()
                     }
-                    logger.debug("[FullRefresh] Refresh completed")
+                    if (logger.isDebugEnabled) {
+                        logger.debug("[FullRefresh] Refresh completed")
+                    }
                 }
             )
         } catch (e: Exception) {
