@@ -14,11 +14,12 @@ data class ParsedSSEEvent(
     val payloadType: String?,
     val syncEventType: String? = null,
     val syncEventData: Map<*, *>? = null,
+    val syncEvent: Map<*, *>? = null,
     val parsedMap: Map<*, *>? = null
 )
 
 /**
- * 从 ParsedSSEEvent 提取 sessionID,使用五级 fallback 兼容 opencode server 不同版本的字段位置。
+ * 从 ParsedSSEEvent 提取 sessionID,使用六级 fallback 兼容 opencode server 不同版本的字段位置。
  *
  * 提取优先级(高到低):
  *  1. Direct BusEvent 的 `payload.properties.sessionID` —— 老版本/特定事件类型
@@ -26,6 +27,7 @@ data class ParsedSSEEvent(
  *  3. SyncEvent V2 的顶层 `data.id` —— session 创建/删除事件用 id 而非 sessionID
  *  4. SyncEvent V2 嵌套 `data.info.sessionID` —— 部分事件把 sessionID 嵌在 info 里
  *  5. SyncEvent V2 嵌套 `data.info.id` —— 同上,但用 id 字段
+ *  6. SyncEvent V2 顶层 `syncEvent.aggregateID` —— 实际 server 常用此字段标记 session 实体
  *
  * 返回 `null` 表示事件不携带 sessionID(可能是全局事件如 server.connected)。
  *
@@ -40,6 +42,7 @@ fun ParsedSSEEvent.extractSessionID(): String? {
         ?: data?.get("id") as? String
         ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
         ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
+        ?: syncEvent?.get("aggregateID") as? String
 }
 
 /**
@@ -114,12 +117,14 @@ object SSEEventParser {
 
             var syncEventType: String? = null
             var syncEventData: Map<*, *>? = null
+            var syncEventMap: Map<*, *>? = null
 
             if (payloadType == "sync") {
                 val syncEvent = payloadMap?.get("syncEvent") as? Map<*, *>
                 syncEventType = syncEvent?.get("type") as? String
                 syncEventType = syncEventType?.replace(SYNC_EVENT_TYPE_VERSION_REGEX, "")
                 syncEventData = syncEvent?.get("data") as? Map<*, *>
+                syncEventMap = syncEvent
             }
 
             val properties = payloadMap?.get("properties") as? Map<*, *>
@@ -138,6 +143,7 @@ object SSEEventParser {
                 payloadType = payloadType,
                 syncEventType = syncEventType,
                 syncEventData = syncEventData,
+                syncEvent = syncEventMap,
                 parsedMap = parsedMap
             )
         } catch (e: Exception) {

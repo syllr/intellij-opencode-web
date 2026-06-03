@@ -10,15 +10,17 @@ class ExtractSessionIdTest {
     private fun parsedSSEEvent(
         parsedMap: Map<*, *>? = null,
         syncEventData: Map<*, *>? = null,
-        syncEventType: String? = null
+        syncEventType: String? = null,
+        syncEvent: Map<*, *>? = null
     ): ParsedSSEEvent {
         return ParsedSSEEvent(
             eventType = "test",
             directory = null,
             file = null,
-            payloadType = if (syncEventType != null || syncEventData != null) "sync" else null,
+            payloadType = if (syncEventType != null || syncEventData != null || syncEvent != null) "sync" else null,
             syncEventType = syncEventType,
             syncEventData = syncEventData,
+            syncEvent = syncEvent,
             parsedMap = parsedMap
         )
     }
@@ -138,5 +140,37 @@ class ExtractSessionIdTest {
         assertEquals("session.idle", event.syncEventType)
         assertNotNull(event.syncEventData)
         assertEquals("sess1", event.syncEventData!!["id"])
+    }
+
+    @Test
+    fun extractSessionID_aggregateID() {
+        val event = parsedSSEEvent(
+            syncEvent = mapOf("aggregateID" to "ses-aggregate"),
+            syncEventData = mapOf("info" to mapOf("parentID" to "ses-parent"))
+        )
+        assertEquals("ses-aggregate", event.extractSessionID())
+    }
+
+    @Test
+    fun extractSessionID_aggregateID_lowestPriority() {
+        val event = parsedSSEEvent(
+            parsedMap = mapOf("payload" to mapOf("properties" to mapOf("sessionID" to "ses-props"))),
+            syncEvent = mapOf("aggregateID" to "ses-aggregate-lowest"),
+            syncEventData = mapOf("sessionID" to "ses-data-second")
+        )
+        assertEquals("ses-props", event.extractSessionID())
+    }
+
+    @Test
+    fun parseSessionCreated_preservesAggregateID() {
+        val event = SSEEventParser.parse(
+            "message",
+            """{"directory":"/p","payload":{"type":"sync","syncEvent":{"type":"session.created.1","aggregateID":"ses-subagent-123","data":{"info":{"parentID":"ses-parent-456"}}}}}"""
+        )
+        assertEquals("session.created", event.syncEventType)
+        assertEquals("ses-subagent-123", event.extractSessionID())
+        assertEquals("ses-parent-456", event.extractParentID())
+        assertNotNull(event.syncEvent)
+        assertEquals("ses-subagent-123", event.syncEvent!!["aggregateID"])
     }
 }

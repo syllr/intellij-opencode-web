@@ -2,6 +2,25 @@
 
 IntelliJ Platform 插件 (Kotlin)，为 OpenCode Web UI 提供 JetBrains IDE 集成。
 
+## 项目级元文档
+
+本项目根目录下三个大写元文档构成项目宪法 / 设计 / 规格三元组，AI agent 必须根据任务类型主动阅读对应文档：
+
+| 文档                         | 关注                                                | 何时读                                            |
+| ---------------------------- | --------------------------------------------------- | ------------------------------------------------- |
+| **[AGENTS.md](./AGENTS.md)** | 怎么开发（流程规则、强制约束、踩坑经验）            | **第一份必读** — 任何任务开始前                   |
+| **[SPEC.md](./SPEC.md)**     | 必须满足什么（SLA、安全契约、数据一致性、部署约束） | Code Review / QA / 实施可能影响 §1-7 规范的变更前 |
+| **[DESIGN.md](./DESIGN.md)** | 怎么实现（架构设计、组件关系、关键决策）            | 改架构 / 加新模块 / 排查跨子系统问题时            |
+
+**阅读顺序建议**：
+
+1. 新加入任务 → 先读 `AGENTS.md`（开发流程、强制约束）
+2. 涉及性能 / 安全 / SLA / 数据一致性 → 读 `SPEC.md` 对应章节
+3. 涉及架构或子系统 → 读 `DESIGN.md` 对应章节
+4. 修改单个 capability → 读 `openspec/specs/<capability>/spec.md`
+
+> 详细阅读顺序与文档关系见 `SPEC.md` §0。
+
 ## STACK
 
 - Gradle 9.3.1 · JDK 21 · Kotlin 2.3.20 · IntelliJ Platform Gradle Plugin 2.14.0
@@ -62,25 +81,20 @@ IntelliJ Platform 插件 (Kotlin)，为 OpenCode Web UI 提供 JetBrains IDE 集
 - **发布**: AI 禁止自动 `publishPlugin`，必须用户显式调用
 - **Type 抑制**: 禁止 `as Any` / `@ts-ignore` / `@ts-expect-error`（Kotlin 实际无此语法，但等价物同样禁用）
 
-## 通知降噪设计决策（`OpenCodeSSEConsumer`）
+## 通知降噪 + 关闭策略（指针）
 
-读这块代码前必须理解 3 条规则：
+详细决策已搬到项目级元文档：
 
-1. **父 session complete 抑制**: 用 `sessionIdleFired` 集合抑制 agent 循环中的重复 idle 通知；重置信号是 `message.updated(role=user)`，不是 `session.status(busy)` —— 这样 agent 循环中的中间 idle 不会重复通知
-2. **`session.deleted` 不移除追踪**: 不在 `session.deleted` 中移除 `subagentSessionIds`，避免时序竞态导致子 agent idle 被误判为 `complete`。该集合仅在 SSE 重连时通过 `onClosed()` 清空
-3. **原则 2 通知不受影响**: `permission.asked` / `question.asked` / `session.next.tool.called(tool=question)` 是 `when(eventType)` 的独立分支，**不受** `sessionIdleFired` 抑制逻辑控制
+- **通知降噪三层去重** → `SPEC.md §3.1` + `DESIGN.md §4.2` + capability spec `openspec/specs/idle-notification-suppression/spec.md` + `openspec/specs/subagent-complete-detection-fix/spec.md`
+- **关闭策略 4 阶段(`gracefulShutdown`)** → `SPEC.md §6.3` + `DESIGN.md §3.3` + `OpenCodeServerManager.gracefulShutdown` 共享实现
+- **关键不变量** → `SPEC.md §3.1.1` (subagentSessionIds) / `§3.1.2` (sessionIdleFired) / `§3.1.3` (idleLastFired)
 
-## 关闭策略（`OpenCodeServerManager.shutdownServer/stopServer`）
+读这两块代码前**必须**先看 `SPEC.md` §3(数据一致性)和 `DESIGN.md` §4(核心机制)。
 
-采用 **fire-and-forget dispose + 等 process 退出**：
+- **通知降噪三层去重** → `SPEC.md §7.1` + `DESIGN.md §4.2` + capability spec `openspec/specs/idle-notification-suppression/spec.md` + `openspec/specs/subagent-complete-detection-fix/spec.md`
+- **关闭策略 4 阶段** → `SPEC.md §6.3` + `DESIGN.md §3.3` + `OpenCodeServerManager.gracefulShutdown` 共享实现
 
-1. 后台 daemon 线程 `POST /global/dispose`（不阻塞用户，~2s 客户端超时即可）
-2. 主线程等 `process.onExit(5s)` —— user-perceived 时间 = 真实进程退出时间，**不**等 dispose HTTP 响应
-3. 兜底 SIGTERM + `onExit(2s)`
-4. 兜底 SIGKILL 进程树
-5. `AtomicBoolean shutdownInProgress` 防重入（用户连点 Shutdown 按钮时第二次起短路返回）
-
-**不要**改回"等 dispose HTTP 响应再等 process 退出"——之前 `DISPOSE_TIMEOUT_MS=2s` 不够用，opencode server 的 dispose 是同步阻塞的（清理 MCP/PTY/SSE/LSP 才返回 200），会卡满 2s。
+读这两块代码前**必须**先看 `SPEC.md` §3（数据一致性）和 `DESIGN.md` §4（核心机制）。
 
 ## OPENSPEC 工作流
 

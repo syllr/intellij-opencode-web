@@ -17,12 +17,12 @@
 #### Scenario: session.status idle 事件
 
 - **WHEN** SSE 收到 `payload.type == "session.status"` 且 `properties.status.type == "idle"`
-- **THEN** 系统查本地 `subagentSessionIds` 集合：该 sessionID 在集合中则为 `subagent_complete`，否则为 `complete`，延迟 350ms 去抖后触发通知
+- **THEN** 系统查本地 `subagentSessionIds` 集合：该 sessionID 在集合中则为 `subagent_complete`，否则为 `complete`，2s 去抖窗口内同 sessionID 重复 idle 抑制
 
 #### Scenario: session.idle 旧格式
 
 - **WHEN** SSE 收到 `payload.type == "session.idle"` 且同一 sessionID 未收到过 `session.status(idle)`
-- **THEN** 系统按 session.status(idle) 相同逻辑处理（350ms 去抖 + subagent 判断）
+- **THEN** 系统按 session.status(idle) 相同逻辑处理（2s 去抖窗口 + subagent 判断）
 
 #### Scenario: session.idle 与 session.status 去重
 
@@ -115,4 +115,4 @@
 #### Scenario: session.status idle debounce
 
 - **WHEN** 收到 idle 事件
-- **THEN** 启动 350ms 定时器，同 sessionID 的新 idle 事件重置定时器，定时器到期才触发通知
+- **THEN** 启动 2s 时间窗口去抖，同 sessionID 的新 idle 事件因窗口内重复而忽略（参考 `OpenCodeSSEConsumer.idleDedupWindowMs` 常量）
