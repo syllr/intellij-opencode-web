@@ -15,16 +15,14 @@ class BashCommandHandlerTest {
         status: String = "completed"
     ): Map<String, Any?> {
         return mapOf(
-            "payload" to mapOf(
-                "properties" to mapOf(
-                    "part" to mapOf(
-                        "type" to partType,
-                        "tool" to toolName,
-                        "state" to mapOf(
-                            "status" to status,
-                            "input" to mapOf("command" to command),
-                            "metadata" to mapOf("exit" to exitCode.toDouble())
-                        )
+            "properties" to mapOf(
+                "part" to mapOf(
+                    "type" to partType,
+                    "tool" to toolName,
+                    "state" to mapOf(
+                        "status" to status,
+                        "input" to mapOf("command" to command),
+                        "metadata" to mapOf("exit" to exitCode.toDouble())
                     )
                 )
             )

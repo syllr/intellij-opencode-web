@@ -59,13 +59,8 @@ object OpenCodeNotificationService {
 
         // 1s Session 维度防抖：1s 内同 session + 同事件类型抑制
         val dedupSessionID = extractSessionID(properties)
-        if (dedupSessionID != null) {
-            val key = dedupSessionID to eventType
-            val now = System.currentTimeMillis()
-            val last = lastNotificationFired.put(key, now)
-            if (last != null && now - last < NOTIFICATION_DEDUP_WINDOW_MS) {
-                return  // 1s 内同 session 同事件抑制
-            }
+        if (dedupSessionID != null && tryRecordAndCheckDedup(dedupSessionID, eventType)) {
+            return  // 1s 内同 session 同事件抑制
         }
 
         val tw = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
@@ -112,7 +107,7 @@ object OpenCodeNotificationService {
         }
     }
 
-    private fun addClickAction(notification: Notification, eventType: String, project: Project) {
+    internal fun addClickAction(notification: Notification, eventType: String, project: Project) {
         when (eventType) {
             "permission", "question" -> {
                 notification.addAction(NotificationAction.createSimpleExpiring("打开") {
@@ -123,12 +118,12 @@ object OpenCodeNotificationService {
         }
     }
 
-    private fun resolveType(eventType: String): NotificationType = when (eventType) {
+    internal fun resolveType(eventType: String): NotificationType = when (eventType) {
         "permission", "question" -> NotificationType.WARNING
         else -> NotificationType.INFORMATION
     }
 
-    private fun formatMessage(eventType: String, properties: Map<*, *>?, project: Project): String {
+    internal fun formatMessage(eventType: String, properties: Map<*, *>?, project: Project): String {
         val template = when (eventType) {
             "permission" -> "权限申请: {sessionTitle}"
             "complete" -> "回答完成: {sessionTitle}"
@@ -156,9 +151,28 @@ object OpenCodeNotificationService {
         return result
     }
 
-    private fun extractSessionID(properties: Map<*, *>?): String? {
+    internal fun extractSessionID(properties: Map<*, *>?): String? {
         val props = properties?.get("properties") as? Map<*, *>
         return props?.get("sessionID") as? String
+    }
+
+    /**
+     * 1s Session 维度防抖判定: 1s 内同 session + 同事件类型 → 抑制(true)
+     * 测试可见: 提取为 internal 纯函数,便于 unit test
+     */
+    internal fun tryRecordAndCheckDedup(
+        sessionID: String,
+        eventType: String,
+        now: Long = System.currentTimeMillis()
+    ): Boolean {
+        val key = sessionID to eventType
+        val last = lastNotificationFired.put(key, now)
+        return last != null && now - last < NOTIFICATION_DEDUP_WINDOW_MS
+    }
+
+    /** 测试可见: 重置防抖 LRU Map(测试间隔离) */
+    internal fun clearDedupForTesting() {
+        lastNotificationFired.clear()
     }
 
     private fun lookupSessionTitle(properties: Map<*, *>?): String? {
