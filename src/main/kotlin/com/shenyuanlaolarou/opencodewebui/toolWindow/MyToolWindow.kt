@@ -53,7 +53,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
         healthMonitor.start()
         if (healthy) {
             logger.info("[checkAndLoadContent] Server healthy, ensuring SSE consumer via OpenCodeServerManager")
-            OpenCodeServerManager.ensureSSEConsumer(project)
+            OpenCodeServerManager.getOrCreateConsumer(project)
             loadProjectPage()
         } else {
             showServerNotRunning()

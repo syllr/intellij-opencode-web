@@ -49,10 +49,6 @@
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow factoryClass="com.shenyuanlaolarou.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
         <notificationGroup id="OpenCodeWeb.notifications" displayType="TOOL_WINDOW" toolWindowId="OpenCodeWeb"/>
-        <applicationConfigurable parentId="tools"
-                               instance="com.shenyuanlaolarou.opencodewebui.settings.OpenCodeConfigurable"
-                               id="com.shenyuanlaolarou.opencodewebui.config"
-                               displayName="OpenCode"/>
         <postStartupActivity implementation="com.shenyuanlaolarou.opencodewebui.toolWindow.OpenCodeProjectActivity"/>
     </extensions>
 </idea-plugin>

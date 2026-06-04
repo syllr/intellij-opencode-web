@@ -9,8 +9,7 @@ object BashCommandHandler {
         val logger = thisLogger()
 
         try {
-            val payload = parsedMap?.get("payload") as? Map<*, *>
-            val props = payload?.get("properties") as? Map<*, *>
+            val props = parsedMap?.get("properties") as? Map<*, *>
             val part = props?.get("part") as? Map<*, *>
             val partType = part?.get("type") as? String
             val toolName = part?.get("tool") as? String

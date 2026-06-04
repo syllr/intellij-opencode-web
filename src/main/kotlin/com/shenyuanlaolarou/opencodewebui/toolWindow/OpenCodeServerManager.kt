@@ -12,6 +12,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.openapi.project.Project
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -22,48 +23,24 @@ object OpenCodeServerManager {
     private const val PORT = OPENCODE_PORT
 
     private val serverProcess = AtomicReference<Process?>(null)
-    @Volatile
-    private var sseConsumer: OpenCodeSSEConsumer? = null
-    // [Fix #3] 追踪 SSE consumer 所属 project（WeakRef），防止多项目场景下旧 consumer 泄漏
-    private val consumerProjectRef = AtomicReference<java.lang.ref.WeakReference<com.intellij.openapi.project.Project>?>(null)
+    private val consumers = ConcurrentHashMap<Project, OpenCodeSSEConsumer>()
     // 防 stopServer/shutdownServer 重入:用户连续点 Shutdown 按钮时,第二次以后短路返回
     private val shutdownInProgress = AtomicBoolean(false)
 
-    fun ensureSSEConsumer(project: com.intellij.openapi.project.Project): OpenCodeSSEConsumer {
-        // [Fix #3] 检查 + 停止旧 consumer 必须在 synchronized 内,避免 DCL race
-        // [Fix #4] return 也必须在 synchronized 块内,否则 disposeForProject 在块外置 sseConsumer=null 会导致 NPE(TOCTOU race)
-        synchronized(this) {
-            val existingConsumer = sseConsumer
-            val existingProject = consumerProjectRef.get()?.get()
-            if (existingConsumer != null && existingProject != null && existingProject !== project) {
-                thisLogger().warn("[OpenCodeServerManager] SSE consumer belongs to different project (${existingProject.name}), stopping old consumer")
-                existingConsumer.stop()
-                sseConsumer = null
-                consumerProjectRef.set(null)
-            }
-            if (sseConsumer == null) {
-                thisLogger().info("[OpenCodeServerManager] Creating SSE consumer via ensureSSEConsumer, project=${project.name}")
-                sseConsumer = SSEConsumerFactory.create(project).also { it.start() }
-                consumerProjectRef.set(java.lang.ref.WeakReference(project))
-            }
-            return sseConsumer!!
+    fun getOrCreateConsumer(project: Project): OpenCodeSSEConsumer {
+        return consumers.computeIfAbsent(project) { p ->
+            thisLogger().info("[OpenCodeServerManager] Creating SSE consumer for project=${p.name}")
+            SSEConsumerFactory.create(p).also { it.start() }
         }
     }
 
     /**
-     * [Fix #3] 项目关闭时调用：停止该项目的 SSE consumer，断开引用链。
-     * 仅当 consumer 仍属于该 project 时才停止，避免误停其他 project 的 consumer。
-     * 必须在 synchronized 内,否则与 ensureSSEConsumer 竞态会导致 NPE。
+     * 项目关闭时调用：停止并移除该项目的 SSE consumer。
      */
-    fun disposeForProject(project: com.intellij.openapi.project.Project) {
-        synchronized(this) {
-            val existingProject = consumerProjectRef.get()?.get()
-            if (existingProject === project) {
-                thisLogger().info("[OpenCodeServerManager] disposeForProject: stopping SSE consumer for project=${project.name}")
-                sseConsumer?.stop()
-                sseConsumer = null
-                consumerProjectRef.set(null)
-            }
+    fun disposeForProject(project: Project) {
+        consumers.remove(project)?.let { consumer ->
+            thisLogger().info("[OpenCodeServerManager] disposeForProject: stopping SSE consumer for project=${project.name}")
+            consumer.stop()
         }
     }
 
@@ -74,7 +51,7 @@ object OpenCodeServerManager {
     ) {
         if (OpenCodeApi.isServerHealthySync()) {
             thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
-            ensureSSEConsumer(project)
+            getOrCreateConsumer(project)
             onStarted()
             return
         }
@@ -90,7 +67,7 @@ object OpenCodeServerManager {
                     if (healthy) {
                         thisLogger().info("[OpenCodeServerManager] Server started, PID=${process.toHandle().pid()}, port=$PORT")
                         thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
-                        ensureSSEConsumer(project)
+                        getOrCreateConsumer(project)
                         onStarted()
                     } else {
                         // 健康检查超时，清理已启动的进程树（含 MCP 子进程）
@@ -162,7 +139,7 @@ object OpenCodeServerManager {
      * 优雅关闭 server 的统一流程。被 [stopServer] 与 [shutdownServer] 共享。
      *
      * 关闭策略(fire-and-forget dispose + 等 process 退出):
-     * 1. 停 SSE consumer(共享锁,与 ensureSSEConsumer/disposeForProject 一致)
+     * 1. 停所有 SSE consumer
      * 2. 后台线程 POST /global/dispose → server 内部清理 MCP/PTY/SSE/LSP(不阻塞用户)
      * 3. 主线程通过 [acquireHandle] 拿 ProcessHandle,等 onExit(最多 5s)
      * 4. 兜底 SIGTERM(handle.destroy)+ 再等 2s
@@ -181,13 +158,10 @@ object OpenCodeServerManager {
             return
         }
         try {
-            thisLogger().info("[OpenCodeServerManager] Stopping SSE consumer")
-            // 与 ensureSSEConsumer/disposeForProject 共享锁,避免 IDE 退出与项目 Disposer
-            // 并发触发时 sseConsumer 出现 NPE / 重复 stop
+            thisLogger().info("[OpenCodeServerManager] Stopping all SSE consumers")
             synchronized(this) {
-                sseConsumer?.stop()
-                sseConsumer = null
-                consumerProjectRef.set(null)
+                consumers.values.forEach { it.stop() }
+                consumers.clear()
             }
 
             // fire-and-forget:dispose HTTP 异步发,不让用户等 HTTP 响应

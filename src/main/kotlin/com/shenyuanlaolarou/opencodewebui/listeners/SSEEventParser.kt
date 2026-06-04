@@ -4,65 +4,59 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.thisLogger
+import java.io.Reader
 import java.util.Collections
 import java.util.LinkedHashMap
 
+/**
+ * SSE 事件解析结果。
+ *
+ * 新 wire 格式（`/event?directory=...` 端点）直出 `{id, type, properties}`，无外层包装。
+ * - [type] 从 `parsedMap["type"]` 取，即 root 级别的事件类型。
+ * - [parsedMap] 仅白名单事件有值；非白名单事件为 null（早退，无 Gson 调用）。
+ */
 data class ParsedSSEEvent(
     val eventType: String,
-    val directory: String?,
-    val file: String?,
-    val payloadType: String?,
-    val syncEventType: String? = null,
-    val syncEventData: Map<*, *>? = null,
-    val syncEvent: Map<*, *>? = null,
     val parsedMap: Map<*, *>? = null
-)
-
-/**
- * 从 ParsedSSEEvent 提取 sessionID,使用六级 fallback 兼容 opencode server 不同版本的字段位置。
- *
- * 提取优先级(高到低):
- *  1. Direct BusEvent 的 `payload.properties.sessionID` —— 老版本/特定事件类型
- *  2. SyncEvent V2 的顶层 `data.sessionID` —— 大多数 SyncEvent 事件
- *  3. SyncEvent V2 的顶层 `data.id` —— session 创建/删除事件用 id 而非 sessionID
- *  4. SyncEvent V2 嵌套 `data.info.sessionID` —— 部分事件把 sessionID 嵌在 info 里
- *  5. SyncEvent V2 嵌套 `data.info.id` —— 同上,但用 id 字段
- *  6. SyncEvent V2 顶层 `syncEvent.aggregateID` —— 实际 server 常用此字段标记 session 实体
- *
- * 返回 `null` 表示事件不携带 sessionID(可能是全局事件如 server.connected)。
- *
- * 任何修改请同步检查 OpenCodeSSEConsumer 中所有 sessionID 提取点(原本有 4 处重复,现已统一到此处)。
- */
-fun ParsedSSEEvent.extractSessionID(): String? {
-    val payload = parsedMap?.get("payload") as? Map<*, *>
-    val props = payload?.get("properties") as? Map<*, *>
-    val data = syncEventData
-    return props?.get("sessionID") as? String
-        ?: data?.get("sessionID") as? String
-        ?: data?.get("id") as? String
-        ?: (data?.get("info") as? Map<*, *>)?.get("sessionID") as? String
-        ?: (data?.get("info") as? Map<*, *>)?.get("id") as? String
-        ?: syncEvent?.get("aggregateID") as? String
+) {
+    /** 新 wire 格式 root 级别的 type 字段（如 "session.idle"、"file.edited"）。 */
+    val type: String?
+        get() = parsedMap?.get("type") as? String
 }
 
 /**
- * 从 ParsedSSEEvent 提取 parentID(三级 fallback,字段位置比 sessionID 稳定)。
- * 返回 `null` 表示该 session 不是 subagent(顶层 session 没有 parentID)。
+ * 从 ParsedSSEEvent 提取 sessionID，使用三级 fallback 适配新 wire 格式。
+ *
+ * 新 wire 格式：`{id, type, properties: {sessionID?, info?: {sessionID?, id?}}}`
+ *
+ * 提取优先级（高到低）:
+ *  1. `properties.sessionID` —— 直接属性
+ *  2. `properties.info.sessionID` —— 嵌套在 info 内
+ *  3. `properties.info.id` —— 部分事件用 id 而非 sessionID
+ */
+fun ParsedSSEEvent.extractSessionID(): String? {
+    val props = parsedMap?.get("properties") as? Map<*, *>
+    val info = props?.get("info") as? Map<*, *>
+    return props?.get("sessionID") as? String
+        ?: info?.get("sessionID") as? String
+        ?: info?.get("id") as? String
+}
+
+/**
+ * 从 ParsedSSEEvent 提取 parentID（两级 fallback）。
+ * 返回 `null` 表示该 session 不是 subagent（顶层 session 没有 parentID）。
  */
 fun ParsedSSEEvent.extractParentID(): String? {
-    val payload = parsedMap?.get("payload") as? Map<*, *>
-    val props = payload?.get("properties") as? Map<*, *>
-    val data = syncEventData
+    val props = parsedMap?.get("properties") as? Map<*, *>
+    val info = props?.get("info") as? Map<*, *>
     return props?.get("parentID") as? String
-        ?: data?.get("parentID") as? String
-        ?: (data?.get("info") as? Map<*, *>)?.get("parentID") as? String
+        ?: info?.get("parentID") as? String
 }
 
 object SSEEventParser {
     private val gson = Gson()
 
-    // LRU 去重缓存：按 payload.id 去重，最大 1000 条。值用 Boolean 占位（时间戳从未被读取）
-    // 而非 Long：避免每事件 Long 装箱,~200-500 obj/s。
+    // LRU 去重缓存：按 event id 去重，最大 1000 条
     private val dedupCache = Collections.synchronizedMap(
         object : LinkedHashMap<String, Boolean>(1000, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean {
@@ -71,11 +65,20 @@ object SSEEventParser {
         }
     )
 
-    // 静态化避免每事件重新 Pattern.compile（剥离 syncEventType 的版本号后缀,如 .idle.0 → .idle）。
-    private val SYNC_EVENT_TYPE_VERSION_REGEX = Regex("\\.\\d+$")
-
-    // [O7] 高频事件类型集合，这些事件在 onMessage 中会被立即跳过，无需完整 Map 转换
-    private val SKIP_PARSE_EVENT_TYPES = setOf("message.part.delta")
+    /** 9 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */
+    private val ALLOW_PARSE_EVENT_TYPES = setOf(
+        // 4 通知
+        "session.idle",
+        "session.status",
+        "permission.asked",
+        "question.asked",
+        // 5 业务
+        "session.created",
+        "message.part.updated",
+        "file.edited",
+        "file.watcher.updated",
+        "session.diff",
+    )
 
     fun isEventProcessed(eventID: String): Boolean {
         if (eventID.isEmpty()) return false
@@ -86,69 +89,36 @@ object SSEEventParser {
         dedupCache.clear()
     }
 
-    fun parse(eventType: String, message: String): ParsedSSEEvent {
+    /**
+     * 解析 SSE 事件。使用流式 Reader 读取 JSON，白名单外事件不走完整 Gson 反序列化。
+     *
+     * 新 wire 格式（`/event?directory=...`）直出 `{id, type, properties}`，无外层包装。
+     *
+     * @param eventType SSE 事件类型（EventSource 框架传入的 event 字段）
+     * @param reader JSON body 的 Reader（调用方负责 close）
+     */
+    fun parse(eventType: String, reader: Reader): ParsedSSEEvent {
         val logger = thisLogger()
 
         try {
-            // [O7] 先解析为 JsonObject（树模型），提取轻量字段
-            val jsonElement = JsonParser.parseString(message)
+            val jsonElement = JsonParser.parseReader(reader)
             if (jsonElement !is JsonObject) {
-                return ParsedSSEEvent(eventType = eventType, directory = null, file = null, payloadType = null)
+                return ParsedSSEEvent(eventType = eventType, parsedMap = null)
             }
             val root = jsonElement
-            val eventDir = root.get("directory")?.asString
+            val type = root.get("type")?.asString
 
-            val payload = root.getAsJsonObject("payload")
-            val payloadType = payload?.get("type")?.asString
-
-            // [O7] 高频事件快速路径：只提取必要字段，跳过 Map<*, *> 转换
-            if (payloadType in SKIP_PARSE_EVENT_TYPES) {
-                return ParsedSSEEvent(
-                    eventType = eventType,
-                    directory = eventDir,
-                    file = null,
-                    payloadType = payloadType
-                )
+            // 白名单过滤：不在白名单内 → 不完整解析，节省 80% 临时对象
+            if (type == null || type !in ALLOW_PARSE_EVENT_TYPES) {
+                return ParsedSSEEvent(eventType = eventType, parsedMap = null)
             }
 
-            // 非高频事件：转换为 Map<*, *> 供下游使用
+            // 在白名单内：完整 Gson 解析
             val parsedMap: Map<*, *> = gson.fromJson(root, Map::class.java)
-            val payloadMap = parsedMap["payload"] as? Map<*, *>
-
-            var syncEventType: String? = null
-            var syncEventData: Map<*, *>? = null
-            var syncEventMap: Map<*, *>? = null
-
-            if (payloadType == "sync") {
-                val syncEvent = payloadMap?.get("syncEvent") as? Map<*, *>
-                syncEventType = syncEvent?.get("type") as? String
-                syncEventType = syncEventType?.replace(SYNC_EVENT_TYPE_VERSION_REGEX, "")
-                syncEventData = syncEvent?.get("data") as? Map<*, *>
-                syncEventMap = syncEvent
-            }
-
-            val properties = payloadMap?.get("properties") as? Map<*, *>
-            var fileProperty = properties?.get("file") as? String
-            if (fileProperty == null) {
-                fileProperty = properties?.get("filePath") as? String
-            }
-            if (fileProperty != null) {
-                logger.info("[SSEEventParser] *** FILE EVENT *** type=$payloadType, file=$fileProperty, eventDir=$eventDir")
-            }
-
-            return ParsedSSEEvent(
-                eventType = eventType,
-                directory = eventDir,
-                file = fileProperty,
-                payloadType = payloadType,
-                syncEventType = syncEventType,
-                syncEventData = syncEventData,
-                syncEvent = syncEventMap,
-                parsedMap = parsedMap
-            )
+            return ParsedSSEEvent(eventType = eventType, parsedMap = parsedMap)
         } catch (e: Exception) {
             logger.warn("[SSEEventParser] Failed to parse JSON: ${e.message}")
-            return ParsedSSEEvent(eventType = eventType, directory = null, file = null, payloadType = null)
+            return ParsedSSEEvent(eventType = eventType, parsedMap = null)
         }
     }
 }

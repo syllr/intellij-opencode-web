@@ -1,6 +1,5 @@
 package com.shenyuanlaolarou.opencodewebui.toolWindow
 
-import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeNotificationRouter
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.DumbAware

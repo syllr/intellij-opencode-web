@@ -7,20 +7,15 @@ import org.junit.Test
 
 class ExtractSessionIdTest {
 
+    /**
+     * 构造 ParsedSSEEvent 辅助方法（新 wire 格式：root = {id, type, properties}）。
+     * parsedMap 直接是 root 对象，properties 在 parsedMap["properties"] 内。
+     */
     private fun parsedSSEEvent(
-        parsedMap: Map<*, *>? = null,
-        syncEventData: Map<*, *>? = null,
-        syncEventType: String? = null,
-        syncEvent: Map<*, *>? = null
+        parsedMap: Map<*, *>? = null
     ): ParsedSSEEvent {
         return ParsedSSEEvent(
             eventType = "test",
-            directory = null,
-            file = null,
-            payloadType = if (syncEventType != null || syncEventData != null || syncEvent != null) "sync" else null,
-            syncEventType = syncEventType,
-            syncEventData = syncEventData,
-            syncEvent = syncEvent,
             parsedMap = parsedMap
         )
     }
@@ -29,35 +24,21 @@ class ExtractSessionIdTest {
     fun extractSessionID_propsFirst() {
         val event = parsedSSEEvent(
             parsedMap = mapOf(
-                "payload" to mapOf(
-                    "properties" to mapOf("sessionID" to "sess-props")
-                )
+                "type" to "session.idle",
+                "properties" to mapOf("sessionID" to "sess-props")
             )
         )
         assertEquals("sess-props", event.extractSessionID())
     }
 
     @Test
-    fun extractSessionID_dataSessionID() {
-        val event = parsedSSEEvent(
-            syncEventData = mapOf("sessionID" to "sess-data")
-        )
-        assertEquals("sess-data", event.extractSessionID())
-    }
-
-    @Test
-    fun extractSessionID_dataId() {
-        val event = parsedSSEEvent(
-            syncEventData = mapOf("id" to "sess-id")
-        )
-        assertEquals("sess-id", event.extractSessionID())
-    }
-
-    @Test
     fun extractSessionID_infoSessionID() {
         val event = parsedSSEEvent(
-            syncEventData = mapOf(
-                "info" to mapOf("sessionID" to "sess-info-sid")
+            parsedMap = mapOf(
+                "type" to "session.idle",
+                "properties" to mapOf(
+                    "info" to mapOf("sessionID" to "sess-info-sid")
+                )
             )
         )
         assertEquals("sess-info-sid", event.extractSessionID())
@@ -66,8 +47,11 @@ class ExtractSessionIdTest {
     @Test
     fun extractSessionID_infoId() {
         val event = parsedSSEEvent(
-            syncEventData = mapOf(
-                "info" to mapOf("id" to "sess-info-id")
+            parsedMap = mapOf(
+                "type" to "session.idle",
+                "properties" to mapOf(
+                    "info" to mapOf("id" to "sess-info-id")
+                )
             )
         )
         assertEquals("sess-info-id", event.extractSessionID())
@@ -83,16 +67,13 @@ class ExtractSessionIdTest {
     fun extractSessionID_priorityOrder() {
         val event = parsedSSEEvent(
             parsedMap = mapOf(
-                "payload" to mapOf(
-                    "properties" to mapOf("sessionID" to "props-wins")
-                )
-            ),
-            syncEventData = mapOf(
-                "sessionID" to "data-loses",
-                "id" to "id-loses",
-                "info" to mapOf(
-                    "sessionID" to "info-sid-loses",
-                    "id" to "info-id-loses"
+                "type" to "session.idle",
+                "properties" to mapOf(
+                    "sessionID" to "props-wins",
+                    "info" to mapOf(
+                        "sessionID" to "info-sid-loses",
+                        "id" to "info-id-loses"
+                    )
                 )
             )
         )
@@ -100,77 +81,79 @@ class ExtractSessionIdTest {
     }
 
     @Test
-    fun extractParentID_threeLevelFallback() {
+    fun extractParentID_twoLevelFallback() {
         val event1 = parsedSSEEvent(
             parsedMap = mapOf(
-                "payload" to mapOf(
-                    "properties" to mapOf("parentID" to "parent-props")
-                )
+                "type" to "session.created",
+                "properties" to mapOf("parentID" to "parent-props")
             )
         )
         assertEquals("parent-props", event1.extractParentID())
 
         val event2 = parsedSSEEvent(
-            syncEventData = mapOf("parentID" to "parent-data")
-        )
-        assertEquals("parent-data", event2.extractParentID())
-
-        val event3 = parsedSSEEvent(
-            syncEventData = mapOf(
-                "info" to mapOf("parentID" to "parent-info")
+            parsedMap = mapOf(
+                "type" to "session.created",
+                "properties" to mapOf(
+                    "info" to mapOf("parentID" to "parent-info")
+                )
             )
         )
-        assertEquals("parent-info", event3.extractParentID())
+        assertEquals("parent-info", event2.extractParentID())
     }
 
     @Test
     fun extractParentID_nullForTopSession() {
         val event = parsedSSEEvent(
-            syncEventData = mapOf("id" to "sess-top")
+            parsedMap = mapOf(
+                "type" to "session.created",
+                "properties" to mapOf("id" to "sess-top")
+            )
         )
         assertNull(event.extractParentID())
     }
 
     @Test
-    fun parseSyncEvent_stripsVersionSuffix() {
-        val event = SSEEventParser.parse(
-            "message",
-            """{"directory":"/p","payload":{"type":"sync","syncEvent":{"type":"session.idle.0","data":{"id":"sess1"}}}}"""
-        )
-        assertEquals("session.idle", event.syncEventType)
-        assertNotNull(event.syncEventData)
-        assertEquals("sess1", event.syncEventData!!["id"])
-    }
-
-    @Test
-    fun extractSessionID_aggregateID() {
+    fun type_fromParsedMap() {
         val event = parsedSSEEvent(
-            syncEvent = mapOf("aggregateID" to "ses-aggregate"),
-            syncEventData = mapOf("info" to mapOf("parentID" to "ses-parent"))
+            parsedMap = mapOf("type" to "session.idle", "id" to "evt-1")
         )
-        assertEquals("ses-aggregate", event.extractSessionID())
+        assertEquals("session.idle", event.type)
     }
 
     @Test
-    fun extractSessionID_aggregateID_lowestPriority() {
-        val event = parsedSSEEvent(
-            parsedMap = mapOf("payload" to mapOf("properties" to mapOf("sessionID" to "ses-props"))),
-            syncEvent = mapOf("aggregateID" to "ses-aggregate-lowest"),
-            syncEventData = mapOf("sessionID" to "ses-data-second")
-        )
-        assertEquals("ses-props", event.extractSessionID())
+    fun type_nullWhenNoParsedMap() {
+        val event = parsedSSEEvent()
+        assertNull(event.type)
     }
 
     @Test
-    fun parseSessionCreated_preservesAggregateID() {
-        val event = SSEEventParser.parse(
-            "message",
-            """{"directory":"/p","payload":{"type":"sync","syncEvent":{"type":"session.created.1","aggregateID":"ses-subagent-123","data":{"info":{"parentID":"ses-parent-456"}}}}}"""
-        )
-        assertEquals("session.created", event.syncEventType)
+    fun parse_whitelistedEvent_returnsParsedMap() {
+        val json = """{"id":"evt-1","type":"session.idle","properties":{"sessionID":"sess-1"}}"""
+        val event = SSEEventParser.parse("message", json.reader())
+        assertNotNull(event.parsedMap)
+        assertEquals("session.idle", event.type)
+        assertEquals("sess-1", event.extractSessionID())
+    }
+
+    @Test
+    fun parse_nonWhitelistedEvent_returnsNullParsedMap() {
+        val json = """{"id":"evt-2","type":"message.part.delta","properties":{}}"""
+        val event = SSEEventParser.parse("message", json.reader())
+        assertNull(event.parsedMap)
+        assertNull(event.type)
+    }
+
+    @Test
+    fun parse_sessionCreated_extractsParentID() {
+        val json = """{"id":"evt-3","type":"session.created","properties":{"sessionID":"ses-subagent-123","parentID":"ses-parent-456"}}"""
+        val event = SSEEventParser.parse("message", json.reader())
         assertEquals("ses-subagent-123", event.extractSessionID())
         assertEquals("ses-parent-456", event.extractParentID())
-        assertNotNull(event.syncEvent)
-        assertEquals("ses-subagent-123", event.syncEvent!!["aggregateID"])
+    }
+
+    @Test
+    fun parse_invalidJson_returnsNullParsedMap() {
+        val event = SSEEventParser.parse("message", "not-json".reader())
+        assertNull(event.parsedMap)
     }
 }

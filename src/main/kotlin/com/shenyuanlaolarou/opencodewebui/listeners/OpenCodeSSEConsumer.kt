@@ -16,12 +16,13 @@ import com.launchdarkly.eventsource.MessageEvent
 import com.launchdarkly.eventsource.background.BackgroundEventHandler
 import com.launchdarkly.eventsource.background.BackgroundEventSource
 import java.net.URI
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class OpenCodeSSEConsumer(
-    project: Project
+    private val project: Project
 ) : BackgroundEventHandler {
     private val projectBasePath: String? = project.basePath
 
@@ -47,14 +48,12 @@ class OpenCodeSSEConsumer(
         )
 
         // 故意放在 companion object(违反 AGENTS.md "禁止静态全局可变状态" 的 HARD RULE):
-        // OpenCodeServerManager 保证同一时间只有一个 SSE consumer,放在实例字段会被
-        // stop()/onClosed() 清空,导致通知风暴。多项目并发前不要改成实例字段。
+        // subagent 追踪需跨 project 共享同一 set —— 放在实例字段会导致
+        // subagent sessionID 在 stop()/onClosed() 后丢失,后续 idle 事件被误判为父 session。
+        // 多项目架构下需保持 LRU set 跨 consumer 实例共享。
 
         // 有 parentID 的 session —— handleSessionIdle 据此区分子 agent/父 session。
         private val subagentSessionIds: MutableSet<String> = newLruSet()
-        // 已发过 complete 通知的父 session —— 抑制 agent 循环中的重复 idle 通知。
-        // 重置信号是 message.updated(role=user),由用户发新消息触发。
-        private val sessionIdleFired: MutableSet<String> = newLruSet()
     }
 
     fun start() {
@@ -73,18 +72,17 @@ class OpenCodeSSEConsumer(
         // onClosed() 只在 SSE 连接关闭时调用，stop() 主动关闭时也需要清理
         SSEEventParser.clearCache()
         subagentSessionIds.clear()
-        sessionIdleFired.clear()
-        idleLastFired.clear()
         logger.info("[OpenCodeSSEConsumer] SSE consumer stopped, static collections cleared")
     }
 
     private fun startSseConnection() {
-        val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/global/event")
+        val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/event?directory=" + URLEncoder.encode(projectBasePath ?: "", "UTF-8"))
         val connectStrategy = ConnectStrategy.http(uri)
             .connectTimeout(SSE_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
         val esBuilder = EventSource.Builder(connectStrategy)
             .errorStrategy(ErrorStrategy.alwaysContinue())
+            .streamEventData(true)
         val bgEventSource = BackgroundEventSource.Builder(this, esBuilder).build()
         val gen = connectionGen.incrementAndGet()
         activeConnectionGen = gen
@@ -128,33 +126,25 @@ class OpenCodeSSEConsumer(
 
     override fun onMessage(event: String, messageEvent: MessageEvent) {
         lastEventAt.set(System.currentTimeMillis())
-        val message = messageEvent.data
-        val parsed = SSEEventParser.parse(event, message)
-        val parsedMap = parsed.parsedMap
-        val payloadType = parsed.payloadType
-        val eventDir = parsed.directory
-        val fileProperty = parsed.file
-        val projectDir = projectBasePath
-
-        if (payloadType == "message.part.delta") {
-            if (fileProperty != null && logger.isDebugEnabled) {
-                logger.debug("[OpenCodeSSEConsumer] *** FILE CHANGE DETECTED *** payloadType=$payloadType, file=$fileProperty")
-            }
-            return
+        val parsed = messageEvent.getDataReader().use { reader ->
+            SSEEventParser.parse(event, reader)
         }
+        val parsedMap = parsed.parsedMap
+
+        // 非白名单事件：parser 已早退（parsedMap == null），直接丢弃
+        if (parsedMap == null) return
+
+        val type = parsed.type ?: return
 
         if (logger.isDebugEnabled) {
-            logger.debug("[OpenCodeSSEConsumer] Event: type='$payloadType', syncEventType='${parsed.syncEventType}', eventDir=$eventDir, projectDir=$projectDir, file=$fileProperty")
+            logger.debug("[OpenCodeSSEConsumer] Event: type='$type'")
         }
 
-        // 事件去重：按 payload.id 去重
-        val payloadId = (parsedMap?.get("payload") as? Map<*, *>)?.get("id") as? String
-        if (payloadId != null && SSEEventParser.isEventProcessed(payloadId)) return
+        // 事件去重：按 root-level id 去重
+        val eventId = parsedMap["id"] as? String
+        if (eventId != null && SSEEventParser.isEventProcessed(eventId)) return
 
-        // 使用 syncEventType 优先（SyncEvent V2），没有则用 payloadType（Direct BusEvent）
-        val eventType = parsed.syncEventType ?: payloadType ?: return
-
-        if (eventType == "session.created") {
+        if (type == "session.created") {
             val sid = parsed.extractSessionID()
             val parentID = parsed.extractParentID()
             if (sid != null && parentID != null) {
@@ -162,141 +152,48 @@ class OpenCodeSSEConsumer(
                 if (logger.isDebugEnabled) {
                     logger.debug("[OpenCodeSSEConsumer] Subagent session tracked: $sid (parent=$parentID)")
                 }
-            } else if (sid != null && parentID == null) {
-                dispatchNotification("session_started", parsedMap, eventDir)
-            }
-        }
-        if (eventType == "session.deleted") {
-            val sid = parsed.extractSessionID()
-            if (sid != null) {
-                // 不移除 subagentSessionIds：防止 session.deleted 先于 session.status(idle) 到达时
-                // 子 agent 的 idle 事件被误判为 complete。集合仅在 SSE 重连时通过 onClosed() 清空。
-                if (logger.isDebugEnabled) {
-                    logger.debug("[OpenCodeSSEConsumer] Subagent session removed (tracking preserved for idle detection): $sid")
-                }
             }
         }
 
         // 通知事件分发（在文件事件过滤之前，确保通知事件不被丢）
-        when (eventType) {
-            "server.connected" -> dispatchNotification("client_connected", parsedMap, eventDir)
-            "permission.asked" -> dispatchNotification("permission", parsedMap, eventDir)
-            "session.error" -> {
-                val payload = parsedMap?.get("payload") as? Map<*, *>
-                val props = payload?.get("properties") as? Map<*, *>
-                val err = props?.get("error") as? Map<*, *>
-                val errorName = err?.get("name") as? String
-                val notifType = if (errorName == "MessageAbortedError") "user_cancelled" else "error"
-                dispatchNotification(notifType, parsedMap, eventDir)
-            }
+        when (type) {
+            "permission.asked" -> dispatchNotification("permission", parsedMap, project)
             "session.status" -> {
-                val payload = parsedMap?.get("payload") as? Map<*, *>
-                val props = payload?.get("properties") as? Map<*, *>
+                val props = parsedMap["properties"] as? Map<*, *>
                 val statusObj = props?.get("status") as? Map<*, *>
                 if (statusObj?.get("type") == "idle") {
-                    handleSessionIdle(parsed, eventDir)
+                    handleSessionIdle(parsed, project)
                 }
             }
-            "session.idle" -> handleSessionIdle(parsed, eventDir)
-            "session.next.tool.called" -> {
-                val payload = parsedMap?.get("payload") as? Map<*, *>
-                val properties = payload?.get("properties") as? Map<*, *>
-                val data = parsed.syncEventData
-                val tool = properties?.get("tool") as? String
-                    ?: data?.get("tool") as? String
-                if (tool == "question") dispatchNotification("question", parsedMap, eventDir)
-                else if (tool == "plan_exit") dispatchNotification("plan_exit", parsedMap, eventDir)
-            }
-            "question.asked" -> dispatchNotification("question", parsedMap, eventDir)
-            "message.updated" -> {
-                val payload = parsedMap?.get("payload") as? Map<*, *>
-                val props = payload?.get("properties") as? Map<*, *>
-                val data = parsed.syncEventData
-                val info = props?.get("info") as? Map<*, *>
-                    ?: (data?.get("info") as? Map<*, *>)
-                if (info?.get("role") == "user") {
-                    val sessionID = parsed.extractSessionID()
-                    if (sessionID != null) {
-                        sessionIdleFired.remove(sessionID)
-                    }
-                    dispatchNotification("user_message", parsedMap, eventDir)
-                }
-            }
+            "session.idle" -> handleSessionIdle(parsed, project)
+            "question.asked" -> dispatchNotification("question", parsedMap, project)
         }
 
-        // 文件事件处理（已有逻辑）
-        val isSessionDiff = parsed.eventType == "session.diff" || parsed.payloadType == "session.diff"
-        val isFileEdited = parsed.payloadType == "file.edited"
-        val isFileWatcherUpdated = parsed.payloadType == "file.watcher.updated"
+        // 文件事件处理
+        if (type == "message.part.updated") { BashCommandHandler.handleBashEvent(parsedMap, project.basePath); return }
+        if (type != "session.diff" && type != "file.edited" && type != "file.watcher.updated") return
+        if (project.basePath == null) { logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh"); return }
 
-        if (payloadType == "message.part.updated") { BashCommandHandler.handleBashEvent(parsedMap, projectDir); return }
-        if (!isSessionDiff && !isFileEdited && !isFileWatcherUpdated) return
-        if (projectDir == null) { logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh"); return }
-
-        if (eventDir != null) {
-            val matches = try {
-                val eventPath = java.nio.file.Paths.get(eventDir).toRealPath()
-                val projectPath = java.nio.file.Paths.get(projectDir).toRealPath()
-                // ignoreCase:macOS HFS+/APFS、Windows NTFS 默认 case-insensitive 但 case-preserving,
-                // 同一目录可能有 "/Users/.../foo" 和 "/users/.../Foo" 两种写法。
-                eventPath.toString().equals(projectPath.toString(), ignoreCase = true)
-            } catch (e: Exception) {
-                logger.warn("[OpenCodeSSEConsumer] Path toRealPath failed: ${e.message}, falling back to string compare")
-                eventDir == projectDir
-            }
-            if (!matches) {
-                if (logger.isDebugEnabled) {
-                    logger.debug("[OpenCodeSSEConsumer] Directory MISMATCH: event='$eventDir' vs project='$projectDir'")
-                }
-                return
-            }
-        }
-
-        if (isSessionDiff) {
+        if (type == "session.diff") {
             try { FullRefreshCoordinator.request() }
             catch (e: Exception) { logger.error("[OpenCodeSSEConsumer] Failed to handle session.diff: ${e.message}", e) }
             return
         }
-        if (isFileEdited) { FullRefreshCoordinator.request(); return }
-        if (isFileWatcherUpdated) { FullRefreshCoordinator.request(); return }
+        FullRefreshCoordinator.request()
     }
 
-    private fun dispatchNotification(eventType: String, parsedMap: Map<*, *>?, eventDir: String?) {
-        OpenCodeNotificationRouter.notify(eventType, parsedMap, eventDir)
+    private fun dispatchNotification(eventType: String, parsedMap: Map<*, *>?, project: Project) {
+        OpenCodeNotificationRouter.notify(eventType, parsedMap, project)
     }
 
-    // session idle 去重：同一 session 在时间窗口内只发一次 complete 通知
-    // 防止 session.status(idle) 和 session.idle 两个事件重复触发
-    // [Fix #7] 使用有界 LRU Map 防止无界增长
-    private val idleLastFired = java.util.Collections.synchronizedMap(
-        object : java.util.LinkedHashMap<String, Long>(500, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > 500
-        }
-    )
-    private val idleDedupWindowMs = 2000L
-
-    private fun handleSessionIdle(parsed: ParsedSSEEvent, eventDir: String?) {
+    private fun handleSessionIdle(parsed: ParsedSSEEvent, project: Project) {
         val parsedMap = parsed.parsedMap
         val sessionID = parsed.extractSessionID() ?: return
 
-        // 三层去重:子 agent → 父 session 抑制 → 2s 时间窗口,详见 AGENTS.md "通知降噪设计决策"。
         if (sessionID in subagentSessionIds) {
-            dispatchNotification("subagent_complete", parsedMap, eventDir)
-            return
+            return  // subagent 完全静默
         }
-        if (sessionID in sessionIdleFired) {
-            return
-        }
-
-        val key = "$sessionID:complete"
-        val now = System.currentTimeMillis()
-        val last = idleLastFired.put(key, now)
-        if (last != null && now - last < idleDedupWindowMs) {
-            return
-        }
-
-        dispatchNotification("complete", parsedMap, eventDir)
-        sessionIdleFired.add(sessionID)
+        dispatchNotification("complete", parsedMap, project)
     }
 
     override fun onClosed() {
@@ -308,13 +205,10 @@ class OpenCodeSSEConsumer(
         }
         logger.info("[OpenCodeSSEConsumer] SSE connection closed (gen=$currentGen)")
         SSEEventParser.clearCache()
-        val idleSize = sessionIdleFired.size
         val subagentSize = subagentSessionIds.size
         subagentSessionIds.clear()
-        idleLastFired.clear()
-        sessionIdleFired.clear()
         if (logger.isDebugEnabled) {
-            logger.debug("[OpenCodeSSEConsumer] Cleared sessionIdleFired ($idleSize entries), subagentSessionIds ($subagentSize entries)")
+            logger.debug("[OpenCodeSSEConsumer] Cleared subagentSessionIds ($subagentSize entries)")
         }
     }
 

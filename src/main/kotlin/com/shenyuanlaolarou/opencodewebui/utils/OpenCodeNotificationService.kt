@@ -9,12 +9,22 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.ui.SystemNotifications
+import java.util.Collections
+import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 object OpenCodeNotificationService {
 
     private const val NOTIFICATION_GROUP = "OpenCodeWeb.notifications"
+    private const val NOTIFICATION_DEDUP_WINDOW_MS = 1000L
     private val logger = thisLogger()
+
+    /** Session 维度 1s 防抖 LRU：Key = (sessionID, eventType)，1s 内同 session + 同事件类型抑制 */
+    private val lastNotificationFired = Collections.synchronizedMap(
+        object : LinkedHashMap<Pair<String, String>, Long>(1000, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, String>, Long>) = size > 1000
+        }
+    )
 
     /**
      * SessionInfo LRU 缓存(30s TTL),消除通知路径上的同步 HTTP 调用。
@@ -46,13 +56,23 @@ object OpenCodeNotificationService {
 
     fun send(eventType: String, properties: Map<*, *>?, project: Project) {
         if (!OpenCodeConfig.notificationEnabled) return
-        if (!OpenCodeConfig.isEventEnabled(eventType)) return
+
+        // 1s Session 维度防抖：1s 内同 session + 同事件类型抑制
+        val dedupSessionID = extractSessionID(properties)
+        if (dedupSessionID != null) {
+            val key = dedupSessionID to eventType
+            val now = System.currentTimeMillis()
+            val last = lastNotificationFired.put(key, now)
+            if (last != null && now - last < NOTIFICATION_DEDUP_WINDOW_MS) {
+                return  // 1s 内同 session 同事件抑制
+            }
+        }
 
         val tw = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
         if (tw?.isVisible == true && tw.isActive) return
 
         // minDuration 过滤
-        if ((eventType == "complete" || eventType == "subagent_complete") && OpenCodeConfig.minDuration > 0) {
+        if (eventType == "complete" && OpenCodeConfig.minDuration > 0) {
             val sessionID = extractSessionID(properties)
             if (sessionID != null) {
                 val info = SessionInfoCache.getOrFetch(sessionID)
@@ -94,7 +114,7 @@ object OpenCodeNotificationService {
 
     private fun addClickAction(notification: Notification, eventType: String, project: Project) {
         when (eventType) {
-            "permission", "question", "error" -> {
+            "permission", "question" -> {
                 notification.addAction(NotificationAction.createSimpleExpiring("打开") {
                     ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")?.activate(null)
                 })
@@ -104,13 +124,17 @@ object OpenCodeNotificationService {
     }
 
     private fun resolveType(eventType: String): NotificationType = when (eventType) {
-        "error", "user_cancelled" -> NotificationType.ERROR
         "permission", "question" -> NotificationType.WARNING
         else -> NotificationType.INFORMATION
     }
 
     private fun formatMessage(eventType: String, properties: Map<*, *>?, project: Project): String {
-        val template = OpenCodeConfig.getMessageTemplate(eventType)
+        val template = when (eventType) {
+            "permission" -> "权限申请: {sessionTitle}"
+            "complete" -> "回答完成: {sessionTitle}"
+            "question" -> "询问用户: {sessionTitle}"
+            else -> eventType
+        }
         var result = template
 
         if (result.contains("{sessionTitle}")) {
@@ -133,8 +157,7 @@ object OpenCodeNotificationService {
     }
 
     private fun extractSessionID(properties: Map<*, *>?): String? {
-        val payload = properties?.get("payload") as? Map<*, *>
-        val props = payload?.get("properties") as? Map<*, *>
+        val props = properties?.get("properties") as? Map<*, *>
         return props?.get("sessionID") as? String
     }
 
