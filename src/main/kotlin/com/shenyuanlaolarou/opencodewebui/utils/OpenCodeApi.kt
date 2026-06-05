@@ -8,7 +8,6 @@ import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.thisLogger
 import java.net.URI
-import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -29,6 +28,22 @@ object OpenCodeApi {
     }
 
     private fun healthCheckUrl(): String = "http://$OPENCODE_HOST:$OPENCODE_PORT/global/health"
+
+    /**
+     * 纯 TCP 端口探测(200ms 超时),用于初始化时序:
+     * 工具窗口打开时先快速判断 server 是否在监听,避免无意义创建 SSE consumer
+     * 触发连接风暴。HTTP 探测在 isServerHealthySync() 里,代价 8s 太重。
+     */
+    fun isServerPortOpen(timeoutMs: Int = 200): Boolean {
+        return try {
+            java.net.Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress(OPENCODE_HOST, OPENCODE_PORT), timeoutMs)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     // 保留 Boolean 返回:health check 是 yes/no 二元判断,调用方只关心健康状态。
     // HTTP 检查失败仍降级为 true 的"反模式"(P0-1)按用户决策保留。
@@ -83,34 +98,6 @@ object OpenCodeApi {
                 parentID = obj.get("parentID")?.asString,
                 timeCreated = time?.get("created")?.asLong,
             )
-        }
-    }
-
-    // Success(null) 表示"列表为空(没找到 session)",Failure/Unavailable/Unauthorized 表示真错误。
-    fun getLatestSessionId(directory: String): OpenCodeApiResult<String?> {
-        val encodedDir = URLEncoder.encode(directory, "UTF-8")
-        val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/session?directory=$encodedDir"
-        return httpGet(url) { body ->
-            val array = JsonParser.parseString(body).asJsonArray
-            var firstEmptyId: String? = null
-            for (i in 0 until array.size()) {
-                val session = array[i].asJsonObject
-                val time = session.getAsJsonObject("time") ?: continue
-                if (time.has("archived")) continue
-                val created = time.get("created")?.asLong
-                val updated = time.get("updated")?.asLong
-                if (created != null && created == updated) {
-                    if (firstEmptyId == null) firstEmptyId = session.get("id")?.asString
-                    continue
-                }
-                session.get("id")?.asString?.let { return@httpGet it }
-            }
-            if (firstEmptyId != null) {
-                thisLogger().info("[OpenCodeApi] No active session with content for $directory, returning empty session: $firstEmptyId")
-            } else {
-                thisLogger().info("[OpenCodeApi] No active session for $directory")
-            }
-            firstEmptyId
         }
     }
 

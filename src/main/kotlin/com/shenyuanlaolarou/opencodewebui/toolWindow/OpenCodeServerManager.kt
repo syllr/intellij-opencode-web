@@ -27,9 +27,12 @@ object OpenCodeServerManager {
     // 防 stopServer/shutdownServer 重入:用户连续点 Shutdown 按钮时,第二次以后短路返回
     private val shutdownInProgress = AtomicBoolean(false)
 
-    fun getOrCreateConsumer(project: Project): OpenCodeSSEConsumer {
+    fun getOrCreateConsumer(
+        project: Project,
+        onConnectionLost: () -> Unit = {}
+    ): OpenCodeSSEConsumer {
         return consumers.computeIfAbsent(project) { p ->
-            SSEConsumerFactory.create(p).also { it.start() }
+            SSEConsumerFactory.create(p, onConnectionLost).also { it.start() }
         }
     }
 
@@ -47,8 +50,21 @@ object OpenCodeServerManager {
         onStarted: () -> Unit,
         onFailed: (Exception) -> Unit
     ) {
-        if (OpenCodeApi.isServerHealthySync()) {
-            thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server already healthy), project=${project.name}")
+        // [Fix EDT freeze + 启动时序 P5] 不再调 isServerHealthySync() (8s 同步 HTTP)。
+        // 检查顺序:
+        // 1. 本 IDE 实例之前启动的进程仍存活 → 复用,直接创建 consumer
+        // 2. 端口已被监听(外部 server 或其他 IDE 启动) → 200ms TCP 探测,跳过进程启动
+        // 3. 否则 → 后台启动新进程
+        val existing = serverProcess.get()
+        if (existing != null && existing.isAlive) {
+            thisLogger().info("[OpenCodeServerManager] Reusing existing server process, project=${project.name}")
+            getOrCreateConsumer(project)
+            onStarted()
+            return
+        }
+
+        if (OpenCodeApi.isServerPortOpen()) {
+            thisLogger().info("[OpenCodeServerManager] Server already listening on port (external), skipping process start, project=${project.name}")
             getOrCreateConsumer(project)
             onStarted()
             return

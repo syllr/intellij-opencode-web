@@ -48,6 +48,11 @@ object FullRefreshCoordinator {
         pendingTask?.cancel(false)
         pendingTask = null
         scheduler?.shutdownNow()
+        // [Fix #2 线程泄漏] 等线程池完全终止再置 null + 放手。
+        // 不 await 的话,工具窗口快速开关时,旧线程池的 worker 线程可能还在跑,
+        // 新线程池就已创建,短期累积多个被 shutdown 但未完全终止的线程池。
+        // 1s 超时是防御性的——单线程池 shutdownNow 后通常毫秒级就终止。
+        scheduler?.awaitTermination(1, TimeUnit.SECONDS)
         scheduler = null
         projectRoot = null
         refreshInProgress.set(false)

@@ -24,7 +24,13 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class OpenCodeSSEConsumer(
-    private val project: Project
+    private val project: Project,
+    /**
+     * SSE 连接被服务端关闭时的回调(快速通道,绕过 HealthMonitor 15s debounce)。
+     * 通常是 server 主动 shutdown 的信号:showServerNotRunning() 应立即被调,
+     * 用户不应等待 HealthMonitor 检测出 unhealthy 才看到 Start 按钮。
+     */
+    private val onConnectionLost: () -> Unit = {}
 ) : BackgroundEventHandler {
     private val projectBasePath: String? = project.basePath
 
@@ -34,9 +40,27 @@ class OpenCodeSSEConsumer(
     private val logger = thisLogger()
 
     // 任何 SSE 事件到达(onMessage)或连接刚建(onOpen)时刷新,watchdog 超时则强制重连。
-    private val lastEventAt = AtomicLong(System.currentTimeMillis())
+    private val lastEventAt = AtomicLong(0L)
+    // 最近一次收到 server.heartbeat 的时间戳。HealthMonitor 用作健康信号,
+    // 避免 EDT 上跑 HTTP 探活。0 表示从未收到过心跳。
+    private val lastHeartbeatAt = AtomicLong(0L)
+    // SSE 连接已通过 onOpen 确认建立。仅 true 时 isHealthy() 才返回 true,
+    // 防止 startSseConnection 后 bgEventSource.start() 异步未完成时假阳性。
+    @Volatile
+    private var connected = false
     @Volatile
     private var watchdogThread: Thread? = null
+
+    /**
+     * SSE 连接健康度:连接已确认建立(connected=true) 或 最近收到过 heartbeat,
+     * 且 lastEventAt/heartbeat 在 N 秒内更新过。替代 HTTP 探活,避免 EDT 阻塞。
+     */
+    fun isHealthy(maxIdleMs: Long = SSE_IDLE_TIMEOUT_MS): Boolean {
+        if (!connected && lastHeartbeatAt.get() == 0L) return false
+        val lastEvent = maxOf(lastEventAt.get(), lastHeartbeatAt.get())
+        if (lastEvent == 0L) return false
+        return System.currentTimeMillis() - lastEvent <= maxIdleMs
+    }
 
     private companion object {
         private const val MAX_TRACKED_SESSIONS = 1000
@@ -69,6 +93,7 @@ class OpenCodeSSEConsumer(
     }
 
     fun stop() {
+        connected = false
         watchdogThread?.interrupt()
         watchdogThread = null
         FullRefreshCoordinator.stop()
@@ -99,7 +124,8 @@ class OpenCodeSSEConsumer(
         activeConnectionGen = gen
         eventSourceRef.set(bgEventSource)
         bgEventSource.start()
-        lastEventAt.set(System.currentTimeMillis())
+        // 不再预设 lastEventAt —— bgEventSource.start() 异步,onOpen() 回调确认连接建立后才置 lastEventAt + connected=true。
+        // 否则 checkAndLoadContent 立即调 isHealthy() 会假阳性返回 true,绕过 Start 按钮流程。
         logger.info("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, normalizedPath=$normalizedPath, uri=$uri")
     }
 
@@ -131,6 +157,7 @@ class OpenCodeSSEConsumer(
     }
 
     override fun onOpen() {
+        connected = true
         lastEventAt.set(System.currentTimeMillis())
         logger.info("[OpenCodeSSEConsumer] SSE connection opened")
     }
@@ -145,6 +172,12 @@ class OpenCodeSSEConsumer(
         if (parsedMap == null) return
 
         val type = parsed.type ?: return
+
+        // server.heartbeat: HealthMonitor 健康信号,无业务逻辑,直接 return
+        if (type == "server.heartbeat") {
+            lastHeartbeatAt.set(System.currentTimeMillis())
+            return
+        }
 
         if (logger.isDebugEnabled) {
             logger.debug("[OpenCodeSSEConsumer] Event: type='$type'")
@@ -211,6 +244,7 @@ class OpenCodeSSEConsumer(
     }
 
     override fun onClosed() {
+        connected = false
         val currentGen = activeConnectionGen
         val latestGen = connectionGen.get()
         if (currentGen != latestGen) {
@@ -233,7 +267,20 @@ class OpenCodeSSEConsumer(
     }
 
     override fun onError(error: Throwable) {
-        logger.error("[OpenCodeSSEConsumer] SSE error: ${error.message}", error)
+        val wasConnected = connected
+        connected = false
+        // [Fix 启动时序 + 日志降噪] 快速通道判断用"之前是否连上过"状态,而不是异常类型:
+        // - wasConnected=true + 任何 error(EOFException / StreamClosedByServerException / ConnectException 等)
+        //   → server 之前在跑,现在挂了 → 立即调 onConnectionLost 跳过 15s debounce
+        // - wasConnected=false + error → 从未连上(server 未启动/初次连接),不调 onConnectionLost
+        //   让 HealthMonitor 正常处理(15s debounce),避免误报
+        // 这样无论是 web UI 干净关闭(StreamClosedByServerException)还是 kill -9(EOFException)都能覆盖。
+        if (wasConnected) {
+            logger.info("SSE connection lost (was connected): ${error.javaClass.simpleName}: ${error.message}")
+            onConnectionLost()
+        } else {
+            logger.warn("SSE error (never connected): ${error.javaClass.simpleName}: ${error.message}")
+        }
     }
 
 }

@@ -2,11 +2,16 @@ package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.shenyuanlaolarou.opencodewebui.HEALTH_CHECK_INTERVAL_MS
 import com.shenyuanlaolarou.opencodewebui.HEALTH_CHECK_START_DELAY_MS
-import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
+import com.shenyuanlaolarou.opencodewebui.listeners.OpenCodeSSEConsumer
 import com.intellij.openapi.application.ApplicationManager
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * 健康监控:用 SSE server.heartbeat 替代 HTTP 探活,避免 EDT 阻塞。
+ * 任何 SSE 事件(含 heartbeat)都证明 server 存活。
+ */
 class HealthMonitor(
+    private val consumer: OpenCodeSSEConsumer,
     private val onUnhealthy: () -> Unit,
     private val onRecovered: () -> Unit
 ) {
@@ -45,20 +50,23 @@ class HealthMonitor(
                     Thread.currentThread().interrupt()
                     return@Thread
                 }
-                val healthy = OpenCodeApi.isServerHealthySync()
+                val healthy = consumer.isHealthy()
                 if (healthy) {
                     healthyStreak.incrementAndGet()
                     unhealthyStreak.set(0)
-                    if (lastHealthState == null) {
-                        // 首次检测不回调,等 debounce 后再触发(避免启动期 false 导致 UI 闪红)
-                        lastHealthState = true
-                    } else if (lastHealthState != true && healthyStreak.get() >= DEBOUNCE_THRESHOLD) {
+                    if (lastHealthState != true) {
+                        // false → true 跳过 debounce 立即恢复:
+                        // 首次 healthy 检测 = heartbeat/connected 已建立,是真实状态转变;
+                        // 不应延迟 15s+ 否则用户卡在 Start 按钮。
+                        // (true → false 仍需 debounce,防 SSE 抖动误报 server down)
                         lastHealthState = true
                         ApplicationManager.getApplication().invokeLater { onRecovered() }
                     }
                 } else {
                     unhealthyStreak.incrementAndGet()
                     healthyStreak.set(0)
+                    // lastHealthState 在 checkAndLoadContent 已显式赋值,不会为 null。
+                    // 保留 null 守卫仅为防御性,首次 null 时静默设 false 不触发回调。
                     if (lastHealthState == null) {
                         lastHealthState = false
                     } else if (lastHealthState != false && unhealthyStreak.get() >= DEBOUNCE_THRESHOLD) {

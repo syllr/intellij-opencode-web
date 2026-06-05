@@ -70,7 +70,7 @@ object SSEEventParser {
         }
     )
 
-    /** 9 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */
+    /** 10 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */
     private val ALLOW_PARSE_EVENT_TYPES = setOf(
         // 4 通知
         "session.idle",
@@ -83,6 +83,8 @@ object SSEEventParser {
         "file.edited",
         "file.watcher.updated",
         "session.diff",
+        // 1 健康信号 —— HealthMonitor 用 parsed.type == "server.heartbeat" 检测,替代 EDT 上的 HTTP 探活
+        "server.heartbeat",
     )
 
     fun isEventProcessed(eventID: String): Boolean {

@@ -132,9 +132,10 @@ class AllowParseEventTypesTest {
     }
 
     @Test
-    fun `server_heartbeat is not whitelisted`() {
+    fun `server_heartbeat is whitelisted (HealthMonitor 健康信号,替代 EDT HTTP 探活)`() {
         val r = parse("server.heartbeat", mapOf("ts" to 12345))
-        assertNull(r.parsedMap)
+        assertNotNull(r.parsedMap)
+        assertEquals("server.heartbeat", r.type)
     }
 
     @Test
