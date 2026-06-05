@@ -29,7 +29,6 @@ object OpenCodeServerManager {
 
     fun getOrCreateConsumer(project: Project): OpenCodeSSEConsumer {
         return consumers.computeIfAbsent(project) { p ->
-            thisLogger().info("[OpenCodeServerManager] Creating SSE consumer for project=${p.name}")
             SSEConsumerFactory.create(p).also { it.start() }
         }
     }
@@ -39,7 +38,6 @@ object OpenCodeServerManager {
      */
     fun disposeForProject(project: Project) {
         consumers.remove(project)?.let { consumer ->
-            thisLogger().info("[OpenCodeServerManager] disposeForProject: stopping SSE consumer for project=${project.name}")
             consumer.stop()
         }
     }

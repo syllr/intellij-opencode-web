@@ -55,7 +55,9 @@ object OpenCodeNotificationService {
     }
 
     fun send(eventType: String, properties: Map<*, *>?, project: Project) {
-        if (!OpenCodeConfig.notificationEnabled) return
+        if (!OpenCodeConfig.notificationEnabled) {
+            return
+        }
 
         // 1s Session 维度防抖：1s 内同 session + 同事件类型抑制
         val dedupSessionID = extractSessionID(properties)
@@ -64,7 +66,9 @@ object OpenCodeNotificationService {
         }
 
         val tw = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
-        if (tw?.isVisible == true && tw.isActive) return
+        if (tw?.isVisible == true && tw.isActive) {
+            return
+        }
 
         // minDuration 过滤
         if (eventType == "complete" && OpenCodeConfig.minDuration > 0) {
@@ -74,7 +78,9 @@ object OpenCodeNotificationService {
                 if (info != null) {
                     val now = System.currentTimeMillis()
                     val duration = if (info.timeCreated != null) (now - info.timeCreated) / 1000 else 0L
-                    if (duration < OpenCodeConfig.minDuration) return
+                    if (duration < OpenCodeConfig.minDuration) {
+                        return
+                    }
                 }
             }
         }

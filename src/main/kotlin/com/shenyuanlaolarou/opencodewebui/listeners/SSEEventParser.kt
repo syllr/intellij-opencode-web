@@ -53,6 +53,11 @@ fun ParsedSSEEvent.extractParentID(): String? {
         ?: info?.get("parentID") as? String
 }
 
+fun ParsedSSEEvent.extractTitle(): String? {
+    val info = (parsedMap?.get("properties") as? Map<*, *>)?.get("info") as? Map<*, *>
+    return info?.get("title") as? String
+}
+
 object SSEEventParser {
     private val gson = Gson()
 
@@ -92,7 +97,7 @@ object SSEEventParser {
     /**
      * 解析 SSE 事件。使用流式 Reader 读取 JSON，白名单外事件不走完整 Gson 反序列化。
      *
-     * 新 wire 格式（`/event?directory=...`）直出 `{id, type, properties}`，无外层包装。
+     * 新 wire 格式（`/event?directory=...` 端点）直出 `{id, type, properties}`，无外层包装。
      *
      * @param eventType SSE 事件类型（EventSource 框架传入的 event 字段）
      * @param reader JSON body 的 Reader（调用方负责 close）
@@ -120,5 +125,14 @@ object SSEEventParser {
             logger.warn("[SSEEventParser] Failed to parse JSON: ${e.message}")
             return ParsedSSEEvent(eventType = eventType, parsedMap = null)
         }
+    }
+
+    /**
+     * 解析 SSE 事件（String 重载）。
+     * streamEventData(false) 模式下 messageEvent.data 是完整 JSON String，
+     * 内部转 Reader 调用主 parse 方法。
+     */
+    fun parse(eventType: String, text: String): ParsedSSEEvent {
+        return parse(eventType, text.byteInputStream(Charsets.UTF_8).bufferedReader())
     }
 }

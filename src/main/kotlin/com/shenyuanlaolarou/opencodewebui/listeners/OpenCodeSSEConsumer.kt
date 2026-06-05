@@ -6,7 +6,9 @@ import com.shenyuanlaolarou.opencodewebui.SSE_CONNECT_TIMEOUT_SECONDS
 import com.shenyuanlaolarou.opencodewebui.SSE_IDLE_TIMEOUT_MS
 import com.shenyuanlaolarou.opencodewebui.SSE_WATCHDOG_INTERVAL_MS
 import com.shenyuanlaolarou.opencodewebui.listeners.SSEEventParser
+import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
 import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeNotificationRouter
+import com.shenyuanlaolarou.opencodewebui.utils.dataOrNull
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.launchdarkly.eventsource.ConnectStrategy
@@ -54,6 +56,9 @@ class OpenCodeSSEConsumer(
 
         // 有 parentID 的 session —— handleSessionIdle 据此区分子 agent/父 session。
         private val subagentSessionIds: MutableSet<String> = newLruSet()
+
+        // subagent title 模式: "@<agent-name> subagent" (如 "(@explore subagent)")
+        private val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
     }
 
     fun start() {
@@ -76,20 +81,26 @@ class OpenCodeSSEConsumer(
     }
 
     private fun startSseConnection() {
-        val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/event?directory=" + URLEncoder.encode(projectBasePath ?: "", "UTF-8"))
+        // 规范化路径: 解析符号链接 + 去除末尾分隔符, 确保与 opencode 服务端 instance.directory 完全一致
+        val normalizedPath = try {
+            java.nio.file.Path.of(projectBasePath ?: "").toRealPath().toString()
+        } catch (_: Exception) {
+            projectBasePath ?: ""
+        }
+        val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/event?directory=" + URLEncoder.encode(normalizedPath, "UTF-8"))
         val connectStrategy = ConnectStrategy.http(uri)
             .connectTimeout(SSE_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
         val esBuilder = EventSource.Builder(connectStrategy)
             .errorStrategy(ErrorStrategy.alwaysContinue())
-            .streamEventData(true)
+            .streamEventData(false)
         val bgEventSource = BackgroundEventSource.Builder(this, esBuilder).build()
         val gen = connectionGen.incrementAndGet()
         activeConnectionGen = gen
         eventSourceRef.set(bgEventSource)
         bgEventSource.start()
         lastEventAt.set(System.currentTimeMillis())
-        logger.info("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, uri=$uri")
+        logger.info("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, normalizedPath=$normalizedPath, uri=$uri")
     }
 
     private fun reconnect() {
@@ -126,9 +137,8 @@ class OpenCodeSSEConsumer(
 
     override fun onMessage(event: String, messageEvent: MessageEvent) {
         lastEventAt.set(System.currentTimeMillis())
-        val parsed = messageEvent.getDataReader().use { reader ->
-            SSEEventParser.parse(event, reader)
-        }
+        val data = messageEvent.data ?: return
+        val parsed = SSEEventParser.parse(event, data)
         val parsedMap = parsed.parsedMap
 
         // 非白名单事件：parser 已早退（parsedMap == null），直接丢弃
@@ -190,8 +200,12 @@ class OpenCodeSSEConsumer(
         val parsedMap = parsed.parsedMap
         val sessionID = parsed.extractSessionID() ?: return
 
-        if (sessionID in subagentSessionIds) {
-            return  // subagent 完全静默
+        val title = OpenCodeApi.getSession(sessionID).dataOrNull()?.title
+        if (title != null && SUBAGENT_TITLE_REGEX.containsMatchIn(title)) {
+            if (logger.isDebugEnabled) {
+                logger.debug("[OpenCodeSSEConsumer] Subagent idle suppressed by title: $sessionID (title=$title)")
+            }
+            return
         }
         dispatchNotification("complete", parsedMap, project)
     }

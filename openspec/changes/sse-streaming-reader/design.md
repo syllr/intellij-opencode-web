@@ -48,7 +48,7 @@ intellij-opencode-web 插件是 JetBrains IDE 平台插件，为 opencode CLI（
 - **subagent 完全静默**：subagent 完成**不**通知 user（user 决定）
 - **Settings UI 完全删除**：4 个通用 var getter 继续工作（PropertiesComponent 持久化，老 user 配置不丢）
 - **1s Session 维度防抖**：1s 内同 session + 同事件类型重复触发 → 抑制；替换现有 2s `idleLastFired` 窗口
-- **流式 Reader 优化**：升级 okhttp-eventsource 4.1.0 → 4.3.0，启用 `streamEventData(true)` + `MessageEvent.getDataReader()`，省去 50-60 KB/s 临时对象分配
+- **白名单早退 + Gson 缓存优化**：升级 okhttp-eventsource 4.1.0 → 4.3.0，**保留** `JsonParser.parseReader` 流式 + Gson 缓存复用；通过 9 个 wire-level 白名单过滤让 80%+ 业务事件**不走**完整 Gson 反序列化，省去 50-60 KB/s 临时对象分配
 - **白名单 type 过滤**：9 个 wire-level eventType（4 通知 + 5 业务），Reader 阶段 type peek → 白名单外 `close()` Reader 早退
 
 **Non-Goals:**
@@ -108,40 +108,64 @@ intellij-opencode-web 插件是 JetBrains IDE 平台插件，为 opencode CLI（
 
 **为什么不直接 4.1.0 用 `getDataReader()`**：`getDataReader()` 4.1.0 已存在，但 `gradle/libs.versions.toml` 升级是项目规范要求（4.3.0 是最新稳定版）。
 
-### Decision 3: `streamEventData(true)` + `MessageEvent.getDataReader()` 替换 `messageEvent.data`
+### Decision 3: `streamEventData(false)` + `JsonParser.parseReader` 内部流式 + 白名单早退
 
-**Context**: 当前 `OpenCodeSSEConsumer.onMessage` 调 `messageEvent.data`（即 `getData()`），强制构造完整 JSON String（~300 字节），再走 Gson 解析生成 JsonObject 树（~200-300 字节）。100Hz `message.part.delta` 累计 50-60 KB/s 临时对象。
+**Context**: 当前 `OpenCodeSSEConsumer.onMessage` 需要解析 SSE 事件。100Hz `message.part.delta` 累计 50-60 KB/s 临时对象分配（~300 字节 JSON String + ~200-300 字节 JsonObject 树）。
 
-**Rationale**（基于 `research/okhttp-eventsource-compat/notes.md`）:
+**F2/F3 实际验证结论**（2026-06-04 实测）:
 
-- 4.3.0 中 `getDataReader()` **完全可用**（API 自 2.6.0 以来未变）
-- **默认模式下**（不启用 `streamEventData(true)`）：`getDataReader()` 返回 `StringReader`，在 `BackgroundEventSource` 异步派发中**完全安全**（数据已缓冲）
-- **streaming 模式下**（启用 `streamEventData(true)`）：handler **必须**在 `onMessage()` 返回前消费 Reader，否则流线程读取下个事件时关闭旧流
-- **plugin SSE payload 通常 < 10KB**，启用 streaming 模式**仍有意义**（节省 50-60 KB/s 临时对象），且**只在 onMessage() 内消费**满足安全要求
+- okhttp-eventsource 4.3.0 `streamEventData(true)` **不**是"真**正**流**式** socket 读取——**只**是 API **标**记**：`MessageEvent` **接**收**时**已**把**整**个** JSON **全**读**到** `data` 字段；`streamEventData(true)` **只**是把 `data` **设**置**为** null，`getDataReader()` **懒**加**载** `new StringReader(data)`（**当** data **是** null **时** wrap StringReader("")—— **空** reader，readText() **永**远** length=0，**这**是** F2/F3 **实**际**验**证**得**出**的** bug**）
+- 反**编**译\*\* `MessageEvent.class` （bytecode）：`getDataReader()` 内部 `if (dataReader == null) dataReader = new StringReader(data)`，`isStreamingData()` = `data == null`
+- 真**正**减** GC** **不**靠** `streamEventData(true)`，**靠**白**名**单**早**退** + Gson **缓**存**复**用
+
+**Rationale**:
+
+- **`streamEventData(false)`**：直接用 `messageEvent.data` String，**避**免** `streamEventData(true)` 模式**下** reader **空**的** bug**（**实**测**有**问**题\*\*）
+- **`JsonParser.parseReader(reader)`** 内**部**真**正**流**式**读**取** JSON（**不**是**全**读**到** String **再** parse）—— `byteInputStream.bufferedReader()` 创**建**一个** reader，JsonParser **按**需**读**取**
+- **白**名**单**早**退**：9 个 wire-level eventType 白**名**单**外**的**事件**走** `early-return`，**不**创**建** Gson `Map<String, Any>`（**省** 50-60 KB/s 临**时**对**象\*\*）
+- **handler 线程安全**：`streamEventData(false)` + `messageEvent.data` String 在 `BackgroundEventSource` **异**步**派**发**中**完**全**安**全**（String **不**会**被**流**线**程**取**消\*\*）
 
 **实现细节**:
 
 ```kotlin
 EventSource.Builder(connectStrategy)
     .errorStrategy(ErrorStrategy.alwaysContinue())
-    .streamEventData(true)  // 启用流式
+    .streamEventData(false)  // 关键:F2/F3 实测 streamEventData(true) 模式下 reader 永远空
     .build()
 ```
 
 ```kotlin
 override fun onMessage(event: String, messageEvent: MessageEvent) {
-    // 旧：val message = messageEvent.data  // 强制 String 构造
-    // 新：用 getDataReader() 流式
-    messageEvent.getDataReader().use { reader ->
-        // ... 解析逻辑
+    val data = messageEvent.data ?: return  // String, 已读完的 JSON
+    val parsed = SSEEventParser.parse(event, data)  // 内部用 JsonParser.parseReader 真正流式解析
+    ...
+}
+```
+
+```kotlin
+// SSEEventParser.parse(String) 重载 - 内部转 Reader 调 parse(Reader)
+fun parse(eventType: String, text: String): ParsedSSEEvent =
+    parse(eventType, text.byteInputStream(Charsets.UTF_8).bufferedReader())
+
+// SSEEventParser.parse(Reader) - 真正流式 + 白名单早退
+fun parse(eventType: String, reader: Reader): ParsedSSEEvent {
+    val jsonElement = JsonParser.parseReader(reader)  // 流式按需读
+    if (jsonElement !is JsonObject) return ...
+    val type = jsonElement.get("type")?.asString
+    if (type == null || type !in ALLOW_PARSE_EVENT_TYPES) {
+        return ParsedSSEEvent(eventType = eventType, parsedMap = null)  // 早退,不创建 Map
     }
+    val parsedMap: Map<*, *> = gson.fromJson(jsonElement, Map::class.java)  // 仅白名单内
+    return ParsedSSEEvent(eventType = eventType, parsedMap = parsedMap)
 }
 ```
 
 **Alternatives Considered**:
 
-- **不启用 streaming 模式**（仅升级版本）：省去 streaming 模式的安全性顾虑，但失去 50-60 KB/s 节省
-- **用 BufferedReader 包装 getDataReader()**：相同效果，无需包装
+- **`streamEventData(true)` + `getDataReader()`**：F2/F3 **实**测**有** bug（reader **永**远** length=0）—— **不**采**用\*\*
+- **用 `MessageEvent.getData()` InputStream**：API 4.3.0 **不**暴**露** getData()，**只**有 getDataReader() —— **不**可**用**
+- **`streamEventData(false)` + `JsonParser.parseString(text)`**：**完**全**失**去**流**式**优**势**（text 已 String 化）—— 改用 `parseReader` 内**部**转 reader **流**式**
+- **白名单早退优化**：**采**用**—— 100+ Hz `message.part.delta` 跳过 Gson，**省\*\* 50-60 KB/s
 
 ### Decision 4: 9 个 wire-level eventType 白名单
 
@@ -321,19 +345,19 @@ private fun handleSessionIdle(parsed: ParsedSSEEvent, eventDir: String?) {
 
 ## Risks / Trade-offs
 
-| 风险                                                                                                                                                   | 缓解措施                                                                                                    |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| **API 兼容性问题**：okhttp-eventsource 4.1.0→4.3.0 升级可能引入未察觉的行为变化                                                                        | spec 阶段跑 `./gradlew check` 跑全部单测 + 集成测试；4.1.0/4.2.0/4.3.0 之间无 breaking change（已验证）     |
-| **`streamEventData(true)` + `BackgroundEventSource` 异步派发下 Reader 状态**：handler 在 events executor 线程消费 Reader 时，stream 线程已读取下个事件 | **必须**在 `onMessage()` 返回前消费完 Reader（用 `use { }` 块强制 close）；不消费则用 `me.close()` 显式关闭 |
-| **`/event?directory=...` 端点跨版本兼容**：老版本 opencode server（< 1.0.18）可能不支持此端点                                                          | spec 阶段验证；plugin 启动时检测 server 版本，fallback 到 `/global/event`（**可选**，当前未实现）           |
-| **`computeIfAbsent` 多线程竞态**：多个 project 同时创建 consumer 时可能 race                                                                           | JDK `ConcurrentHashMap.computeIfAbsent` 保证原子性；spec 阶段跑多项目并发测试                               |
-| **per-project watchdog 线程开销**：每个 consumer 1 个 daemon thread，10 个 project = 10 个线程                                                         | daemon 线程不阻塞 IDE 关闭；线程数可控（10 个 < IDE 线程池）；spec 阶段实测                                 |
-| **9 个白名单 type 漏过未来新增事件**：opencode server 端可能新增 plugin 关心的 type                                                                    | 白名单机制**不**影响新 type 到达——只是**默认**不解析；如发现新 type 需 plugin 处理，spec 阶段更新白名单     |
-| **`permission.asked` / `question.asked` 不在 SDK 类型**：binary 确认存在但 SDK 未导出                                                                  | 解析时按现有 `properties` 字段处理；如未来 SDK 添加类型定义，更新 fallback                                  |
-| **老 user PropertiesComponent 已存配置不丢**：`opencode.event.error.enabled=true` 等已删除事件 key 仍存在                                              | stored value **不影响**任何代码逻辑（`isEventEnabled` 函数已删）；spec 阶段确认无其他隐藏引用               |
-| **`OpenCodeConfigurable` 类删除后被其他代码引用**                                                                                                      | 已 grep 确认 0 引用；spec 阶段 `./gradlew build` 全量编译验证                                               |
-| **State machine 重构后 user 多次发消息通知更频繁**：从"不通知"变为"每次通知"                                                                           | user 决定接受；2s 窗口仍防高频重复                                                                          |
-| **多个 IDE 进程打开同 project 的"重复通知"**                                                                                                           | user 已确认这是合理行为；不动                                                                               |
+| 风险                                                                                                                                                                                                                                                                                                                                       | 缓解措施                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **API 兼容性问题**：okhttp-eventsource 4.1.0→4.3.0 升级可能引入未察觉的行为变化                                                                                                                                                                                                                                                            | spec 阶段跑 `./gradlew check` 跑全部单测 + 集成测试；4.1.0/4.2.0/4.3.0 之间无 breaking change（已验证）                                                                |
+| **`streamEventData(true)` 模式下 reader 永远空**（F2/F3 实测，266 次 onMessage 全部 readText() length=0）：okhttp-eventsource 4.3.0 `MessageEvent.getDataReader()` 内部 `if (dataReader == null) dataReader = new StringReader(data)`，当 `data` 字段被 `streamEventData(true)` 置 null 时，wrap 的是空 StringReader，**不是**真 socket 流 | **改用** `streamEventData(false)` + `messageEvent.data` String，**用** `JsonParser.parseReader(byteInputStream.bufferedReader())` **内**部**真**正**流**式**读**取\*\* |
+| **`/event?directory=...` 端点跨版本兼容**：老版本 opencode server（< 1.0.18）可能不支持此端点                                                                                                                                                                                                                                              | spec 阶段验证；plugin 启动时检测 server 版本，fallback 到 `/global/event`（**可选**，当前未实现）                                                                      |
+| **`computeIfAbsent` 多线程竞态**：多个 project 同时创建 consumer 时可能 race                                                                                                                                                                                                                                                               | JDK `ConcurrentHashMap.computeIfAbsent` 保证原子性；spec 阶段跑多项目并发测试                                                                                          |
+| **per-project watchdog 线程开销**：每个 consumer 1 个 daemon thread，10 个 project = 10 个线程                                                                                                                                                                                                                                             | daemon 线程不阻塞 IDE 关闭；线程数可控（10 个 < IDE 线程池）；spec 阶段实测                                                                                            |
+| **9 个白名单 type 漏过未来新增事件**：opencode server 端可能新增 plugin 关心的 type                                                                                                                                                                                                                                                        | 白名单机制**不**影响新 type 到达——只是**默认**不解析；如发现新 type 需 plugin 处理，spec 阶段更新白名单                                                                |
+| **`permission.asked` / `question.asked` 不在 SDK 类型**：binary 确认存在但 SDK 未导出                                                                                                                                                                                                                                                      | 解析时按现有 `properties` 字段处理；如未来 SDK 添加类型定义，更新 fallback                                                                                             |
+| **老 user PropertiesComponent 已存配置不丢**：`opencode.event.error.enabled=true` 等已删除事件 key 仍存在                                                                                                                                                                                                                                  | stored value **不影响**任何代码逻辑（`isEventEnabled` 函数已删）；spec 阶段确认无其他隐藏引用                                                                          |
+| **`OpenCodeConfigurable` 类删除后被其他代码引用**                                                                                                                                                                                                                                                                                          | 已 grep 确认 0 引用；spec 阶段 `./gradlew build` 全量编译验证                                                                                                          |
+| **State machine 重构后 user 多次发消息通知更频繁**：从"不通知"变为"每次通知"                                                                                                                                                                                                                                                               | user 决定接受；2s 窗口仍防高频重复                                                                                                                                     |
+| **多个 IDE 进程打开同 project 的"重复通知"**                                                                                                                                                                                                                                                                                               | user 已确认这是合理行为；不动                                                                                                                                          |
 
 ## Migration Plan
 
@@ -417,3 +441,42 @@ private fun handleSessionIdle(parsed: ParsedSSEEvent, eventDir: String?) {
 - `[NEEDS INVESTIGATION]` 性能估算 benchmark 验证（理论 50-60 KB/s → ~5-10 KB/s，spec 阶段用 JFR 实测）
 - `[NEEDS INVESTIGATION]` `OpenCodeConfigurable` 删除后无其他引用（spec 阶段 `grep` 全文确认）
 - `[NEEDS INVESTIGATION]` 老 user `PropertiesComponent` 中 `opencode.event.error.enabled=true` 等已删除事件 key 不被任何代码读取（spec 阶段 `grep` 全文确认）
+
+## Post-Implementation Findings
+
+### omo 1.16.0+ SSE 端行为变化（2026-06-05 实测）
+
+**Context**: 11 个 task 已实现并 commit（`a5eafc4`）后，在 omo 1.16.0 环境下实测 SSE 端点行为，**发现 omo 升级改变了 SSE 流的事件投递策略**。
+
+**关键发现**:
+
+- **omo 1.16.0 SSE 端** `/event?directory=...` **只**下发 `server.connected` 事件；业务事件（`session.idle` / `session.status` / `permission.asked` / `question.asked` / `session.created` / `message.part.updated` / `file.edited` / `file.watcher.updated` / `session.diff`）**全部不通过 SSE 流投递**
+- `curl http://127.0.0.1:12396/event?directory=helloworld` 3 秒内**仅**收到 1 条 `server.connected`，无其他事件（即使 helloworld 主 session 在跑 + 派了 explore subagent）
+- omo 内部 bus 仍**正常 publish** `session.idle` 等事件（opencode log `service=bus type=session.idle publishing` 大量出现），但**仅用于 omo Sisyphus 内部 system-reminder 通知**，**不**通过 SSE 暴露给客户端
+- 6 小时前（omo 1.15.13 时期）IDEA 插件 SSE 端**确实**收到过 `session.idle` 事件（1 条历史证据），所以**这是 omo 1.16.0 升级后引入的行为变化**
+
+**对本 change 11 个 task 的影响**:
+
+| 实现                                                                                                  | 影响                                      |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `OpenCodeSSEConsumer.handleSessionIdle`                                                               | 永远不被调用（`session.idle` 不通过 SSE） |
+| `OpenCodeSSEConsumer.onMessage` 的 `when (eventType)` 分支                                            | 9 个白名单 type 全部无事件可路由          |
+| `OpenCodeNotificationService.send()`                                                                  | 0 次调用（`NOTIFY-PROBE` 实测 0 条）      |
+| `subagentSessionIds` 追踪                                                                             | 永远为空（无 `session.created` 事件）     |
+| 1s Session 维度防抖                                                                                   | 永远不触发                                |
+| 4 个通用 var getter（`notificationEnabled` / `showProjectName` / `showSessionTitle` / `minDuration`） | 仍正确工作（代码层防御）                  |
+| 多项目 SSE 隔离（`ConcurrentHashMap<Project, OpenCodeSSEConsumer>`）                                  | 仍正确工作（多 IDE 场景下真用得到）       |
+| Settings UI 删除 + PropertiesComponent 兼容                                                           | 仍正确工作                                |
+
+**结论**: 11 个 task 的**实现正确性不变**（防御性代码对老 omo 版本仍有效），但**实际生效路径在 omo 1.16.0+ 上是空的**。omo 1.16.0 自身已经"天然 always silent"（不通过 SSE 发业务事件）→ user 感知到的"subagent 不通知"实际由 omo 1.16.0 保证，**不**依赖本插件的 11 个 task。
+
+**对老 omo 版本（< 1.16.0）的价值**: 如果 user 降级 omo 到 1.15.13 或更早，11 个 task 仍按设计生效（`session.idle` 通过 SSE 到达 → `handleSessionIdle` 区分 subagent/parent → subagent 直接 return → parent 派发 `complete` 通知 + 1s 防抖）。
+
+**对 omo 未来版本的建议**: 如果 omo 后续**恢复**通过 SSE 发业务事件，本插件无需任何代码改动即可正常工作（防御性代码自动激活）。如果 omo **改用其他机制**（如 WebSocket），需要新增对应 transport adapter。
+
+**临时诊断埋点清理**（本 change 期间添加，已全部移除）:
+
+- `OpenCodeNotificationService.send()` 中 9 个 `[NOTIFY-PROBE]` 日志 + 死变量（`appActive` / `bodyHasSubagent` / `titleHasSubagent` / `entrySessionID`）
+- `SSEEventParser.parse()` 中 2 个 `[F2/F3]` 日志 + `parse(eventType, text)` 诊断重载
+- `OpenCodeServerManager.getOrCreateConsumer` / `disposeForProject` 中 3 个 `[F2/F3]` 日志
+- 编译验证：`./gradlew compileKotlin` BUILD SUCCESSFUL + `./gradlew test` BUILD SUCCESSFUL
