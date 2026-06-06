@@ -94,18 +94,18 @@
 
 ### 1.2 关键决策
 
-| 决策                | 方案                                                                                    | 收益                                                         |
-| ------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| **进程隔离**        | IDE 进程内仅做客户端消费,OpenCode CLI 独立进程                                          | 故障隔离 + 利用 OpenCode 已有的能力                          |
-| **SSE 复用**        | 复用已有 `/global/event` SSE 连接消费所有事件(文件 + 通知 + bash)                       | 一个连接处理所有事件类型                                     |
-| **单 SSE consumer** | 全局共享一个 consumer(全局单例),按 `directory` 路由通知                                 | 资源效率 + 简化协调                                          |
-| **Subagent 追踪**   | 本地 `Set<String>` + `session.created` 增 / `session.status(idle)` 查                   | 无 HTTP 调用,无竞态                                          |
-| **通知去抖**        | 2s 时间窗口内同 sessionID 重复 idle 抑制(`idleLastFired` LRU 500)                       | 防止 `session.idle` + `session.status(idle)` 双发            |
-| **通知双模式**      | IDE 前台 + 项目窗口有焦点 → BALLOON;IDE 后台 → macOS 系统通知;多显示器无焦点 → 系统通知 | 覆盖所有使用场景 + 点击跳转正确 IDE                          |
-| **配置存储**        | `PropertiesComponent`(IDE 级别 key-value),无独立文件                                    | 零开销读 + 自动持久化                                        |
-| **进程启动**        | zsh login shell(`-l -c "source ~/.zshrc && opencode serve..."`)                         | 加载用户 `.zshrc` 中的 PATH,确保 opencode 可执行文件可被找到 |
-| **HTTP 客户端**     | `java.net.http.HttpClient` by lazy 共享(无 OkHttp 依赖)                                 | JDK 内置,自动 keep-alive 连接池                              |
-| **工厂解耦**        | `SSEConsumerFactory.create(project)` 单例工厂                                           | 工具类 `toolWindow` → `listeners` 依赖单向,无循环引用        |
+| 决策                | 方案                                                                                                                                 | 收益                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| **进程隔离**        | IDE 进程内仅做客户端消费,OpenCode CLI 独立进程                                                                                       | 故障隔离 + 利用 OpenCode 已有的能力                          |
+| **SSE 复用**        | 复用已有 `/global/event` SSE 连接消费所有事件(文件 + 通知 + bash)                                                                    | 一个连接处理所有事件类型                                     |
+| **单 SSE consumer** | 全局共享一个 consumer(全局单例),按 `directory` 路由通知                                                                              | 资源效率 + 简化协调                                          |
+| **Subagent 追踪**   | 本地 `Set<String>` + `session.created` 增 / `session.status(idle)` 查                                                                | 无 HTTP 调用,无竞态                                          |
+| **通知去抖**        | 2s 时间窗口内同 sessionID 重复 idle 抑制(`idleLastFired` LRU 500)                                                                    | 防止 `session.idle` + `session.status(idle)` 双发            |
+| **通知双模式**      | IDE 前台 + 项目窗口有焦点 → BALLOON;IDE 后台 → macOS 系统通知;多显示器无焦点 → 当前实现静默丢弃(已知限制,详见 §6.2 / `SPEC.md §4.4`) | 覆盖主要使用场景 + 点击跳转正确 IDE                          |
+| **配置存储**        | `PropertiesComponent`(IDE 级别 key-value),无独立文件                                                                                 | 零开销读 + 自动持久化                                        |
+| **进程启动**        | zsh login shell(`-l -c "source ~/.zshrc && opencode serve..."`)                                                                      | 加载用户 `.zshrc` 中的 PATH,确保 opencode 可执行文件可被找到 |
+| **HTTP 客户端**     | `java.net.http.HttpClient` by lazy 共享(无 OkHttp 依赖)                                                                              | JDK 内置,自动 keep-alive 连接池                              |
+| **工厂解耦**        | `SSEConsumerFactory.create(project)` 单例工厂                                                                                        | 工具类 `toolWindow` → `listeners` 依赖单向,无循环引用        |
 
 ### 1.3 设计原则
 
@@ -229,8 +229,9 @@ fun ParsedSSEEvent.extractSessionID(): String? {
 
 ```kotlin
 fun send(eventType: String, properties: Map<*, *>?, project: Project) {
-    // 1. 工具窗口聚焦抑制
-    if (toolWindow?.isVisible == true && toolWindow.isActive) return
+    // 1. 工具窗口聚焦抑制(用户正在与 AI 对话,无需打扰)
+    val tw = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
+    if (tw?.isVisible == true && tw.isActive) return
 
     // 2. minDuration 过滤 (complete / subagent_complete)
     if (eventType == "complete" || eventType == "subagent_complete" && minDuration > 0) {
@@ -239,14 +240,24 @@ fun send(eventType: String, properties: Map<*, *>?, project: Project) {
     }
 
     // 3. 构造 title + body
-    // 4. invokeLater (EDT) 发送
+
+    // 4. 焦点感知路由(双模式 + 已知多显示器限制,见 SPEC.md §4.4)
+    val frame = WindowManager.getInstance().getFrame(project)
+    val projectWindowActive = frame != null && frame.isActive
     ApplicationManager.getApplication().invokeLater {
-        if (projectWindowActive && !project.isDisposed) {
-            // BALLOON (项目窗口有焦点)
-            Notification("OpenCodeWeb.notifications", title, body, type).notify(project)
-        } else if (!ApplicationManager.getApplication().isActive()) {
-            // macOS 系统通知 (IDE 后台)
-            SystemNotifications.getInstance().notify(NOTIFICATION_GROUP, title, body)
+        try {
+            if (projectWindowActive && !project.isDisposed) {
+                // BALLOON(项目窗口有焦点)
+                val notification = Notification(NOTIFICATION_GROUP, title, body, resolveType(eventType))
+                addClickAction(notification, eventType, project)
+                notification.notify(project)
+            } else if (!ApplicationManager.getApplication().isActive()) {
+                // macOS 系统通知(IDE 在后台)
+                SystemNotifications.getInstance().notify(NOTIFICATION_GROUP, title, body)
+            }
+            // 注意:frame 不活跃 && application 活跃(多显示器无焦点) → 当前实现静默丢弃,详见 SPEC §4.4
+        } catch (e: Exception) {
+            logger.warn("[OpenCodeNotificationService] Failed to send notification: ${e.message}")
         }
     }
 }
@@ -557,15 +568,15 @@ OpenCodeNotificationService.send()
     └─ invokeLater (EDT) 发送
 ```
 
-### 6.2 通知双模式
+### 6.2 通知双模式(决策表,实现见 §2.5)
 
-| 场景                            | 通知方式                                      |
-| ------------------------------- | --------------------------------------------- |
-| IDE 前台 + 项目窗口有焦点       | BALLOON(右下角弹窗)                           |
-| IDE 后台(切到浏览器/Slack)      | macOS 系统通知(`SystemNotifications`)         |
-| 多显示器 + 目标窗口在另一显示器 | macOS 系统通知(我们主动检测 `frame.isActive`) |
-| OpenCodeWeb 工具窗口活跃        | ❌ 抑制(用户正在对话,无需通知)                |
-| 窗口最小化                      | ⚠️ 依赖 macOS + IntelliJ 行为(可能系统通知)   |
+| 场景                                         | 通知方式                                               |
+| -------------------------------------------- | ------------------------------------------------------ |
+| OpenCodeWeb 工具窗口可见且活跃               | ❌ 抑制(用户正在与 AI 对话,无需通知)                   |
+| IDE 在前台 + 项目窗口有焦点                  | BALLOON(右下角 IDE 弹窗)                               |
+| IDE 在后台(切到浏览器/Slack)+ 项目窗口无焦点 | macOS 系统通知(`SystemNotifications`)                  |
+| IDE 在前台 + 项目窗口无焦点(多显示器)        | ❌ 静默丢弃(已知行为,详见 `SPEC.md §4.4` 焦点感知路由) |
+| 窗口最小化                                   | ⚠️ 依赖 macOS + IntelliJ 行为(可能触发系统通知)        |
 
 ### 6.3 通知去重
 

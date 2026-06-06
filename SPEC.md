@@ -258,6 +258,18 @@ payload.syncEvent.aggregateID → sessionID(SyncEvent 实体标识)
 - 用户需在 IntelliJ 设置中开启:Preferences → Appearance & Behavior → Notifications → "Enable system notifications"
 - `OpenCodeConfigurable` 提供按事件类型独立开关
 
+**焦点感知路由**(决策 MUST,实现见 `OpenCodeNotificationService.send()`):
+
+| 焦点状态                                                      | 行为                                |
+| ------------------------------------------------------------- | ----------------------------------- |
+| OpenCodeWeb 工具窗口可见且活跃(`tw.isVisible && tw.isActive`) | 抑制(用户正在与 AI 对话,无需通知)   |
+| 项目窗口有焦点(`frame.isActive == true`)+ IDE 在前台          | BALLOON(右下角 IDE 弹窗)            |
+| 项目窗口无焦点 + IDE 在后台(`!Application.isActive()`)        | macOS 系统通知(切到浏览器/Slack 时) |
+| 项目窗口无焦点 + IDE 在前台(多显示器场景)                     | ❌ 静默丢弃(已知行为,详见下方)      |
+
+- `OpenCodeNotificationService.send()` MUST 按上表决策:工具窗口活跃抑制 → IDE 在后台时升级系统通知 → 其余 BALLOON
+- "多显示器项目窗口无焦点但 IDE 在前台"场景 MUST 走当前实现(静默丢弃),已知限制;`OpenCodeConfigurable.notificationEnabled = false` 可彻底关通知
+
 ---
 
 ## 5. 端点契约

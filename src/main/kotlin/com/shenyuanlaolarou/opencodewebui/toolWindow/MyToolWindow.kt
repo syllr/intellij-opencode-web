@@ -2,8 +2,6 @@ package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.shenyuanlaolarou.opencodewebui.OPENCODE_HOST
 import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
-import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
-import com.shenyuanlaolarou.opencodewebui.utils.dataOrNull
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.util.Disposer
@@ -13,6 +11,7 @@ import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JComponent
 import javax.swing.SwingUtilities
 
@@ -42,21 +41,26 @@ class MyToolWindow(toolWindow: ToolWindow) {
     @Volatile
     private var hasLoaded = false
 
+    /**
+     * 防 onStarted 5 次回调导致 onServerReady 被调 5 次(单飞在 OpenCodeServerManager
+     * 端已做 5→1 进程启动,这里防止 5 个 onStarted 都进 startConsumerAndMonitor
+     * 重建 HealthMonitor 5 次)。
+     *
+     * 每次用户点 Start(onStartClicked 入口)重置回 false;
+     * onServerReady 入口 compareAndSet(false, true) 拦截后续 4 次。
+     */
+    private val isServerReadyHandled = AtomicBoolean(false)
+
     @Volatile
     private var healthMonitor: HealthMonitor? = null
 
+    /**
+     * 工具窗口内容加载入口(用户首次打开 toolWindow 时调一次)。
+     *
+     * 手动模式:不做 TCP 探测,永远显示 Start 按钮。server 启停完全由用户点 Start 按钮控制。
+     */
     fun checkAndLoadContent() {
-        // [Fix EDT freeze + 初始化时序] 端口预探测(200ms)先判断 server 是否在监听:
-        // - 端口通: server 已运行 → 创建 consumer + 启 HealthMonitor + 加载页面
-        // - 端口关: server 未运行 → 仅显示 Start 按钮,零后台线程(避免连接风暴)
-        if (OpenCodeApi.isServerPortOpen()) {
-            logger.info("[checkAndLoadContent] Server port open, starting consumer + health monitor")
-            startConsumerAndMonitor()
-            loadProjectPage()
-        } else {
-            logger.info("[checkAndLoadContent] Server port closed, showing start button (no consumer created)")
-            showServerNotRunning()
-        }
+        showServerNotRunning()
     }
 
     /**
@@ -110,7 +114,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
         mainBrowser = null
         isShowingStartButton = true
         browserPanel.disposeBrowser()
-        browserPanel.showStartButton { startOpenCodeServer() }
+        browserPanel.showStartButton { onStartClicked() }
         // [Fix 启动时序] 停止后台线程,避免 server 未运行时 5 个线程空转:
         // - HealthMonitor(5s 轮询 isHealthy,永远 false,无意义)
         // - SSE consumer.watchdog(30s 后每 5s reconnect,连接风暴)
@@ -188,27 +192,43 @@ class MyToolWindow(toolWindow: ToolWindow) {
         }
     }
 
-    private fun startOpenCodeServer() {
+    /**
+     * 用户点 Start 按钮的回调。每次点击都重置 CAS 守卫,
+     * 允许上一次启动失败后重试时 onServerReady 能正常进入。
+     */
+    fun onStartClicked() {
+        isServerReadyHandled.set(false)
         OpenCodeServerManager.startServer(
             project = project,
-            onStarted = { onServerStarted() },
-            onFailed = { e -> onServerStartFailed(e) }
+            onStarted = { ApplicationManager.getApplication().invokeLater { onServerReady() } },
+            onFailed  = { e -> ApplicationManager.getApplication().invokeLater { onServerFailed(e) } }
         )
     }
 
-    private fun onServerStarted() {
-        // [Fix hasLoaded lock + 启动时序] startServer() 成功后:
-        // 1. 启动 HealthMonitor 监听 crash 恢复(server 已 healthy,SSE 会连上)
-        // 2. force=true 强制重新加载(覆盖之前 showServerNotRunning 设的 hasLoaded=false 后又被 loadProjectPage 设 true 的状态)
-        ApplicationManager.getApplication().invokeLater {
+    /**
+     * server 启动成功的回调(经 OpenCodeServerManager 单飞后,5 个 onStarted 都会触发)。
+     * CAS 守卫拦截后续 4 次,只让第一个真跑 startConsumerAndMonitor + loadProjectPage。
+     *
+     * 注意:失败时 try-catch 只 log,不重置 isServerReadyHandled——下次用户点 Start
+     * 时 onStartClicked 入口会重置,语义最清晰。
+     */
+    private fun onServerReady() {
+        if (!isServerReadyHandled.compareAndSet(false, true)) return
+        try {
             startConsumerAndMonitor()
             loadProjectPage(force = true)
+        } catch (e: Exception) {
+            thisLogger().warn("[MyToolWindow] onServerReady failed: ${e.message}", e)
         }
     }
 
-    private fun onServerStartFailed(e: Exception) {
-        thisLogger().error("Error starting OpenCode server: ${e.message}")
-        ApplicationManager.getApplication().invokeLater { showErrorInBrowser() }
+    /**
+     * server 启动失败的回调(单飞后 5 个 onFailed 都会触发,但幂等只 log)。
+     * UI 回按钮态由 HealthMonitor.onUnhealthy 兜底(单飞层已完成进程清理)。
+     */
+    private fun onServerFailed(e: Exception) {
+        thisLogger().error("[MyToolWindow] Server start failed: ${e.message}", e)
+        // 不主动 reset isServerReadyHandled——等用户下次点 Start 时 onStartClicked 入口重置
     }
 
     private fun loadProjectPage(force: Boolean = false) {
@@ -236,19 +256,5 @@ class MyToolWindow(toolWindow: ToolWindow) {
         } else {
             mainBrowser?.loadURL(url)
         }
-    }
-
-    private fun showErrorInBrowser() {
-        val html = """
-            <html>
-            <body style="background-color: #2B2B2B; color: #A9B7C6; font-family: sans-serif; padding: 20px;">
-                <h2>Failed to start OpenCode server</h2>
-                <p>Please make sure 'opencode' is installed and available in your PATH.</p>
-                <p>Run the following command to start the server manually:</p>
-                <pre style="background: #3C3F41; padding: 10px; border-radius: 4px;">opencode serve --hostname $OPENCODE_HOST --port $OPENCODE_PORT</pre>
-            </body>
-            </html>
-        """.trimIndent()
-        mainBrowser?.loadHTML(html)
     }
 }

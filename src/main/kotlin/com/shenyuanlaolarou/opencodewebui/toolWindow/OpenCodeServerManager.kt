@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.CompletableFuture
 
 object OpenCodeServerManager {
     private const val HOST = OPENCODE_HOST
@@ -26,6 +27,8 @@ object OpenCodeServerManager {
     private val consumers = ConcurrentHashMap<Project, OpenCodeSSEConsumer>()
     // 防 stopServer/shutdownServer 重入:用户连续点 Shutdown 按钮时,第二次以后短路返回
     private val shutdownInProgress = AtomicBoolean(false)
+    // 防 startServer 并发:Go-style singleflight,同一时刻仅一个 Backgroundable 在飞
+    private val singleflight = Singleflight<Unit>()
 
     fun getOrCreateConsumer(
         project: Project,
@@ -70,29 +73,76 @@ object OpenCodeServerManager {
             return
         }
 
+        startServerSingleflight(project, onStarted, onFailed)
+    }
+
+    /**
+     * singleflight:同一时刻只允许一个 Backgroundable 任务真启进程。
+     * 后续调用 follower 用 [CompletableFuture.whenComplete] 异步等待 leader 结果。
+     *
+     * 关键不变量:
+     * - leader 一定在 [Backgroundable.run] 内部 complete future + release 槽位
+     * - leader panic 也会被 try-catch 捕获走 onFailed,finally 块保证 release
+     */
+    private fun startServerSingleflight(
+        project: Project,
+        onStarted: () -> Unit,
+        onFailed: (Exception) -> Unit
+    ) {
+        val (future, isLeader) = singleflight.acquire("start")
+
+        if (!isLeader) {
+            // follower: 异步等待 leader 完成,共享结果
+            thisLogger().info("[OpenCodeServerManager] Joining in-flight startup, project=${project.name}")
+            future.whenComplete { _, error ->
+                if (error == null) {
+                    onStarted()
+                } else {
+                    onFailed(error as? Exception ?: Exception(error))
+                }
+            }
+            return
+        }
+
+        // leader: 真启进程
         val task = object : Backgroundable(project, "Starting OpenCode Server", true) {
             override fun run(indicator: ProgressIndicator) {
                 try {
+                    // 极限时序: Backgroundable 排队期间,外部可能先占了 PORT
+                    // 在真正 startOpenCodeProcess() 之前再探测一次
+                    if (OpenCodeApi.isServerPortOpen()) {
+                        thisLogger().info("[OpenCodeServerManager] Port became open during scheduling, reusing external server, project=${project.name}")
+                        getOrCreateConsumer(project)
+                        future.complete(Unit)
+                        return
+                    }
+
                     val process = startOpenCodeProcess()
                     serverProcess.set(process)
 
                     val healthy = OpenCodeApi.waitForServerHealthy(SERVER_START_TIMEOUT_MS)
 
                     if (healthy) {
-                        thisLogger().info("[OpenCodeServerManager] Server started, PID=${process.toHandle().pid()}, port=$PORT")
+                        thisLogger().info("[OpenCodeServerManager] Server started, PID=${process.toHandle().pid()}, port=$PORT, project=${project.name}")
                         thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
                         getOrCreateConsumer(project)
                         onStarted()
+                        future.complete(Unit)
                     } else {
-                        // 健康检查超时，清理已启动的进程树（含 MCP 子进程）
+                        // 健康检查超时,清理已启动的进程树(含 MCP 子进程)
                         killProcessTreeByHandle(process)
                         serverProcess.set(null)
-                        onFailed(Exception("Server not healthy after 30s"))
+                        val e = Exception("Server not healthy after ${SERVER_START_TIMEOUT_MS}ms")
+                        onFailed(e)
+                        future.completeExceptionally(e)
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
                     thisLogger().error("[startOpenCodeServer] Exception: ${e.message}", e)
                     onFailed(e)
+                    future.completeExceptionally(e)
+                } finally {
+                    singleflight.release(future)
                 }
             }
         }
