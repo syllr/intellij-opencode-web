@@ -139,9 +139,17 @@ class AllowParseEventTypesTest {
     }
 
     @Test
-    fun `session_updated is not whitelisted`() {
-        val r = parse("session.updated", mapOf("sessionID" to "s-1"))
-        assertNull(r.parsedMap)
+    fun `session_updated is whitelisted (cached for subagent title check)`() {
+        val r = parse("session.updated", mapOf("sessionID" to "s-1", "info" to mapOf("title" to "t")))
+        assertNotNull(r.parsedMap)
+        assertEquals("session.updated", r.type)
+    }
+
+    @Test
+    fun `message_updated is whitelisted (resets idle suppression on user msg)`() {
+        val r = parse("message.updated", mapOf("sessionID" to "s-1", "info" to mapOf("role" to "user")))
+        assertNotNull(r.parsedMap)
+        assertEquals("message.updated", r.type)
     }
 
     @Test

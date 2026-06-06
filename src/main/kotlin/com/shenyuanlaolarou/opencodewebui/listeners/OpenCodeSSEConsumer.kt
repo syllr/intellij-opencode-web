@@ -73,17 +73,16 @@ class OpenCodeSSEConsumer(
             )
         )
 
-        // 故意放在 companion object(违反 AGENTS.md "禁止静态全局可变状态" 的 HARD RULE):
-        // subagent 追踪需跨 project 共享同一 set —— 放在实例字段会导致
-        // subagent sessionID 在 stop()/onClosed() 后丢失,后续 idle 事件被误判为父 session。
-        // 多项目架构下需保持 LRU set 跨 consumer 实例共享。
-
-        // 有 parentID 的 session —— handleSessionIdle 据此区分子 agent/父 session。
-        private val subagentSessionIds: MutableSet<String> = newLruSet()
-
         // subagent title 模式: "@<agent-name> subagent" (如 "(@explore subagent)")
         private val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
     }
+
+    // [Fix ISSUE-3 多项目隔离] per-instance 缓存/状态集,不再放 companion object:
+    // title 匹配和 idle 抑制都是 per-project 语义,跨 project 共享反而是 bug
+    // (Project A 关闭时 stop() 全局 clear 会污染 Project B 的状态)。
+    // 注:故意违反 AGENTS.md "禁止静态全局可变状态" 注释已删除——这些字段放实例更正确。
+    private val sessionTitles: java.util.concurrent.ConcurrentHashMap<String, String> = java.util.concurrent.ConcurrentHashMap()
+    private val idleNotifiedSessions: MutableSet<String> = newLruSet()
 
     fun start() {
         logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, projectBasePath='$projectBasePath'")
@@ -95,13 +94,15 @@ class OpenCodeSSEConsumer(
     fun stop() {
         connected = false
         watchdogThread?.interrupt()
-        watchdogThread = null
+         watchdogThread = null
         FullRefreshCoordinator.stop()
         eventSourceRef.getAndSet(null)?.close()
         // [Fix #2] 清理静态集合，防止 stop() 后 companion object 集合继续增长
         // onClosed() 只在 SSE 连接关闭时调用，stop() 主动关闭时也需要清理
         SSEEventParser.clearCache()
-        subagentSessionIds.clear()
+        // [Fix #5] 清理 per-instance LRU:title 缓存 + idle 抑制
+        sessionTitles.clear()
+        idleNotifiedSessions.clear()
         logger.info("[OpenCodeSSEConsumer] SSE consumer stopped, static collections cleared")
     }
 
@@ -187,14 +188,21 @@ class OpenCodeSSEConsumer(
         val eventId = parsedMap["id"] as? String
         if (eventId != null && SSEEventParser.isEventProcessed(eventId)) return
 
-        if (type == "session.created") {
+        if (type == "session.created" || type == "session.updated") {
+            // [Fix #3] 缓存 session title 供 handleSessionIdle 用,避免 8s 同步 HTTP 阻塞 SSE 线程
             val sid = parsed.extractSessionID()
-            val parentID = parsed.extractParentID()
-            if (sid != null && parentID != null) {
-                subagentSessionIds.add(sid)
-                if (logger.isDebugEnabled) {
-                    logger.debug("[OpenCodeSSEConsumer] Subagent session tracked: $sid (parent=$parentID)")
-                }
+            val title = parsed.extractTitle()
+            if (sid != null && title != null) {
+                sessionTitles[sid] = title
+            }
+        }
+
+        if (type == "message.updated") {
+            // [Fix #4] 用户发新消息时重置 idle 抑制,允许下次 idle 再次通知
+            val info = (parsedMap["properties"] as? Map<*, *>)?.get("info") as? Map<*, *>
+            val role = info?.get("role") as? String
+            if (role == "user") {
+                parsed.extractSessionID()?.let { idleNotifiedSessions.remove(it) }
             }
         }
 
@@ -233,10 +241,21 @@ class OpenCodeSSEConsumer(
         val parsedMap = parsed.parsedMap
         val sessionID = parsed.extractSessionID() ?: return
 
-        val title = OpenCodeApi.getSession(sessionID).dataOrNull()?.title
+        // [Fix #3] 用 session.created/updated 事件缓存的 title,不再同步 HTTP
+        // (8s 超时会阻塞 SSE 线程,所有后续事件延迟)
+        val title = sessionTitles[sessionID]
         if (title != null && SUBAGENT_TITLE_REGEX.containsMatchIn(title)) {
             if (logger.isDebugEnabled) {
                 logger.debug("[OpenCodeSSEConsumer] Subagent idle suppressed by title: $sessionID (title=$title)")
+            }
+            return
+        }
+
+        // [Fix #4] Per-session idle 抑制:同一 session 第一次 idle 发通知,后续 idle 全抑制
+        // 直到用户发新消息(message.updated role=user)重置
+        if (!idleNotifiedSessions.add(sessionID)) {
+            if (logger.isDebugEnabled) {
+                logger.debug("[OpenCodeSSEConsumer] Idle already notified for session=$sessionID, suppressing")
             }
             return
         }
@@ -253,11 +272,11 @@ class OpenCodeSSEConsumer(
         }
         logger.info("[OpenCodeSSEConsumer] SSE connection closed (gen=$currentGen)")
         SSEEventParser.clearCache()
-        val subagentSize = subagentSessionIds.size
-        subagentSessionIds.clear()
-        if (logger.isDebugEnabled) {
-            logger.debug("[OpenCodeSSEConsumer] Cleared subagentSessionIds ($subagentSize entries)")
-        }
+        // [Fix ISSUE-2 一致性] 同步 stop() 的清理范围:per-instance 缓存
+        // (之前在 companion object,跨实例共享,stop() 全局清即可;
+        // 现在是实例字段,onClosed 也应清——否则 onError 未触发 + watchdog 未重连 + HealthMonitor 未回调的死角下泄漏)
+        sessionTitles.clear()
+        idleNotifiedSessions.clear()
     }
 
     override fun onComment(comment: String) {
@@ -276,10 +295,11 @@ class OpenCodeSSEConsumer(
         //   让 HealthMonitor 正常处理(15s debounce),避免误报
         // 这样无论是 web UI 干净关闭(StreamClosedByServerException)还是 kill -9(EOFException)都能覆盖。
         if (wasConnected) {
-            logger.info("SSE connection lost (was connected): ${error.javaClass.simpleName}: ${error.message}")
+            // 第二参数传 error 让日志框架附加堆栈(诊断 SSE 连接问题根因)
+            logger.info("[OpenCodeSSEConsumer] SSE connection lost (was connected): ${error.javaClass.simpleName}: ${error.message}", error)
             onConnectionLost()
         } else {
-            logger.warn("SSE error (never connected): ${error.javaClass.simpleName}: ${error.message}")
+            logger.warn("[OpenCodeSSEConsumer] SSE error (never connected): ${error.javaClass.simpleName}: ${error.message}", error)
         }
     }
 

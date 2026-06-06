@@ -70,15 +70,17 @@ object SSEEventParser {
         }
     )
 
-    /** 10 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */
+    /** 12 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */
     private val ALLOW_PARSE_EVENT_TYPES = setOf(
         // 4 通知
         "session.idle",
         "session.status",
         "permission.asked",
         "question.asked",
-        // 5 业务
+        // 6 业务 (含 session.updated 缓存 title、message.updated 重置 idle 抑制)
         "session.created",
+        "session.updated",
+        "message.updated",
         "message.part.updated",
         "file.edited",
         "file.watcher.updated",
