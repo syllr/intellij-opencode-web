@@ -221,12 +221,13 @@ class MyToolWindow(toolWindow: ToolWindow) {
         val projectPath = project.basePath ?: return
         val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
 
-        // [Simplification] 直接加载项目页面,不再后台获取 latest session + invokeLater 跳转。
-        // 前端会自动处理 last session 恢复(从 localStorage 或 server API)或创建新 session。
-        // 删除了 executeOnPooledThread + 8s HTTP + invokeLater 跳转 + project.isDisposed 检查,
-        // 流程大幅简化,无竞态。
+        // [决策:不自动恢复 session] 加载项目页到 DirectoryLayout(显示侧栏 + recent sessions),
+        // 由用户在 web UI 内手动点 session。opencode 桌面版/web app 启动后默认停在 HomePage,
+        // 不提供"启动时自动打开 last session"能力;`opencode run --continue`/`--session` 只对 CLI
+        // run/attach 生效,我们走 serve 模式拿不到。历史曾实现过 `getLatestSessionId` 自动恢复
+        // (c5091e5 移除),如需恢复能力见 git history。
         val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath"
-        thisLogger().info("loadProjectPage: url=$url force=$force (no background getLatestSessionId)")
+        thisLogger().info("loadProjectPage: url=$url force=$force (manual session selection)")
         browserPanel.hideStartButton()
         if (mainBrowser == null) {
             thisLogger().info("[Lifecycle] loadProjectPage: mainBrowser is null, creating new browser")

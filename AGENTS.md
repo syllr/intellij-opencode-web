@@ -165,7 +165,8 @@ openspec/
 - 端口 **12396**（非标准，避免与 4096 冲突）
 - 首次打开工具窗口时自动重启服务器，确保 opencode 是最新版本
 - 外部链接走系统浏览器
-- 会话恢复通过 HTTP API（`OpenCodeApi.getLatestSessionId`），不用 SQLite/JDBC
+- 会话加载:不自动恢复;由用户进入项目后在 web UI 内手动点 session
+  (URL 路由 `/$base64dir/session/$id` 支持加载指定 session,API 在 `OpenCodeApi.getSession`)
 - 工具窗口锚定 `right`，实现 `DumbAware`
 - 多项目实例用 `ConcurrentHashMap<Project, MyToolWindow>` 管理
 - 共享 JBCefClient 实例（`sharedJBCefClient`）
