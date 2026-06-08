@@ -60,6 +60,7 @@ class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandl
             return true
         }
         if (commandId == TOGGLE_TOOL_WINDOW_COMMAND_ID) {
+            // 焦点救援:JCEF 偶尔卡死(键盘事件不响应),重建工具窗口是已知有效恢复手段
             MyToolWindowFactory.toggleOpenCodeWebToolWindow(project)
             return true
         }

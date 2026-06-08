@@ -37,13 +37,14 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         /**
-         * 模拟快捷键连按两次：先 hide 触发 JCEF dispose + focus 链清空,
-         * 再 invokeLater 重启。下一轮 EDT 消息本身就是延迟,IDE 有时间完成清理,
-         * 不需要显式 sleep(在 EDT 上 sleep 会冻结 IDE UI)。
+         * 重建 OpenCodeWeb 工具窗口：hide + activate 触发 JCEF 浏览器完全 dispose
+         * 并重新创建。用于解决 JCEF 焦点卡死(键盘事件不响应、textarea 输入丢失)—
+         * 此时重建能清空 CEF 内部 focus 链,Swing 焦点也会重置。
          *
-         * 必须在 EDT 调用 ToolWindow API。JCEF 的 ContextMenu 回调跑在 JCEF 自己的
-         * TThreadPoolServer 线程(非 EDT),所以最外层也必须 invokeLater。
-         * 内层 invokeLater 让 activate 推后到 hide 完成 HIDE 事件派发之后。
+         * 必须在 EDT 调用 ToolWindow API。最外层 invokeLater 把 JCEF 的
+         * ContextMenu 回调线程(非 EDT)切到 EDT;内层 invokeLater 让 activate
+         * 推迟到 hide 完成 HIDE 事件派发之后。不能在 EDT 上 sleep 制造延迟,
+         * 会冻结整个 IDE UI。
          */
         fun toggleOpenCodeWebToolWindow(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
