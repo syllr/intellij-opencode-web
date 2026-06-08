@@ -153,27 +153,28 @@ IntelliJ Plugin
 
 ### 3.1 SSE 状态机不变量
 
-#### 3.1.1 `subagentSessionIds` 不变量
+#### 3.1.1 `sessionTitles` 不变量(原 `subagentSessionIds` 重构)
 
-- `subagentSessionIds` MUST 仅在 `session.created` 事件携带 `parentID` 时添加 sessionID
-- `subagentSessionIds` MUST **不**在 `session.deleted` 时移除(防竞态:防止 `session.deleted` 先于 `session.status(idle)` 到达时,子 agent 的 idle 事件被误判为父 session 的 complete)
-- `subagentSessionIds` MUST 在 SSE 重连时(`onClosed()`)清空
+- `sessionTitles: ConcurrentHashMap<String, String>` MUST 仅在 `session.created` 事件携带 `parentID` 时写入 `(sessionID, title)`(原 `subagentSessionIds` 仅存 ID;新实现存完整 title 用于 UI 通知消息渲染,见 `OpenCodeSSEConsumer.kt:91`)
+- `sessionTitles` MUST **不**在 `session.deleted` 时移除(防竞态:防止 `session.deleted` 先于 `session.status(idle)` 到达时,子 agent 的 idle 事件被误判为父 session 的 complete)
+- `sessionTitles` MUST 在 SSE 重连时(`onClosed()`)和 `stop()` 时清空(`OpenCodeSSEConsumer.kt:115,308`)
+- 容量无硬性 LRU 上限(per-instance,项目生命周期内累计;典型场景 < 1000)
+
+#### 3.1.2 `idleNotifiedSessions` 不变量(原 `sessionIdleFired` 重构)
+
+- `idleNotifiedSessions: MutableSet<String>`(LRU-backed,容量 1000) MUST 仅在成功发 `complete` 通知时添加 sessionID(`OpenCodeSSEConsumer.kt:92`)
+- `idleNotifiedSessions` MUST 在 `message.updated(role=user)` 时移除 sessionID(用户发新消息重置抑制,`OpenCodeSSEConsumer.kt:235`)
+- `idleNotifiedSessions` MUST **不**在 `session.status(busy)` 时移除(防误抑制)
+- `idleNotifiedSessions` MUST 在 SSE 重连时和 `stop()` 时清空
+
+#### 3.1.3 `SSEEventParser.dedupCache` 不变量(原 `idleLastFired` 拆分)
+
+- `dedupCache: Collections.synchronizedMap`(companion object,跨实例共享) MUST 仅做 eventID 去重(`SSEEventParser.kt:65,94`)
+- MUST **不**影响 `sessionTitles` 和 `idleNotifiedSessions` 的状态
 - 容量 MUST 限制为 1000(LRU)
-
-#### 3.1.2 `sessionIdleFired` 不变量
-
-- `sessionIdleFired` MUST 仅在成功发 `complete` 通知时添加 sessionID
-- `sessionIdleFired` MUST 在 `message.updated(role=user)` 时移除 sessionID(用户发新消息重置抑制)
-- `sessionIdleFired` MUST **不**在 `session.status(busy)` 时移除(防误抑制)
-- `sessionIdleFired` MUST 在 SSE 重连时清空
-
-#### 3.1.3 `idleLastFired` 不变量
-
-- `idleLastFired` MUST 仅做时间窗口去重(2s 内同 sessionID 重复 idle 抑制,key 格式 `"{sessionID}:complete"`)
-- MUST **不**影响 `subagentSessionIds` 和 `sessionIdleFired` 的状态
-- 容量 MUST 限制为 500(LRU)
-- MUST 在 `OpenCodeSSEConsumer.stop()` 时清空(SSE 主动关闭)
-- **不**在 SSE 重连时清空(`onClosed()` 只清 `subagentSessionIds` / `sessionIdleFired` / `dedupCache`);`idleLastFired` 仅由 `stop()` 清,与重连不耦合
+- MUST 在 `OpenCodeSSEConsumer.stop()` 时清空(SSE 主动关闭) `SSEEventParser.clearCache()` (`SSEEventParser.kt:98`)
+- **不**在 SSE 重连时清空(`onClosed()` 只清 `sessionTitles` / `idleNotifiedSessions`);`dedupCache` 仅由 `stop()` 清,与重连不耦合
+- 原 `idleLastFired`(2s 时间窗去重)语义已被 `idleNotifiedSessions.add() return false` 替代(集合本身防重复通知,无需时间窗)
 
 ### 3.2 进程状态不变量(`OpenCodeServerManager`)
 
