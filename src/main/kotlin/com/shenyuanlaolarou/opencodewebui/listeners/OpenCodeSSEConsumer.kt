@@ -138,7 +138,7 @@ class OpenCodeSSEConsumer(
         bgEventSource.start()
         // 不再预设 lastEventAt —— bgEventSource.start() 异步,onOpen() 回调确认连接建立后才置 lastEventAt + connected=true。
         // 否则 checkAndLoadContent 立即调 isHealthy() 会假阳性返回 true,绕过 Start 按钮流程。
-        logger.info("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, normalizedPath=$normalizedPath, uri=$uri")
+        logger.debug("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, normalizedPath=$normalizedPath, uri=$uri")
     }
 
     private fun reconnect() {
@@ -182,7 +182,7 @@ class OpenCodeSSEConsumer(
     override fun onOpen() {
         connected = true
         lastEventAt.set(System.currentTimeMillis())
-        logger.info("[OpenCodeSSEConsumer] SSE connection opened")
+        logger.debug("[OpenCodeSSEConsumer] SSE connection opened")
         // 1.5s debounce 触发 onConnectionEstablished。
         // 对齐 LaunchDarkly 首次重试 ~1s + jitter(不放 1.0s 踩边缘,不放 2.0s 延迟感知)。
         // 防御 SSE 瞬时握手成功(被 server 立刻关闭),避免 UI 闪一下 Start 按钮。
@@ -297,10 +297,10 @@ class OpenCodeSSEConsumer(
         val currentGen = activeConnectionGen
         val latestGen = connectionGen.get()
         if (currentGen != latestGen) {
-            logger.info("[OpenCodeSSEConsumer] SSE onClosed for stale connection (gen=$currentGen, latest=$latestGen), skipping cleanup")
+            logger.debug("[OpenCodeSSEConsumer] SSE onClosed for stale connection (gen=$currentGen, latest=$latestGen), skipping cleanup")
             return
         }
-        logger.info("[OpenCodeSSEConsumer] SSE connection closed (gen=$currentGen)")
+        logger.debug("[OpenCodeSSEConsumer] SSE connection closed (gen=$currentGen)")
         SSEEventParser.clearCache()
         // [Fix ISSUE-2 一致性] 同步 stop() 的清理范围:per-instance 缓存
         // (之前在 companion object,跨实例共享,stop() 全局清即可;

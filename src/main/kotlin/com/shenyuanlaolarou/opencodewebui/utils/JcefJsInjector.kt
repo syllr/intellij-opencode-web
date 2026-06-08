@@ -108,7 +108,7 @@ object JcefJsInjector {
 
         try {
             cefBrowser.executeJavaScript(js, "", 0)
-            thisLogger().info("[JcefJsInjector] JS injection executed")
+            thisLogger().debug("[JcefJsInjector] JS injection executed")
         } catch (e: Exception) {
             thisLogger().warn("[JcefJsInjector] JS injection failed: ${e.message}")
         }

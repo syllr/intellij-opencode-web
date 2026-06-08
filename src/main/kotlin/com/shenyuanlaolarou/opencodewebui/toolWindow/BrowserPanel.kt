@@ -1,6 +1,7 @@
 package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.project.Project
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefBrowserBuilder
 import com.intellij.ui.jcef.JBCefClient
@@ -109,8 +110,8 @@ class BrowserPanel(
         repaint()
     }
 
-    fun createMainTab(url: String, projectPath: String): JBCefBrowser {
-        thisLogger().info("[Lifecycle] createMainTab: browser is ${if (browser == null) "null (creating new)" else "existing (will reuse)"}, url=$url")
+    fun createMainTab(url: String, projectPath: String, project: Project): JBCefBrowser {
+        thisLogger().debug("[Lifecycle] createMainTab: browser is ${if (browser == null) "null (creating new)" else "existing (will reuse)"}, url=$url")
         if (browser == null) {
             pageLoaded.set(false) // [O6] 新建浏览器时重置就绪标志
             // [O2] 显式禁用 DevTools 菜单项,减少 ~50-100MB 内存占用,防止用户误开
@@ -121,12 +122,12 @@ class BrowserPanel(
                 .build()
             this.browser = createdBrowser
             add(createdBrowser.component, BorderLayout.CENTER)
-            val handler = LinkContextMenuHandler()
+            val handler = LinkContextMenuHandler(project)
             sharedClient.addContextMenuHandler(handler, createdBrowser.cefBrowser)
             contextMenuHandler = handler
             val myLoadHandler = object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
-                    thisLogger().info("onLoadEnd called, projectPath: $projectPath")
+                    thisLogger().debug("onLoadEnd called, projectPath: $projectPath")
                     if (frame?.isMain == true) {
                         pageLoaded.set(true) // [O6] 主 frame 加载完成，标记就绪
                     }

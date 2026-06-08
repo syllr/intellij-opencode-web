@@ -43,7 +43,7 @@ class AddToPromptAction : AnAction(), DumbAware {
         // 如果焦点在 OpenCode Web 面板中，将焦点移回 IDE 编辑器
         // 注意：不切输入法——这个方向是从 JCEF 回到编辑器，用户可能正在用中文输入
         if (isFocusInOpenCodeWeb(project)) {
-            thisLogger().info("[AddToPromptAction] Focus in OpenCodeWeb, moving focus to editor")
+            thisLogger().debug("[AddToPromptAction] Focus in OpenCodeWeb, moving focus to editor")
             val editorManager = FileEditorManager.getInstance(project)
             val editor = editorManager.selectedTextEditor
             if (editor != null) {
@@ -59,8 +59,6 @@ class AddToPromptAction : AnAction(), DumbAware {
         var selectedText: String?
         var selStart: Int
         var selEnd: Int
-
-        thisLogger().info("[AddToPromptAction] actionPerformed() called")
 
         // 优先尝试从 IdeaVim visual mode 获取选中文本
         if (IdeaVimIntegration.isIdeaVimInstalled()) {

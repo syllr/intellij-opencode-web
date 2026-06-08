@@ -90,17 +90,16 @@ class MyToolWindow(toolWindow: ToolWindow) {
         // 如果没有守卫,会反复 disposeBrowser + showStartButton → UI 闪烁 + 组件泄漏。
         // isShowingStartButton 守卫(已存在但此前从未被读)实现幂等。
         if (isShowingStartButton) {
-            thisLogger().info("showServerNotRunning skipped: already showing start button (幂等)")
+            thisLogger().debug("showServerNotRunning skipped: already showing start button (幂等)")
             return
         }
         // [Fix #4 资源泄漏] onConnectionLost 回调在 LaunchDarkly 后台线程触发(onClosed/onError 异步),
         // 可能晚于 Disposer.register(project) 的清理回调。如果 project 已 dispose,
         // 访问 browserPanel/mainBrowser 等 Swing 组件会触发 "Already disposed" 异常。
         if (project.isDisposed) {
-            thisLogger().info("showServerNotRunning skipped: project already disposed")
+            thisLogger().debug("showServerNotRunning skipped: project already disposed")
             return
         }
-        thisLogger().info("showServerNotRunning called, EDT thread=${Thread.currentThread().name}")
         hasLoaded = false
         mainBrowser = null
         isShowingStartButton = true
@@ -221,11 +220,11 @@ class MyToolWindow(toolWindow: ToolWindow) {
 
     private fun loadProjectPage(force: Boolean = false) {
         if (project.isDisposed) {
-            thisLogger().info("[loadProjectPage] skipped: project already disposed")
+            thisLogger().debug("[loadProjectPage] skipped: project already disposed")
             return
         }
         if (hasLoaded && !force) {
-            logger.info("[loadProjectPage] Already loaded, skipping duplicate call")
+            logger.debug("[loadProjectPage] Already loaded, skipping duplicate call")
             return
         }
         hasLoaded = true
@@ -239,11 +238,11 @@ class MyToolWindow(toolWindow: ToolWindow) {
         // run/attach 生效,我们走 serve 模式拿不到。历史曾实现过 `getLatestSessionId` 自动恢复
         // (c5091e5 移除),如需恢复能力见 git history。
         val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath"
-        thisLogger().info("loadProjectPage: url=$url force=$force (manual session selection)")
+        thisLogger().debug("loadProjectPage: url=$url force=$force (manual session selection)")
         browserPanel.hideStartButton()
         if (mainBrowser == null) {
-            thisLogger().info("[Lifecycle] loadProjectPage: mainBrowser is null, creating new browser")
-            mainBrowser = browserPanel.createMainTab(url, projectPath)
+            thisLogger().debug("[Lifecycle] loadProjectPage: mainBrowser is null, creating new browser")
+            mainBrowser = browserPanel.createMainTab(url, projectPath, project)
             setupBrowserComponent(mainBrowser!!)
         } else {
             mainBrowser?.loadURL(url)

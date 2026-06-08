@@ -1,6 +1,7 @@
 package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.project.Project
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
 import org.cef.callback.CefContextMenuParams
@@ -10,7 +11,7 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.net.URI
 
-class LinkContextMenuHandler : CefContextMenuHandlerAdapter() {
+class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandlerAdapter() {
     override fun onBeforeContextMenu(
         browser: CefBrowser,
         frame: CefFrame,
@@ -18,6 +19,7 @@ class LinkContextMenuHandler : CefContextMenuHandlerAdapter() {
         model: CefMenuModel
     ) {
         model.clear()
+        model.addItem(TOGGLE_TOOL_WINDOW_COMMAND_ID, "Rebuild")
         model.addItem(REFRESH_COMMAND_ID, "Refresh")
         model.addItem(100, "Back")
         model.setEnabled(100, browser.canGoBack())
@@ -57,6 +59,10 @@ class LinkContextMenuHandler : CefContextMenuHandlerAdapter() {
             }
             return true
         }
+        if (commandId == TOGGLE_TOOL_WINDOW_COMMAND_ID) {
+            MyToolWindowFactory.toggleOpenCodeWebToolWindow(project)
+            return true
+        }
         if (commandId == SHUTDOWN_COMMAND_ID) {
             MyToolWindowFactory.shutdownServer()
             return true
@@ -69,5 +75,6 @@ class LinkContextMenuHandler : CefContextMenuHandlerAdapter() {
         const val REFRESH_COMMAND_ID = 26501
         const val SHUTDOWN_COMMAND_ID = 26502
         const val COPY_LINK_AS_PROMPT_COMMAND_ID = 26503
+        const val TOGGLE_TOOL_WINDOW_COMMAND_ID = 26504
     }
 }

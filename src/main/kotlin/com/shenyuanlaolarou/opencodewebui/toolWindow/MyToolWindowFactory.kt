@@ -32,8 +32,29 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         fun openOpenCodeWebToolWindow(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             val toolWindow = toolWindowManager.getToolWindow(OPCODE_WEB_TOOL_WINDOW_ID) ?: return
-            thisLogger().info("[Lifecycle] openOpenCodeWebToolWindow: activating tool window '$OPCODE_WEB_TOOL_WINDOW_ID', myToolWindowInstances.size=${myToolWindowInstances.size}")
+            thisLogger().debug("[Lifecycle] openOpenCodeWebToolWindow: activating tool window '$OPCODE_WEB_TOOL_WINDOW_ID', myToolWindowInstances.size=${myToolWindowInstances.size}")
             toolWindow.activate(null)
+        }
+
+        /**
+         * 模拟快捷键连按两次：先 hide 触发 JCEF dispose + focus 链清空,
+         * 再 invokeLater 重启。下一轮 EDT 消息本身就是延迟,IDE 有时间完成清理,
+         * 不需要显式 sleep(在 EDT 上 sleep 会冻结 IDE UI)。
+         *
+         * 必须在 EDT 调用 ToolWindow API。JCEF 的 ContextMenu 回调跑在 JCEF 自己的
+         * TThreadPoolServer 线程(非 EDT),所以最外层也必须 invokeLater。
+         * 内层 invokeLater 让 activate 推后到 hide 完成 HIDE 事件派发之后。
+         */
+        fun toggleOpenCodeWebToolWindow(project: Project) {
+            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            val toolWindow = toolWindowManager.getToolWindow(OPCODE_WEB_TOOL_WINDOW_ID) ?: return
+            thisLogger().debug("[Lifecycle] toggleOpenCodeWebToolWindow: hiding + reactivating '$OPCODE_WEB_TOOL_WINDOW_ID'")
+            ApplicationManager.getApplication().invokeLater {
+                toolWindow.hide()
+                ApplicationManager.getApplication().invokeLater {
+                    toolWindow.activate(null)
+                }
+            }
         }
 
         internal val sharedJBCefClient by lazy {
@@ -74,12 +95,11 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
     // 【一】插件打开工具窗口时调用（调用时机：用户首次打开 OpenCode 工具窗口）
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        thisLogger().info("[Lifecycle] createToolWindowContent called, project=${project.name}")
+        thisLogger().info("[Lifecycle] createToolWindowContent: MyToolWindow created for project=${project.name}")
         val contentManager = toolWindow.contentManager
 
         // 创建 MyToolWindow，触发 init 块设置 myToolWindowInstance
         val myToolWindow = MyToolWindow(toolWindow)
-        thisLogger().info("[Lifecycle] MyToolWindow instance created, myToolWindowInstance set")
         ApplicationManager.getApplication().invokeLater {
             if (project.isDisposed) return@invokeLater
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)

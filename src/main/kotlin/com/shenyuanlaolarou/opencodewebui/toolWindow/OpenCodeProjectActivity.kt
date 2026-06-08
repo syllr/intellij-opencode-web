@@ -8,12 +8,9 @@ import com.intellij.openapi.startup.ProjectActivity
 class OpenCodeProjectActivity : ProjectActivity {
 
     override suspend fun execute(project: Project) {
-        thisLogger().info("[Lifecycle] Project opened: ${project.name}")
-
         val connection = project.messageBus.connect(project)
         connection.subscribe(com.intellij.openapi.project.ProjectManager.TOPIC, object : ProjectManagerListener {
             override fun projectClosing(project: Project) {
-                thisLogger().info("[Lifecycle] Project closing: ${project.name}")
                 MyToolWindowFactory.contentManagerListeners.remove(project)?.let { listener ->
                     try {
                         com.intellij.openapi.wm.ToolWindowManager.getInstance(project)

@@ -65,14 +65,14 @@ object OpenCodeServerManager {
         // 3. 否则 → 后台启动新进程
         val existing = serverProcess.get()
         if (existing != null && existing.isAlive) {
-            thisLogger().info("[OpenCodeServerManager] Reusing existing server process, project=${project.name}")
+            thisLogger().debug("[OpenCodeServerManager] Reusing existing server process, project=${project.name}")
             getOrCreateConsumer(project)
             onStarted()
             return
         }
 
         if (OpenCodeApi.isServerPortOpen()) {
-            thisLogger().info("[OpenCodeServerManager] Server already listening on port (external), skipping process start, project=${project.name}")
+            thisLogger().debug("[OpenCodeServerManager] Server already listening on port (external), skipping process start, project=${project.name}")
             getOrCreateConsumer(project)
             onStarted()
             return
@@ -98,7 +98,7 @@ object OpenCodeServerManager {
 
         if (!isLeader) {
             // follower: 异步等待 leader 完成,共享结果
-            thisLogger().info("[OpenCodeServerManager] Joining in-flight startup, project=${project.name}")
+            thisLogger().debug("[OpenCodeServerManager] Joining in-flight startup, project=${project.name}")
             future.whenComplete { _, error ->
                 if (error == null) {
                     onStarted()
@@ -116,7 +116,7 @@ object OpenCodeServerManager {
                     // 极限时序: Backgroundable 排队期间,外部可能先占了 PORT
                     // 在真正 startOpenCodeProcess() 之前再探测一次
                     if (OpenCodeApi.isServerPortOpen()) {
-                        thisLogger().info("[OpenCodeServerManager] Port became open during scheduling, reusing external server, project=${project.name}")
+                        thisLogger().debug("[OpenCodeServerManager] Port became open during scheduling, reusing external server, project=${project.name}")
                         getOrCreateConsumer(project)
                         future.complete(Unit)
                         return
@@ -129,7 +129,6 @@ object OpenCodeServerManager {
 
                     if (healthy) {
                         thisLogger().info("[OpenCodeServerManager] Server started, PID=${process.toHandle().pid()}, port=$PORT, project=${project.name}")
-                        thisLogger().info("[OpenCodeServerManager] Creating SSE consumer (server started healthily), project=${project.name}")
                         getOrCreateConsumer(project)
                         onStarted()
                         future.complete(Unit)
@@ -142,7 +141,6 @@ object OpenCodeServerManager {
                         future.completeExceptionally(e)
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
                     thisLogger().error("[startOpenCodeServer] Exception: ${e.message}", e)
                     onFailed(e)
                     future.completeExceptionally(e)
@@ -184,23 +182,14 @@ object OpenCodeServerManager {
     }
 
     private fun acquireServerProcessHandle(): ProcessHandle? {
-        val process = serverProcess.getAndSet(null) ?: run {
-            thisLogger().info("[OpenCodeServerManager] No process reference to stop (server was externally started)")
-            return null
-        }
-        if (!process.isAlive) {
-            thisLogger().info("[OpenCodeServerManager] Process already exited")
-            return null
-        }
+        val process = serverProcess.getAndSet(null) ?: return null
+        if (!process.isAlive) return null
         return process.toHandle()
     }
 
     private fun acquirePortProcessHandle(): ProcessHandle? {
-        thisLogger().info("[OpenCodeServerManager] Graceful shutdown on port $PORT")
+        thisLogger().debug("[OpenCodeServerManager] Graceful shutdown on port $PORT")
         val handle = findProcessByPort()
-        if (handle == null) {
-            thisLogger().info("[OpenCodeServerManager] Port $PORT already free, no process to wait for")
-        }
         return handle
     }
 
@@ -223,11 +212,10 @@ object OpenCodeServerManager {
         errorTag: String
     ) {
         if (!shutdownInProgress.compareAndSet(false, true)) {
-            thisLogger().info("[OpenCodeServerManager] Shutdown already in progress, skipping")
+            thisLogger().debug("[OpenCodeServerManager] Shutdown already in progress, skipping")
             return
         }
         try {
-            thisLogger().info("[OpenCodeServerManager] Stopping all SSE consumers")
             synchronized(this) {
                 consumers.values.forEach { it.stop() }
                 consumers.clear()
@@ -287,7 +275,7 @@ object OpenCodeServerManager {
     private fun requestGracefulDispose() {
         when (val result = OpenCodeApi.disposeServer()) {
             is OpenCodeApiResult.Success -> {
-                thisLogger().info("[OpenCodeServerManager] /global/dispose succeeded, server will exit shortly")
+                thisLogger().debug("[OpenCodeServerManager] /global/dispose succeeded, server will exit shortly")
             }
             is OpenCodeApiResult.Failure -> {
                 if (result.code == 404) {
@@ -299,7 +287,7 @@ object OpenCodeServerManager {
             }
             is OpenCodeApiResult.Unavailable -> {
                 // 2s 客户端超时或连接拒绝。server 仍可能在清理中,主线程继续等 process 退出。
-                thisLogger().info("[OpenCodeServerManager] /global/dispose unavailable (timeout/connection refused), process exit wait continues")
+                thisLogger().debug("[OpenCodeServerManager] /global/dispose unavailable (timeout/connection refused), process exit wait continues")
             }
             is OpenCodeApiResult.Unauthorized -> {
                 thisLogger().warn("[OpenCodeServerManager] /global/dispose 401 unauthorized")
@@ -336,7 +324,6 @@ object OpenCodeServerManager {
         try {
             val handle = process.toHandle()
             val pid = handle.pid()
-            thisLogger().info("[OpenCodeServerManager] Killing process tree via ProcessHandle, PID=$pid")
 
             val descendants = handle.descendants().toList()
             descendants.reversed().forEach { it.destroyForcibly() }
@@ -363,7 +350,6 @@ object OpenCodeServerManager {
      */
     private fun killProcessTreeByPort() {
         try {
-            thisLogger().info("[OpenCodeServerManager] Killing process tree via port lookup (PORT=$PORT)")
             val script = """
                 |_kill_tree() {
                 |    local pid=${'$'}1
@@ -397,7 +383,7 @@ object OpenCodeServerManager {
         processBuilder.directory(java.io.File(homeDir))
         processBuilder.redirectOutput(ProcessBuilder.Redirect.PIPE)
         processBuilder.redirectError(ProcessBuilder.Redirect.PIPE)
-        thisLogger().info("[startOpenCodeProcess] Working directory: $homeDir, command: $command")
+        thisLogger().debug("[startOpenCodeProcess] Working directory: $homeDir, command: $command")
         val process = processBuilder.start()
         pipeToLogger(process, "[opencode]")
         return process
@@ -407,7 +393,7 @@ object OpenCodeServerManager {
         val logger = thisLogger()
         Thread({
             try {
-                process.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.info("$prefix $it") }
+                process.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.debug("$prefix $it") }
             } catch (_: java.io.IOException) {
                 // 进程退出后 stream 关闭,预期行为,静默退出
             } catch (e: Exception) {

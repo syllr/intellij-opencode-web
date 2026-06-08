@@ -32,7 +32,7 @@ object FullRefreshCoordinator {
             }
             scheduler = s
         }
-        logger.info("[FullRefresh] Started, debounce=${DEBOUNCE_MS}ms, root=$projectPath")
+        logger.debug("[FullRefresh] Started, debounce=${DEBOUNCE_MS}ms, root=$projectPath")
     }
 
     fun request() {
@@ -56,7 +56,7 @@ object FullRefreshCoordinator {
         scheduler = null
         projectRoot = null
         refreshInProgress.set(false)
-        logger.info("[FullRefresh] Stopped")
+        logger.debug("[FullRefresh] Stopped")
     }
 
     private fun executeRefresh() {

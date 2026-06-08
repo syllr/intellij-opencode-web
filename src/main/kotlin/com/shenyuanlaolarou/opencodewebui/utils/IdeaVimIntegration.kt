@@ -118,7 +118,7 @@ object IdeaVimIntegration {
             val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
             val exitMethod = vimState::class.java.getMethod("exitVisualMode")
             exitMethod.invoke(vimState)
-            thisLogger().info("[IdeaVimIntegration] Exited visual mode via reflection")
+            thisLogger().debug("[IdeaVimIntegration] Exited visual mode via reflection")
         } catch (e: Exception) {
             thisLogger().warn("[IdeaVimIntegration] exitVisualMode failed: ${e.message}")
         }
