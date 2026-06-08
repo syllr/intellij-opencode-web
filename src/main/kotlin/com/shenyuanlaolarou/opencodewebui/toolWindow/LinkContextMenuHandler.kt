@@ -18,11 +18,11 @@ class LinkContextMenuHandler : CefContextMenuHandlerAdapter() {
         model: CefMenuModel
     ) {
         model.clear()
+        model.addItem(REFRESH_COMMAND_ID, "Refresh")
         model.addItem(100, "Back")
         model.setEnabled(100, browser.canGoBack())
         model.addItem(101, "Forward")
         model.setEnabled(101, browser.canGoForward())
-        model.addItem(REFRESH_COMMAND_ID, "Refresh")
         val linkUrl = params.linkUrl
         if (!linkUrl.isNullOrEmpty()) {
             model.addItem(COPY_LINK_COMMAND_ID, "Open in Browser")
