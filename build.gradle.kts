@@ -33,6 +33,8 @@ repositories {
 dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.opentest4j)
+    testImplementation(libs.mockito)
+    testImplementation(libs.mockitoKotlin)
     implementation(libs.gson)
     implementation(libs.okhttpEventsource)
 

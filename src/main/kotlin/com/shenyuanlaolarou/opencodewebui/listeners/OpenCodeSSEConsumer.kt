@@ -92,7 +92,11 @@ class OpenCodeSSEConsumer(
     }
 
     fun stop() {
+        val wasConnected = connected
         connected = false
+        if (wasConnected) {
+            onConnectionLost()
+        }
         watchdogThread?.interrupt()
          watchdogThread = null
         FullRefreshCoordinator.stop()
