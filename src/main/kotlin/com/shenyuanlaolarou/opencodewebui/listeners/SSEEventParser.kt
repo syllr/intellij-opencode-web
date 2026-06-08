@@ -85,7 +85,7 @@ object SSEEventParser {
         "file.edited",
         "file.watcher.updated",
         "session.diff",
-        // 1 健康信号 —— HealthMonitor 用 parsed.type == "server.heartbeat" 检测,替代 EDT 上的 HTTP 探活
+        // 1 健康信号 —— lastHeartbeatAt 记录,仅作诊断用,无业务逻辑
         "server.heartbeat",
     )
 

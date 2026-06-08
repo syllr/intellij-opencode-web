@@ -22,8 +22,11 @@ class OpenCodeSSEConsumerStopTest {
         connected: Boolean = false,
     ): OpenCodeSSEConsumer {
         val project = mock<Project>()
-        val consumer = OpenCodeSSEConsumer(project = project, onConnectionLost = onConnectionLost)
-        // Simulate SSE 建连状态(等同 LaunchDarkly onOpen 已触发)
+        val consumer = OpenCodeSSEConsumer(
+            project = project,
+            onConnectionLost = onConnectionLost,
+            onConnectionEstablished = {},
+        )
         if (connected) {
             consumer.onOpen()
         }

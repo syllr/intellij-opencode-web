@@ -32,10 +32,15 @@ object OpenCodeServerManager {
 
     fun getOrCreateConsumer(
         project: Project,
-        onConnectionLost: () -> Unit = {}
+        onConnectionLost: () -> Unit = {},
+        onConnectionEstablished: () -> Unit = {},
     ): OpenCodeSSEConsumer {
         return consumers.computeIfAbsent(project) { p ->
-            SSEConsumerFactory.create(p, onConnectionLost).also { it.start() }
+            SSEConsumerFactory.create(p, onConnectionLost, onConnectionEstablished).also { it.start() }
+        }.also { existing ->
+            // 原子更新回调(支持 getOrCreateConsumer 重入时新 caller 覆盖旧 callback)
+            existing.onConnectionLost = onConnectionLost
+            existing.onConnectionEstablished = onConnectionEstablished
         }
     }
 

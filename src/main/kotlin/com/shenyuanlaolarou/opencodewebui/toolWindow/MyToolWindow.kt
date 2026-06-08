@@ -30,7 +30,6 @@ class MyToolWindow(toolWindow: ToolWindow) {
         Disposer.register(project) {
             logger.info("[Lifecycle] Cleaning up MyToolWindow for project=${project.name}")
             MyToolWindowFactory.myToolWindowInstances.remove(project)
-            healthMonitor?.stop()
             browserPanel.disposeBrowser()
             // [Fix #3] 停止该项目的 SSE consumer，断开 OpenCodeServerManager → SSEConsumer → Project 引用链
             OpenCodeServerManager.disposeForProject(project)
@@ -44,15 +43,12 @@ class MyToolWindow(toolWindow: ToolWindow) {
     /**
      * 防 onStarted 5 次回调导致 onServerReady 被调 5 次(单飞在 OpenCodeServerManager
      * 端已做 5→1 进程启动,这里防止 5 个 onStarted 都进 startConsumerAndMonitor
-     * 重建 HealthMonitor 5 次)。
+     * 重建 consumer 5 次)。
      *
      * 每次用户点 Start(onStartClicked 入口)重置回 false;
      * onServerReady 入口 compareAndSet(false, true) 拦截后续 4 次。
      */
     private val isServerReadyHandled = AtomicBoolean(false)
-
-    @Volatile
-    private var healthMonitor: HealthMonitor? = null
 
     /**
      * 工具窗口内容加载入口(用户首次打开 toolWindow 时调一次)。
@@ -64,33 +60,28 @@ class MyToolWindow(toolWindow: ToolWindow) {
     }
 
     /**
-     * 创建/复用 SSE consumer + 启动 HealthMonitor。startServer() 成功后也会调。
-     * HealthMonitor 负责监测 server crash→onUnhealthy→showServerNotRunning 停止 consumer。
+     * 创建/复用 SSE consumer。startServer() 成功后也会调。
      * onConnectionLost 快速通道:server 主动 shutdown 时绕过 15s debounce 立即显示 Start 按钮。
+     * onConnectionEstablished 通道(Part C):SSE 重建 1.5s debounce 后自动调 loadProjectPage 恢复 UI。
      *
-     * [Fix 线程违规] onConnectionLost 在 LaunchDarkly 后台线程被调,
-     * showServerNotRunning 内部含 Swing UI 操作(disposeBrowser/showStartButton),
+     * [Fix 线程违规] onConnectionLost/onConnectionEstablished 在 LaunchDarkly 后台线程被调,
+     * showServerNotRunning/loadProjectPage 内部含 Swing UI 操作(disposeBrowser/showStartButton),
      * 必须 wrap 进 invokeLater 切到 EDT,否则违反 Swing 线程模型 → UI 损坏/死锁。
      */
     private fun startConsumerAndMonitor() {
-        val consumer = OpenCodeServerManager.getOrCreateConsumer(
+        OpenCodeServerManager.getOrCreateConsumer(
             project = project,
             onConnectionLost = {
                 ApplicationManager.getApplication().invokeLater {
                     showServerNotRunning()
                 }
+            },
+            onConnectionEstablished = {
+                ApplicationManager.getApplication().invokeLater {
+                    loadProjectPage(force = true)
+                }
             }
         )
-        // 替换旧 HealthMonitor(如果有)。stop() 幂等,安全覆盖。
-        healthMonitor?.stop()
-        val monitor = HealthMonitor(
-            consumer = consumer,
-            onUnhealthy = { showServerNotRunning() },
-            onRecovered = { loadProjectPage() }
-        )
-        monitor.lastHealthState = consumer.isHealthy()
-        healthMonitor = monitor
-        monitor.start()
     }
 
     private fun showServerNotRunning() {
@@ -115,14 +106,11 @@ class MyToolWindow(toolWindow: ToolWindow) {
         isShowingStartButton = true
         browserPanel.disposeBrowser()
         browserPanel.showStartButton { onStartClicked() }
-        // [Fix 启动时序] 停止后台线程,避免 server 未运行时 5 个线程空转:
-        // - HealthMonitor(5s 轮询 isHealthy,永远 false,无意义)
+        // [Fix 启动时序] 停止后台线程,避免 server 未运行时线程空转:
         // - SSE consumer.watchdog(30s 后每 5s reconnect,连接风暴)
         // - FullRefreshCoordinator(ScheduledExecutorService 常驻)
         // - EventSource 内部 LaunchDarkly 线程(指数退避重试)
         // disposeForProject 幂等(remove 返回 null 时 no-op),用户点 Start 后 startServer() 会重新创建
-        healthMonitor?.stop()
-        healthMonitor = null
         OpenCodeServerManager.disposeForProject(project)
     }
 
@@ -224,7 +212,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
 
     /**
      * server 启动失败的回调(单飞后 5 个 onFailed 都会触发,但幂等只 log)。
-     * UI 回按钮态由 HealthMonitor.onUnhealthy 兜底(单飞层已完成进程清理)。
+     * UI 回按钮态由 onConnectionLost 兜底(单飞层已完成进程清理,server 进程退出触发 SSE onClosed)。
      */
     private fun onServerFailed(e: Exception) {
         thisLogger().error("[MyToolWindow] Server start failed: ${e.message}", e)
@@ -232,6 +220,10 @@ class MyToolWindow(toolWindow: ToolWindow) {
     }
 
     private fun loadProjectPage(force: Boolean = false) {
+        if (project.isDisposed) {
+            thisLogger().info("[loadProjectPage] skipped: project already disposed")
+            return
+        }
         if (hasLoaded && !force) {
             logger.info("[loadProjectPage] Already loaded, skipping duplicate call")
             return

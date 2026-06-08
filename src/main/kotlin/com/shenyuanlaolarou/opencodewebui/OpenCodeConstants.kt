@@ -3,9 +3,7 @@ package com.shenyuanlaolarou.opencodewebui
 const val OPENCODE_PORT = 12396
 const val OPENCODE_HOST = "127.0.0.1"
 
-// 健康检查相关
-const val HEALTH_CHECK_INTERVAL_MS = 5000L
-const val HEALTH_CHECK_START_DELAY_MS = 10000L
+// 健康检查相关（HealthMonitor.kt 在 Part D 整删,仅保留 OpenCodeApi 依赖的轮询常量）
 const val HEALTH_CHECK_POLL_INTERVAL_MS = 2000L
 const val HEALTH_CHECK_INITIAL_DELAY_MS = 1000L
 

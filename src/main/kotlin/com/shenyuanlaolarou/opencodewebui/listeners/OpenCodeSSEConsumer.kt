@@ -26,11 +26,17 @@ import java.util.concurrent.atomic.AtomicReference
 class OpenCodeSSEConsumer(
     private val project: Project,
     /**
-     * SSE 连接被服务端关闭时的回调(快速通道,绕过 HealthMonitor 15s debounce)。
+     * SSE 连接被服务端关闭时的回调(快速通道,绕过 15s 轮询 debounce)。
      * 通常是 server 主动 shutdown 的信号:showServerNotRunning() 应立即被调,
-     * 用户不应等待 HealthMonitor 检测出 unhealthy 才看到 Start 按钮。
+     * 用户不应等待 15s 后才看到 Start 按钮。
      */
-    private val onConnectionLost: () -> Unit = {}
+    @Volatile var onConnectionLost: () -> Unit = {},
+    /**
+     * SSE 连接建立后的回调(替代 HealthMonitor.onRecovered,Part C 修法)。
+     * 在 onOpen() 末尾触发,1.5s debounce 防网络抖动误触。
+     * 字段为 var + @Volatile 支持 getOrCreateConsumer 的 computeIfPresent 重注册机制。
+     */
+    @Volatile var onConnectionEstablished: () -> Unit = {},
 ) : BackgroundEventHandler {
     private val projectBasePath: String? = project.basePath
 
@@ -41,8 +47,9 @@ class OpenCodeSSEConsumer(
 
     // 任何 SSE 事件到达(onMessage)或连接刚建(onOpen)时刷新,watchdog 超时则强制重连。
     private val lastEventAt = AtomicLong(0L)
-    // 最近一次收到 server.heartbeat 的时间戳。HealthMonitor 用作健康信号,
-    // 避免 EDT 上跑 HTTP 探活。0 表示从未收到过心跳。
+    private val lastEstablishedAt = AtomicLong(0L)
+    // 最近一次收到 server.heartbeat 的时间戳,仅作诊断用(无业务消费者)。
+    // 0 表示从未收到过心跳。
     private val lastHeartbeatAt = AtomicLong(0L)
     // SSE 连接已通过 onOpen 确认建立。仅 true 时 isHealthy() 才返回 true,
     // 防止 startSseConnection 后 bgEventSource.start() 异步未完成时假阳性。
@@ -137,6 +144,17 @@ class OpenCodeSSEConsumer(
     private fun reconnect() {
         val idle = System.currentTimeMillis() - lastEventAt.get()
         logger.warn("[OpenCodeSSEConsumer] No event for ${idle}ms, forcing reconnect")
+
+        // [WARNING 自杀时序] onConnectionLost() 必须在 startSseConnection() 之前调:
+        // 1. 早触发 invokeLater → UI 切回 Start 按钮更早(LaunchDarkly 后台线程 → EDT 排队)
+        // 2. 避免 startSseConnection 立即建连触发 onOpen → onConnectionEstablished → loadProjectPage,
+        //    与即将调 onConnectionLost → showServerNotRunning 产生 race(用户看到 UI 闪一下)
+        // 3. connected=false 标记后再建连,New source 由 onOpen(1.5s debounce) 接管恢复路径
+        // zombie 行为(2 个 EventSource 共存)两种顺序完全等价,放前面只为 UX 优化。
+        if (connected) {
+            onConnectionLost()
+        }
+
         val old = eventSourceRef.getAndSet(null)
         startSseConnection()
         old?.close()
@@ -165,6 +183,14 @@ class OpenCodeSSEConsumer(
         connected = true
         lastEventAt.set(System.currentTimeMillis())
         logger.info("[OpenCodeSSEConsumer] SSE connection opened")
+        // 1.5s debounce 触发 onConnectionEstablished。
+        // 对齐 LaunchDarkly 首次重试 ~1s + jitter(不放 1.0s 踩边缘,不放 2.0s 延迟感知)。
+        // 防御 SSE 瞬时握手成功(被 server 立刻关闭),避免 UI 闪一下 Start 按钮。
+        val now = System.currentTimeMillis()
+        if (now - lastEstablishedAt.get() >= 1500L) {
+            lastEstablishedAt.set(now)
+            onConnectionEstablished()
+        }
     }
 
     override fun onMessage(event: String, messageEvent: MessageEvent) {
@@ -178,7 +204,7 @@ class OpenCodeSSEConsumer(
 
         val type = parsed.type ?: return
 
-        // server.heartbeat: HealthMonitor 健康信号,无业务逻辑,直接 return
+        // server.heartbeat: 仅作健康信号记录,无业务逻辑,直接 return
         if (type == "server.heartbeat") {
             lastHeartbeatAt.set(System.currentTimeMillis())
             return
@@ -278,7 +304,7 @@ class OpenCodeSSEConsumer(
         SSEEventParser.clearCache()
         // [Fix ISSUE-2 一致性] 同步 stop() 的清理范围:per-instance 缓存
         // (之前在 companion object,跨实例共享,stop() 全局清即可;
-        // 现在是实例字段,onClosed 也应清——否则 onError 未触发 + watchdog 未重连 + HealthMonitor 未回调的死角下泄漏)
+        // 现在是实例字段,onClosed 也应清——否则 onError 未触发 + watchdog 未重连的死角下泄漏)
         sessionTitles.clear()
         idleNotifiedSessions.clear()
     }
@@ -296,7 +322,7 @@ class OpenCodeSSEConsumer(
         // - wasConnected=true + 任何 error(EOFException / StreamClosedByServerException / ConnectException 等)
         //   → server 之前在跑,现在挂了 → 立即调 onConnectionLost 跳过 15s debounce
         // - wasConnected=false + error → 从未连上(server 未启动/初次连接),不调 onConnectionLost
-        //   让 HealthMonitor 正常处理(15s debounce),避免误报
+        //   避免误报(showServerNotRunning 不会反复 disposeBrowser)
         // 这样无论是 web UI 干净关闭(StreamClosedByServerException)还是 kill -9(EOFException)都能覆盖。
         if (wasConnected) {
             // 第二参数传 error 让日志框架附加堆栈(诊断 SSE 连接问题根因)

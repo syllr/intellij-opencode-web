@@ -8,7 +8,11 @@ import com.intellij.openapi.project.Project
  * 解耦 toolWindow 包对 listeners 包的直接构造依赖。
  */
 object SSEConsumerFactory {
-    fun create(project: Project, onConnectionLost: () -> Unit = {}): OpenCodeSSEConsumer {
-        return OpenCodeSSEConsumer(project, onConnectionLost)
+    fun create(
+        project: Project,
+        onConnectionLost: () -> Unit = {},
+        onConnectionEstablished: () -> Unit = {},
+    ): OpenCodeSSEConsumer {
+        return OpenCodeSSEConsumer(project, onConnectionLost, onConnectionEstablished)
     }
 }

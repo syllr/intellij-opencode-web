@@ -188,7 +188,7 @@ IntelliJ Plugin
 - HTTP 状态码 200 → MUST 返回 `true`
 - HTTP 状态码 ≠ 200 → MUST 返回 `false`
 - 这是**故意的反模式**(AGENTS.md 已标注"按用户决策保留"),**不**修复异常→true 的语义
-- 完整调用方:`OpenCodeApi.isServerHealthySync()` 被 3 处调用 —— `HealthMonitor` 每 5s 轮询、`OpenCodeApi.waitForServerHealthy()` 启动期 2s 轮询、`MyToolWindow.checkAndLoadContent()` 工具窗口首次显示时检查
+- 完整调用方:`OpenCodeApi.isServerHealthySync()` 被 1 处调用 —— `OpenCodeApi.waitForServerHealthy()` 启动期 2s 轮询。`HealthMonitor` 已在 Part D 整删(改由 `OpenCodeSSEConsumer.onConnectionEstablished` 1.5s debounce 替代)
 
 ### 3.4 IDE 通知路由一致性
 
@@ -392,16 +392,14 @@ payload.syncEvent.aggregateID → sessionID(SyncEvent 实体标识)
 - 多 IntelliJ 窗口打开同一 opencode server → 单 SSE consumer + `directory` 路由到正确 Project
 - 项目关闭 → `disposeForProject` 停止该项目的 SSE consumer(若属于该项目)
 
-### 7.5 健康检查机制
+### 7.5 健康检查机制(Part D 改造后)
 
-**`HealthMonitor`(项目级,`toolWindow/HealthMonitor.kt`)**:
+**`HealthMonitor` 已在 shutdown-server-fast-path change 中整删**,原 5s 轮询 + 3 次翻转 debounce 语义由两个 SSE 回调替代:
 
-- 每个 `MyToolWindow` 实例持有一个 `HealthMonitor`,绑定 5s 轮询 + 3 次连续翻转 debounce
-- 健康(healthy)状态改变 → 调 `loadProjectPage()`
-- 不健康(unhealthy)状态改变 → 调 `showServerNotRunning()`(显示启动按钮)
-- 在 `MyToolWindow.checkAndLoadContent()` 首次显示时启动,Dispose 项目时自动停
+- **`OpenCodeSSEConsumer.onConnectionLost`(快速通道)**:server 主动 shutdown 时 SSE 关闭→`stop()` 主动触发→`showServerNotRunning()` 立即显示 Start 按钮(绕过 15s debounce)
+- **`OpenCodeSSEConsumer.onConnectionEstablished`(恢复通道)**:SSE 重建后 `onOpen()` 末尾 1.5s debounce 触发→`loadProjectPage(force = true)` 自动恢复 UI
 
-**`OpenCodeApi.isServerHealthySync()`**:端口检查 + HTTP HEAD 双段,见 §3.3
+**`OpenCodeApi.isServerHealthySync()`**:端口检查 + HTTP HEAD 双段,见 §3.3。**仅在启动期 `waitForServerHealthy` 内部使用**,无运行时轮询。
 
 ### 7.6 日志约定
 

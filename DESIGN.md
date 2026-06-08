@@ -646,30 +646,30 @@ OpenCodeNotificationService.send()
 
 ## 8. 关键文件路径速查
 
-| 想做的事                     | 改哪里                                                         |
-| ---------------------------- | -------------------------------------------------------------- |
-| 工具窗口入口/布局            | `toolWindow/MyToolWindowFactory.kt`                            |
-| 浏览器面板/生命周期          | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`               |
-| 服务器进程启停               | `toolWindow/OpenCodeServerManager.kt`                          |
-| 项目级健康检查(5s 轮询)      | `toolWindow/HealthMonitor.kt`                                  |
-| SSE watchdog + 自动重连(30s) | `listeners/OpenCodeSSEConsumer.kt` 中 `startWatchdog()`        |
-| 键盘快捷键(ESC/Cmd+K/Emacs)  | `toolWindow/JcefKeyboardInterceptor.kt` + `EmacsKeyHandler.kt` |
-| JCEF 右键菜单                | `toolWindow/LinkContextMenuHandler.kt`                         |
-| 项目启动/通知路由            | `toolWindow/OpenCodeProjectActivity.kt`                        |
-| SSE 事件消费与降噪           | `listeners/OpenCodeSSEConsumer.kt`                             |
-| SSE 解析                     | `listeners/SSEEventParser.kt`                                  |
-| Bash 工具事件                | `listeners/BashCommandHandler.kt`                              |
-| 文件刷新(生产者-消费者)      | `listeners/FullRefreshCoordinator.kt`                          |
-| HTTP API(健康/session 等)    | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`                |
-| 通知发送(IDEA 原生)          | `utils/OpenCodeNotificationService.kt`                         |
-| 通知路由(事件→类型)          | `utils/OpenCodeNotificationRouter.kt`                          |
-| 通知配置/状态                | `utils/OpenCodeConfig.kt`                                      |
-| JCEF JS 注入                 | `utils/JcefJsInjector.kt`                                      |
-| IdeaVim visual 模式选区      | `utils/IdeaVimIntegration.kt`                                  |
-| 复制为 Prompt 格式           | `actions/CopyAsPromptAction.kt`                                |
-| 选中代码 → Prompt 编辑器     | `actions/AddToPromptAction.kt`                                 |
-| 端口/超时/间隔常量           | `OpenCodeConstants.kt`                                         |
-| Settings UI                  | `settings/OpenCodeConfigurable.kt`                             |
+| 想做的事                     | 改哪里                                                                        |
+| ---------------------------- | ----------------------------------------------------------------------------- |
+| 工具窗口入口/布局            | `toolWindow/MyToolWindowFactory.kt`                                           |
+| 浏览器面板/生命周期          | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`                              |
+| 服务器进程启停               | `toolWindow/OpenCodeServerManager.kt`                                         |
+| 项目级健康检查(5s 轮询)      | **已删**(Part D),改由 `OpenCodeSSEConsumer.onConnectionLost/Established` 替代 |
+| SSE watchdog + 自动重连(30s) | `listeners/OpenCodeSSEConsumer.kt` 中 `startWatchdog()`                       |
+| 键盘快捷键(ESC/Cmd+K/Emacs)  | `toolWindow/JcefKeyboardInterceptor.kt` + `EmacsKeyHandler.kt`                |
+| JCEF 右键菜单                | `toolWindow/LinkContextMenuHandler.kt`                                        |
+| 项目启动/通知路由            | `toolWindow/OpenCodeProjectActivity.kt`                                       |
+| SSE 事件消费与降噪           | `listeners/OpenCodeSSEConsumer.kt`                                            |
+| SSE 解析                     | `listeners/SSEEventParser.kt`                                                 |
+| Bash 工具事件                | `listeners/BashCommandHandler.kt`                                             |
+| 文件刷新(生产者-消费者)      | `listeners/FullRefreshCoordinator.kt`                                         |
+| HTTP API(健康/session 等)    | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`                               |
+| 通知发送(IDEA 原生)          | `utils/OpenCodeNotificationService.kt`                                        |
+| 通知路由(事件→类型)          | `utils/OpenCodeNotificationRouter.kt`                                         |
+| 通知配置/状态                | `utils/OpenCodeConfig.kt`                                                     |
+| JCEF JS 注入                 | `utils/JcefJsInjector.kt`                                                     |
+| IdeaVim visual 模式选区      | `utils/IdeaVimIntegration.kt`                                                 |
+| 复制为 Prompt 格式           | `actions/CopyAsPromptAction.kt`                                               |
+| 选中代码 → Prompt 编辑器     | `actions/AddToPromptAction.kt`                                                |
+| 端口/超时/间隔常量           | `OpenCodeConstants.kt`                                                        |
+| Settings UI                  | `settings/OpenCodeConfigurable.kt`                                            |
 
 ---
 
