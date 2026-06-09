@@ -60,7 +60,6 @@ class AddToPromptAction : AnAction(), DumbAware {
         var selStart: Int
         var selEnd: Int
 
-        // 优先尝试从 IdeaVim visual mode 获取选中文本
         if (IdeaVimIntegration.isIdeaVimInstalled()) {
             val result = IdeaVimIntegration.getVisualSelection(editor)
             if (result != null) {
@@ -100,7 +99,6 @@ class AddToPromptAction : AnAction(), DumbAware {
         // 焦点进入 OpenCode Web 页面时，默认切英文输入法
         switchInputMethod(IM_SELECT_ARG_EN)
 
-        // 清除选中
         if (IdeaVimIntegration.isIdeaVimInstalled() && IdeaVimIntegration.isInVisualMode(safeEditor)) {
             IdeaVimIntegration.exitVisualMode(safeEditor)
         } else {

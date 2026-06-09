@@ -10,7 +10,6 @@ import com.intellij.ui.jcef.JBCefBrowser
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.swing.JComponent
 
 class MyToolWindow(toolWindow: ToolWindow) {
 

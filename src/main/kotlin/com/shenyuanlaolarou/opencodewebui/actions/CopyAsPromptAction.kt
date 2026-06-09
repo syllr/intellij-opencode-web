@@ -53,7 +53,6 @@ class CopyAsPromptAction : AnAction() {
         clipboard.setContents(StringSelection(formattedContent), null)
     }
 
-    // 只有在编辑器有选中文本时才启用
     override fun update(e: AnActionEvent) {
         val editor: Editor? = e.getData(CommonDataKeys.EDITOR)
         if (editor == null) {
