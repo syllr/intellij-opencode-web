@@ -19,7 +19,7 @@ class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandl
         model: CefMenuModel
     ) {
         model.clear()
-        model.addItem(TOGGLE_TOOL_WINDOW_COMMAND_ID, "Rebuild")
+        model.addItem(RESET_TOOL_WINDOW_COMMAND_ID, "Reset")
         model.addItem(REFRESH_COMMAND_ID, "Refresh")
         model.addItem(100, "Back")
         model.setEnabled(100, browser.canGoBack())
@@ -59,9 +59,10 @@ class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandl
             }
             return true
         }
-        if (commandId == TOGGLE_TOOL_WINDOW_COMMAND_ID) {
-            // 焦点救援:JCEF 偶尔卡死(键盘事件不响应),重建工具窗口是已知有效恢复手段
-            MyToolWindowFactory.toggleOpenCodeWebToolWindow(project)
+        if (commandId == RESET_TOOL_WINDOW_COMMAND_ID) {
+            // 焦点救援:JCEF 偶尔卡死(键盘事件不响应),hide + activate 工具窗口
+            // 已被实测验证能恢复焦点(底层机制未确证)
+            MyToolWindowFactory.resetToolWindow(project)
             return true
         }
         if (commandId == SHUTDOWN_COMMAND_ID) {
@@ -76,6 +77,6 @@ class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandl
         const val REFRESH_COMMAND_ID = 26501
         const val SHUTDOWN_COMMAND_ID = 26502
         const val COPY_LINK_AS_PROMPT_COMMAND_ID = 26503
-        const val TOGGLE_TOOL_WINDOW_COMMAND_ID = 26504
+        const val RESET_TOOL_WINDOW_COMMAND_ID = 26504
     }
 }

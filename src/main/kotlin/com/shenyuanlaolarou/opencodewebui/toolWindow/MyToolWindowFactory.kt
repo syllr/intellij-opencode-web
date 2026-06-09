@@ -37,19 +37,23 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         /**
-         * 重建 OpenCodeWeb 工具窗口：hide + activate 触发 JCEF 浏览器完全 dispose
-         * 并重新创建。用于解决 JCEF 焦点卡死(键盘事件不响应、textarea 输入丢失)—
-         * 此时重建能清空 CEF 内部 focus 链,Swing 焦点也会重置。
+         * 重置 OpenCodeWeb 工具窗口：hide + activate 重新走 show/hide 状态机。
+         * 用于恢复 JCEF 焦点卡死(键盘事件不响应、textarea 输入丢失)—
+         * 实测能恢复焦点,但底层机制(Swing focus 重派发 / CEF visibility
+         * 回调 / 其他)尚未确证。
+         *
+         * 注意:ToolWindow.hide() 不会 dispose JCEF 浏览器实例,也不销毁
+         * ContentManager 的 Content — 这只是 UI 状态归位,不是对象重建。
          *
          * 必须在 EDT 调用 ToolWindow API。最外层 invokeLater 把 JCEF 的
          * ContextMenu 回调线程(非 EDT)切到 EDT;内层 invokeLater 让 activate
          * 推迟到 hide 完成 HIDE 事件派发之后。不能在 EDT 上 sleep 制造延迟,
          * 会冻结整个 IDE UI。
          */
-        fun toggleOpenCodeWebToolWindow(project: Project) {
+        fun resetToolWindow(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             val toolWindow = toolWindowManager.getToolWindow(OPCODE_WEB_TOOL_WINDOW_ID) ?: return
-            thisLogger().debug("[Lifecycle] toggleOpenCodeWebToolWindow: hiding + reactivating '$OPCODE_WEB_TOOL_WINDOW_ID'")
+            thisLogger().debug("[Lifecycle] resetToolWindow: hiding + reactivating '$OPCODE_WEB_TOOL_WINDOW_ID'")
             ApplicationManager.getApplication().invokeLater {
                 toolWindow.hide()
                 ApplicationManager.getApplication().invokeLater {
