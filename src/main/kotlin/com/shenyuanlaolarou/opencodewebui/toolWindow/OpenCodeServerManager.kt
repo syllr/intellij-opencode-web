@@ -144,11 +144,18 @@ object OpenCodeServerManager {
                 consumers.clear()
             }
 
-            // fire-and-forget:dispose HTTP 异步发,不让用户等 HTTP 响应
-            startDisposeThread()
-
+            // [Fix #2 端口误杀] 必须先 acquireHandle() 拿到本 IDE 启的进程,再发 /global/dispose。
+            // 旧顺序: startDisposeThread() 在前 → 无条件发 POST /global/dispose → 再检查 handle
+            //   后果: 用户手动 `opencode serve` 启动的 server(不在 serverProcess 引用里)收到
+            //         dispose 指令后自我退出,即便 handle 检查为 null 提前 return 也晚了。
+            // 新顺序: 先 acquireHandle() 验证进程归属 → 是自家的才发 dispose → 不存在则直接 return。
+            //   并发性不受影响: startDisposeThread() 是 daemon fire-and-forget,与后续
+            //   handle.onExit().get() 依然并行。
             val handle = acquireHandle() ?: return
             thisLogger().info("[OpenCodeServerManager] Waiting for process exit, PID=${handle.pid()}")
+
+            // fire-and-forget:dispose HTTP 异步发,不让用户等 HTTP 响应
+            startDisposeThread()
 
             val startMs = System.currentTimeMillis()
             try {

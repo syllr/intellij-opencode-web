@@ -4,6 +4,11 @@ import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
 import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApiResult
 import com.intellij.openapi.diagnostic.thisLogger
 
+// 可注入的 dispose sender,默认走 OpenCodeApi.disposeServer()。
+// 测试可临时替换为计数 lambda,验证 "acquireHandle 拿不到时不发 dispose" 的契约。
+@Volatile
+internal var disposeSender: () -> OpenCodeApiResult<Unit> = { OpenCodeApi.disposeServer() }
+
 /**
  * 在后台线程发起 POST /global/dispose,记录结果但不阻塞当前调用者。
  * 与关闭策略解耦:dispose 成功/失败都不影响主线程等待 process 退出;
@@ -17,7 +22,7 @@ internal fun OpenCodeServerManager.startDisposeThread() {
 }
 
 internal fun OpenCodeServerManager.requestGracefulDispose() {
-    when (val result = OpenCodeApi.disposeServer()) {
+    when (val result = disposeSender()) {
         is OpenCodeApiResult.Success -> {
             thisLogger().debug("[OpenCodeServerManager] /global/dispose succeeded, server will exit shortly")
         }
