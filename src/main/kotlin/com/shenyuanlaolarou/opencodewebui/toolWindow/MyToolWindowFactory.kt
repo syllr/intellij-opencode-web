@@ -70,8 +70,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
         internal val myToolWindowInstances: ConcurrentHashMap<Project, MyToolWindow> = ConcurrentHashMap()
 
-        internal val contentManagerListeners: ConcurrentHashMap<Project, com.intellij.ui.content.ContentManagerListener> = ConcurrentHashMap()
-
         fun getMainBrowser(project: Project): JBCefBrowser? {
             return myToolWindowInstances[project]?.getBrowser()
         }
@@ -109,16 +107,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             if (project.isDisposed) return@invokeLater
             val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
             toolWindow.contentManager.addContent(content)
-
-            val listener = object : com.intellij.ui.content.ContentManagerListener {
-                override fun selectionChanged(event: com.intellij.ui.content.ContentManagerEvent) {
-                    if (event.content === content) {
-                        myToolWindow.requestBrowserFocus()
-                    }
-                }
-            }
-            toolWindow.contentManager.addContentManagerListener(listener)
-            contentManagerListeners[project] = listener
 
             myToolWindow.checkAndLoadContent()
         }

@@ -7,13 +7,10 @@ import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.ui.jcef.JBCefBrowser
-import java.awt.event.WindowAdapter
-import java.awt.event.WindowEvent
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JComponent
-import javax.swing.SwingUtilities
 
 class MyToolWindow(toolWindow: ToolWindow) {
 
@@ -23,7 +20,6 @@ class MyToolWindow(toolWindow: ToolWindow) {
     private var mainBrowser: JBCefBrowser? = null
 
     init {
-        setupWindowFocusListener(toolWindow)
         MyToolWindowFactory.myToolWindowInstances[project] = this
 
         // 项目关闭时清理：移除 map 引用并释放资源，防止内存泄漏
@@ -113,35 +109,6 @@ class MyToolWindow(toolWindow: ToolWindow) {
         OpenCodeServerManager.disposeForProject(project)
     }
 
-    // [Fix #4] 追踪已注册 listener 的 window，防止 hierarchy 变化时无限累积
-    private var focusListenerWindow: java.awt.Window? = null
-    private var focusListener: java.awt.event.WindowFocusListener? = null
-
-    private fun setupWindowFocusListener(toolWindow: ToolWindow) {
-        browserPanel.addHierarchyListener {
-            val newWindow = SwingUtilities.getWindowAncestor(browserPanel)
-            val oldWindow = focusListenerWindow
-            // 仅当 window 发生变化时才重新注册
-            if (newWindow !== oldWindow) {
-                // 移除旧 window 上的 listener
-                oldWindow?.let { w -> focusListener?.let { l -> w.removeWindowFocusListener(l) } }
-                // 在新 window 上注册
-                newWindow?.let { window ->
-                    val listener = object : WindowAdapter() {
-                        override fun windowGainedFocus(e: WindowEvent?) {
-                            if (toolWindow.isVisible) {
-                                requestBrowserFocus()
-                            }
-                        }
-                    }
-                    window.addWindowFocusListener(listener)
-                    focusListenerWindow = window
-                    focusListener = listener
-                }
-            }
-        }
-    }
-
     fun getContent() = browserPanel
 
     fun getBrowser() = browserPanel.getBrowser()
@@ -154,28 +121,6 @@ class MyToolWindow(toolWindow: ToolWindow) {
         osrComponent?.let { comp ->
             JcefKeyboardInterceptor.interceptKeys(comp)
             EmacsKeyHandler.addEmacsKeyMapping(comp)
-        }
-    }
-
-    fun requestBrowserFocus() {
-        ApplicationManager.getApplication().invokeLater {
-            try {
-                val browser = browserPanel.getBrowser() ?: return@invokeLater
-                val osrComponent = browser.cefBrowser.uiComponent
-                val browserComponent = browser.component
-
-                osrComponent?.let { comp ->
-                    if (comp.isFocusable) {
-                        comp.requestFocus()
-                    }
-                }
-
-                if (browserComponent.isFocusable) {
-                    browserComponent.requestFocus()
-                }
-            } catch (e: Exception) {
-                thisLogger().warn("Failed to request browser focus: ${e.message}")
-            }
         }
     }
 

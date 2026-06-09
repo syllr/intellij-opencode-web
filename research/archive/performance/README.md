@@ -3,7 +3,19 @@
 **日期**: 2026-05-30
 **症状**: 插件运行久了 IDE 变卡，重启后立即恢复
 **怀疑方向**: 内存泄漏、线程泄漏、连接泄漏
-**关联**: 与 jcef-focus-ime 研究密切相关
+**关联**: 无（2026-06 清理：原"与 jcef-focus-ime 研究密切相关"的关联已删除，jcef-focus-ime 调研整体废弃）
+
+> ⚠️ **2026-06 状态更新**（archive 留存说明）
+>
+> 本调研中部分"待修复"问题在后续清理中**通过删除代码**而非"修好"的方式解决：
+>
+> | 原问题                                      | 调研建议                     | 2026-06 实际处置                                                                                                                      |
+> | ------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+> | CRITICAL #1 WindowFocusListener 无限累积    | 修复 listener 引用追踪防累积 | **`requestBrowserFocus()` + `setupWindowFocusListener()` + 整个 WindowFocusListener 机制已删除**（jcef-focus-ime 调研方向被实测无效） |
+> | CRITICAL #3 ContentManagerListener 从不移除 | 改成命名 listener + 反向清理 | **整个 ContentManagerListener 已删除**（只服务 `requestBrowserFocus()`，随 #1 一起删）                                                |
+> | jcef-focus-ime 关联                         | 实施 FocusAdapter            | **`research/jcef-focus-ime/` 整个目录已删除**（实测无效）                                                                             |
+>
+> **当前代码基线不包含上述被删的代码**。下文保留为历史分析记录，不应再作为"待办"参考。**修复优先级表**和**实施建议**章节**已不适用**。
 
 ---
 
@@ -11,9 +23,7 @@
 
 | 严重度          | 问题                                | 文件:行号                         | 类型          |
 | --------------- | ----------------------------------- | --------------------------------- | ------------- |
-| 🔴 **CRITICAL** | WindowFocusListener 无限累积        | `MyToolWindow.kt:69-81`           | 监听器泄漏    |
 | 🔴 **CRITICAL** | sharedClient Handler 累积           | `BrowserPanel.kt:109-146`         | 资源泄漏      |
-| 🔴 **CRITICAL** | ContentManagerListener 从不移除     | `MyToolWindowFactory.kt:84-91`    | 监听器泄漏    |
 | 🟡 **HIGH**     | SSE Consumer 不随项目关闭停止       | `MyToolWindow.kt:31-36`           | 线程/连接泄漏 |
 | 🟡 **HIGH**     | FullRefreshCoordinator 调度器泄漏   | `FullRefreshCoordinator.kt:39-43` | 线程泄漏      |
 | 🟡 **HIGH**     | MessageBusConnection 不断开         | `MyToolWindowFactory.kt:25`       | 连接泄漏      |
@@ -23,77 +33,6 @@
 ---
 
 ## 二、逐项深度分析
-
-### 🔴 CRITICAL #1: WindowFocusListener 无限累积
-
-**文件**: `MyToolWindow.kt:69-81`
-
-```kotlin
-private fun setupWindowFocusListener(toolWindow: ToolWindow) {
-    browserPanel.addHierarchyListener {  // ← 每次层次结构变化都触发
-        SwingUtilities.getWindowAncestor(browserPanel)?.let { window ->
-            window.addWindowFocusListener(object : WindowAdapter() {  // ← 每次都添加新监听器！
-                override fun windowGainedFocus(e: WindowEvent?) {
-                    if (toolWindow.isVisible) {
-                        requestBrowserFocus()
-                    }
-                }
-            })
-        }
-    }
-}
-```
-
-**泄漏机制**：
-
-1. `addHierarchyListener` 注册一个监听器，**每次组件层次结构变化**都触发回调
-2. 回调中 `window.addWindowFocusListener(...)` 每次都创建**匿名新监听器**并添加到 window
-3. 这些监听器**从未被移除**
-4. 层次结构变化频繁发生：`removeAll()`、`add(component)`、`revalidate()`、`repaint()` 都会触发
-
-**放大路径**：
-
-```
-showServerNotRunning() → browserPanel.disposeBrowser() → removeAll()
-    → HierarchyListener 触发 → 新 WindowFocusListener 添加到 window
-
-loadProjectPage() → createMainTab() → add(component) → removeAll() + add()
-    → HierarchyListener 多次触发 → 多个新 WindowFocusListener
-
-每分钟窗口焦点切换 N 次 → N 个监听器全部执行 requestBrowserFocus()
-    → 每个都 invokeLater → EDT 被大量 Runnable 淹没
-```
-
-**影响**：
-
-- 运行 1 小时后，window 上可能累积数百个 WindowFocusListener
-- 每次窗口焦点变化，所有监听器都触发 `requestBrowserFocus()`
-- `requestBrowserFocus()` 通过 `invokeLater` 投递到 EDT
-- EDT 被大量重复任务淹没 → IDE 操作变卡
-- **这就是"运行久了就卡，重启就好"的主因**
-
-**修复**：
-
-```kotlin
-private var windowFocusListener: WindowAdapter? = null
-
-private fun setupWindowFocusListener(toolWindow: ToolWindow) {
-    browserPanel.addHierarchyListener {
-        // 移除旧的 windowFocusListener
-        windowFocusListener?.let { old ->
-            SwingUtilities.getWindowAncestor(browserPanel)?.removeWindowFocusListener(old)
-        }
-        // 添加新的，保存引用以便下次移除
-        val listener = object : WindowAdapter() {
-            override fun windowGainedFocus(e: WindowEvent?) {
-                if (toolWindow.isVisible) requestBrowserFocus()
-            }
-        }
-        windowFocusListener = listener
-        SwingUtilities.getWindowAncestor(browserPanel)?.addWindowFocusListener(listener)
-    }
-}
-```
 
 ---
 
@@ -130,28 +69,6 @@ fun createMainTab(url: String, projectPath: String): JBCefBrowser {
 **修复**：在 `disposeBrowser()` 中移除 handler，或使用 per-browser client。
 
 ---
-
-### 🔴 CRITICAL #3: ContentManagerListener 不移除
-
-**文件**: `MyToolWindowFactory.kt:84-91`
-
-```kotlin
-toolWindow.contentManager.addContentManagerListener(object :
-    com.intellij.ui.content.ContentManagerListener {
-    override fun selectionChanged(event: com.intellij.ui.content.ContentManagerEvent) {
-        if (event.content === content) {
-            myToolWindow.requestBrowserFocus()
-        }
-    }
-})
-```
-
-**泄漏机制**：
-
-- 匿名监听器添加到 `contentManager`，引用了 `content` 和 `myToolWindow`
-- `Disposer.register(project)` 的清理代码中**未移除此监听器**
-- 每次调用 `createToolWindowContent()` 添加一个新的
-- 监听器持有对 `content` 和 `myToolWindow` 的强引用，**阻止它们被 GC**
 
 ---
 
@@ -275,44 +192,9 @@ fun stop() {
 
 ---
 
-## 三、与 JCEF 焦点问题的关联
-
-**关键关联点**：
-
-1. **CRITICAL #1（WindowFocusListener 累积）** 直接导致：
-   - 每次焦点变化触发大量 `requestBrowserFocus()`
-   - `requestBrowserFocus()` 中的 `requestFocus()` 调用触发 Swing 焦点变化
-   - 焦点变化触发 HierarchyListener → 添加更多 WindowFocusListener
-   - **形成恶性循环**：焦点变化 → 更多监听器 → 更多焦点请求 → 更多焦点变化
-
-2. **CRITICAL #2（sharedClient Handler 累积）** 导致：
-   - JCEF Chromium 进程中注册了过多处理器
-   - 每个处理器在事件发生时都被回调
-   - 增加 Chromium 进程的 CPU 和内存消耗
-
-3. **焦点修复需要同时修复泄漏**：
-   - 添加 FocusAdapter 是正确方向（解决 Chromium 焦点同步）
-   - 但如果 WindowFocusListener 累积问题不修复，FocusAdapter 的修复效果会被大量重复调用抵消
-   - **建议**：先修复 WindowFocusListener 泄漏，再实施 FocusAdapter 修复
-
----
-
 ## 四、验证方法
 
-### 4.1 运行时诊断
-
-```kotlin
-// 在 MyToolWindow 中添加诊断代码
-fun diagnoseListenerCount() {
-    val window = SwingUtilities.getWindowAncestor(browserPanel) ?: return
-    val field = window.javaClass.getDeclaredField("windowFocusListeners")
-    // 或者用更简单的方式：
-    logger.info("[Diagnostics] Window listeners count on panel: ${browserPanel.listenerList.listenerCount}")
-    logger.info("[Diagnostics] Window focus listeners count: check via reflection")
-}
-```
-
-### 4.2 线程转储
+### 4.1 线程转储
 
 ```bash
 # 获取 IDE 进程 PID
@@ -336,50 +218,18 @@ jcmd <PID> GC.heap_dump heap.bin
 
 ## 五、修复优先级
 
-| 优先级 | 问题                          | 修复复杂度 | 预期效果              |
-| ------ | ----------------------------- | ---------- | --------------------- |
-| 🔴 P0  | WindowFocusListener 累积      | 低         | **消除 IDE 卡顿主因** |
-| 🔴 P0  | sharedClient Handler 累积     | 中         | 减少 Chromium 负担    |
-| 🔴 P0  | ContentManagerListener 不移除 | 低         | 防止内存泄漏          |
-| 🟡 P1  | SSE Consumer 不停止           | 中         | 减少后台线程          |
-| 🟡 P1  | FullRefreshCoordinator 调度器 | 低         | 停止无用刷新          |
-| 🟡 P1  | MessageBusConnection 不断开   | 低         | 规范化生命周期        |
+| 优先级 | 问题                          | 修复复杂度 | 预期效果           |
+| ------ | ----------------------------- | ---------- | ------------------ |
+| 🔴 P0  | sharedClient Handler 累积     | 中         | 减少 Chromium 负担 |
+| 🟡 P1  | SSE Consumer 不停止           | 中         | 减少后台线程       |
+| 🟡 P1  | FullRefreshCoordinator 调度器 | 低         | 停止无用刷新       |
+| 🟡 P1  | MessageBusConnection 不断开   | 低         | 规范化生命周期     |
 
 ---
 
 ## 六、实施建议
 
-### 第一步：修复 WindowFocusListener 累积（最紧急）
-
-这是"运行久了就卡"的**主因**。修改 `MyToolWindow.kt`：
-
-```kotlin
-private var windowFocusListener: WindowAdapter? = null
-
-private fun setupWindowFocusListener(toolWindow: ToolWindow) {
-    // 先移除旧的
-    windowFocusListener?.let { old ->
-        SwingUtilities.getWindowAncestor(browserPanel)?.removeWindowFocusListener(old)
-    }
-
-    val listener = object : WindowAdapter() {
-        override fun windowGainedFocus(e: WindowEvent?) {
-            if (toolWindow.isVisible) requestBrowserFocus()
-        }
-    }
-    windowFocusListener = listener
-
-    browserPanel.addHierarchyListener {
-        // 层次结构变化时，更新 window 引用
-        windowFocusListener?.let { old ->
-            SwingUtilities.getWindowAncestor(browserPanel)?.removeWindowFocusListener(old)
-        }
-        SwingUtilities.getWindowAncestor(browserPanel)?.addWindowFocusListener(listener)
-    }
-}
-```
-
-### 第二步：修复 sharedClient Handler 累积
+### 第一步：修复 sharedClient Handler 累积
 
 在 `BrowserPanel.disposeBrowser()` 中清理：
 
@@ -409,9 +259,9 @@ Disposer.register(project) {
 
 ## 七、调研文档索引
 
-| 文件                                               | 内容                      |
-| -------------------------------------------------- | ------------------------- |
-| 本文件                                             | 性能退化/泄漏分析（当前） |
-| `../jcef-focus-ime/README.md`                      | JCEF 焦点同步机制（关联） |
-| `../jcef-focus-ime/21-jcef-osr-focus-deep-dive.md` | OSR 焦点深度分析          |
-| `../idea-plugin-integration/README.md`             | IDEA 插件功能集成         |
+| 文件                                               | 内容                           |
+| -------------------------------------------------- | ------------------------------ |
+| 本文件                                             | 性能退化/泄漏分析（当前）      |
+| `../jcef-focus-ime/README.md`                      | **已删除**（2026-06 整体废弃） |
+| `../jcef-focus-ime/21-jcef-osr-focus-deep-dive.md` | **已删除**（2026-06 整体废弃） |
+| `../idea-plugin-integration/README.md`             | IDEA 插件功能集成              |

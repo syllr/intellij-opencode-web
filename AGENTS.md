@@ -81,7 +81,6 @@ IntelliJ Platform 插件 (Kotlin)，为 OpenCode Web UI 提供 JetBrains IDE 集
 - **发布**: AI 禁止自动 `publishPlugin`，必须用户显式调用
 - **Type 抑制**: 禁止 `as Any` / `@ts-ignore` / `@ts-expect-error`（Kotlin 实际无此语法，但等价物同样禁用）
 
-
 ## COMMANDS
 
 ```bash
@@ -142,7 +141,11 @@ IntelliJ Platform 插件 (Kotlin)，为 OpenCode Web UI 提供 JetBrains IDE 集
 - **`local.properties` 已 gitignore 但含明文 RSA 私钥 + 完整证书链 + 发布令牌**。安全风险持续存在；改用 env vars 消除
 - **`.omo/` 已在 `.gitignore` 中，但 10 个文件（2 plans + 8 `run-continuation/ses_*.json`）已意外提交**。要清理需 `git rm --cached -r .omo/`
 - **`research/archive/`** 是已归档的规划文档（idea-plugin-integration 9 个、performance 2 个），**不要**当作当前代码参考来读
-- **`research/jcef-focus-ime/` 是当前活跃参考**：描述的 `FocusAdapter` / `cefBrowser.setFocus(true)` 修复**尚未实施**，`requestBrowserFocus()` 仍只调 Swing `requestFocus()`
+- **JCEF 焦点问题（用户报 "OpenCodeWeb 面板键盘不响应 / 输入法卡顿"）** 唯一的实测有效恢复手段是 `MyToolWindowFactory.resetToolWindow(project)`（hide + activate ToolWindow）。如果未来需要自动化：
+  1. 在 `MyToolWindowFactory` 订阅 `ToolWindowManagerListener.TOPIC`（project-level message bus）
+  2. 重写 `stateChanged(ToolWindowManager)`，过滤 `toolWindowManager.activeToolWindowId == "OpenCodeWeb"`
+  3. 回调内 `invokeLater { resetToolWindow(project) }`，并加 500ms `lastResetAt` 防抖
+  4. **不要**再尝试 `FocusAdapter` / `cefBrowser.setFocus(true)` / `requestFocus()` —— 之前 `requestBrowserFocus()`（仅调 Swing `requestFocus()`）和 `research/jcef-focus-ime/` 8 份研究论证的 FocusAdapter 方向都**实测无效**，整个 `research/jcef-focus-ime/` 目录已删除
 
 ## REFERENCES
 
