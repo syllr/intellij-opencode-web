@@ -30,37 +30,37 @@ class BashCommandHandlerTest {
     }
 
     @Test
-    fun readOnly_singleCommand() {
+    fun bashCompleted_readOnlyCommand_triggersRefresh() {
         val event = buildBashEvent("ls -la")
-        assertFalse(BashCommandHandler.handleBashEvent(event, "/tmp"))
+        assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 
     @Test
-    fun readOnly_chainedWithDoubleAmpersand() {
+    fun bashCompleted_chainedReadonlyCommands_triggersRefresh() {
         val event = buildBashEvent("ls && cat file.txt")
-        assertFalse(BashCommandHandler.handleBashEvent(event, "/tmp"))
+        assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 
     @Test
-    fun readOnly_chainedWithPipe() {
+    fun bashCompleted_pipedReadonlyCommands_triggersRefresh() {
         val event = buildBashEvent("ls | grep foo")
-        assertFalse(BashCommandHandler.handleBashEvent(event, "/tmp"))
+        assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 
     @Test
-    fun readOnly_chainedWithSemicolon() {
+    fun bashCompleted_semicolonReadonlyCommands_triggersRefresh() {
         val event = buildBashEvent("ls; pwd; date")
-        assertFalse(BashCommandHandler.handleBashEvent(event, "/tmp"))
+        assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 
     @Test
-    fun writeCommand_detected() {
+    fun bashCompleted_writeCommand_triggersRefresh() {
         val event = buildBashEvent("touch file.txt")
         assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 
     @Test
-    fun writeCommand_mixedChain() {
+    fun bashCompleted_mixedChain_triggersRefresh() {
         val event = buildBashEvent("ls && rm file.txt")
         assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
@@ -84,20 +84,36 @@ class BashCommandHandlerTest {
     }
 
     @Test
-    fun emptyCommand_skipped() {
+    fun bashCompleted_emptyCommand_triggersRefresh() {
         val event = buildBashEvent("")
-        assertFalse(BashCommandHandler.handleBashEvent(event, "/tmp"))
+        assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 
     @Test
-    fun exitCodeNonZero_skipped() {
+    fun bashCompleted_exitCodeNonZero_triggersRefresh() {
         val event = buildBashEvent("rm file.txt", exitCode = 1)
-        assertFalse(BashCommandHandler.handleBashEvent(event, "/tmp"))
+        assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 
     @Test
-    fun nullProjectDir_skipped() {
+    fun bashCompleted_nullProjectDir_triggersRefresh() {
         val event = buildBashEvent("echo hello > file.txt")
-        assertFalse(BashCommandHandler.handleBashEvent(event, null))
+        assertTrue(BashCommandHandler.handleBashEvent(event, null))
+    }
+
+    @Test
+    fun bashCompleted_missingCommand_triggersRefresh() {
+        val event = mapOf(
+            "properties" to mapOf(
+                "part" to mapOf(
+                    "type" to "tool",
+                    "tool" to "bash",
+                    "state" to mapOf(
+                        "status" to "completed"
+                    )
+                )
+            )
+        )
+        assertTrue(BashCommandHandler.handleBashEvent(event, "/tmp"))
     }
 }

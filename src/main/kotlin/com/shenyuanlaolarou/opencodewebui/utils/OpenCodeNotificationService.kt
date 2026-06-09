@@ -27,11 +27,11 @@ object OpenCodeNotificationService {
     )
 
     /**
-     * SessionInfo LRU 缓存(30s TTL),消除通知路径上的同步 HTTP 调用。
-     * 只缓存 timeCreated(不变)和 title(stale 30s 可接受),避免阻塞 SSE 事件线程。
+     * SessionInfo LRU 缓存(1 hour TTL),消除通知路径上的同步 HTTP 调用。
+     * 只缓存 timeCreated(不变)和 title(stale 1 hour 可接受),避免阻塞 SSE 事件线程。
      */
     private object SessionInfoCache {
-        private const val TTL_MS = 30_000L
+        private const val TTL_MS = 3_600_000L
         private data class Entry(val info: SessionInfo, val cachedAt: Long)
         private val cache = ConcurrentHashMap<String, Entry>()
 
