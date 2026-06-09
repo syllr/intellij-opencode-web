@@ -21,22 +21,24 @@
 核心能力:
 
 - 工具窗口(右侧边栏)嵌入 JCEF 浏览器显示 OpenCode Web UI
-- SSE 消费 opencode server 事件,实现 11 种 IDE 原生通知
+- SSE 消费 opencode server 事件,实现 4 种 IDE 原生通知(permission / complete / question / 其他模板 fallback)
 - 文件变更检测同步 IDE VFS 刷新
 - Bash 工具执行检测,决定是否触发 VFS 刷新
 - Emacs 风格键盘快捷键 + JCEF 键盘拦截(ESC/Cmd+K/Cmd+,)
 - IdeaVim visual 模式兼容(`AddToPromptAction`)
+- Go-style Singleflight 防抖,合并重复点击的服务器启动请求
 
 ### 0.2 子系统清单
 
-| 子系统         | 路径                                 | 角色                                                        |
-| -------------- | ------------------------------------ | ----------------------------------------------------------- |
-| **toolWindow** | `toolWindow/`                        | 工具窗口 + JCEF 浏览器 + 服务器进程 + 键盘拦截(核心 9 文件) |
-| **listeners**  | `listeners/`                         | SSE 事件消费 + 文件刷新协调(4 文件)                         |
-| **actions**    | `actions/`                           | IDE Actions:复制/添加到 Prompt、IdeaVim 集成(2 文件)        |
-| **utils**      | `utils/`                             | HTTP API、JS 注入、通知路由/服务、配置(8 文件)              |
-| **settings**   | `settings/`                          | Settings UI:`OpenCodeConfigurable`(1 文件)                  |
-| **根**         | `OpenCodeConstants.kt` `MyBundle.kt` | 端口/超时/间隔常量 + i18n                                   |
+| 子系统         | 路径                                 | 角色                                                                            |
+| -------------- | ------------------------------------ | ------------------------------------------------------------------------------- |
+| **toolWindow** | `toolWindow/`                        | 工具窗口 + JCEF 浏览器 + 服务器进程 + 键盘拦截 + Singleflight(核心 8 文件)      |
+| **listeners**  | `listeners/`                         | SSE 事件消费 + 文件刷新协调(4 文件)                                             |
+| **actions**    | `actions/`                           | IDE Actions:Copy as Prompt / Add to Prompt(2 文件)                              |
+| **utils**      | `utils/`                             | HTTP API、JS 注入、通知路由/服务、配置、IdeaVim 集成、SSE consumer 工厂(8 文件) |
+| **根**         | `OpenCodeConstants.kt` `MyBundle.kt` | 端口/超时/间隔常量 + i18n                                                       |
+
+> **历史**: `settings/OpenCodeConfigurable.kt` 与 `OpenCodeProjectActivity.kt` 已分别在 commit `a5eafc4`(1.0.20)和 commit `95d7faf`(HEAD)整删;`HealthMonitor.kt` 已在 commit `2e7b302`(Part D)整删。
 
 ### 0.3 部署拓扑
 
@@ -46,37 +48,40 @@
 │                                                                    │
 │  ┌──────────────┐    ┌──────────────────┐    ┌──────────────────┐    │
 │  │  ToolWindow  │───▶│ OpenCodeSSECons- │───▶│ OpenCodeNotifi-  │    │
-│  │  (JCEF)      │    │ umer (单例)       │    │ cationRouter     │    │
-│  │              │    │   - 文件事件      │    │   - Project 路由 │    │
-│  │  ┌────────┐  │    │   - 通知事件      │    └─────────┬───────┘    │
-│  │  │JCEF    │  │    │   - Bash 事件      │              │            │
-│  │  │Browser │  │    └──────────────────┘    ┌───────────▼──────┐    │
-│  │  └────────┘  │              │                │ OpenCodeNotifi-  │    │
-│  └──────────────┘              │                │ cationService    │    │
-│                                ▼                │   - 通知发送     │    │
-│                  ┌────────────────────┐         │   - 路由到 Project │    │
-│                  │  FullRefreshCoord-  │         └──────────────────┘    │
-│                  │  inator(防抖+调度)  │                                │
-│                  └────────────────────┘                                │
+│  │  (JCEF)      │    │ umer(每 Project   │    │ cationRouter     │    │
+│  │              │    │  一个实例)        │    │  (object 10 行)   │    │
+│  │  ┌────────┐  │    │   - 文件事件      │    └─────────┬───────┘    │
+│  │  │JCEF    │  │    │   - 通知事件      │              │            │
+│  │  │Browser │  │    │   - Bash 事件      │              ▼            │
+│  │  └────────┘  │    └──────────────────┘    ┌──────────────────┐    │
+│  └──────────────┘              │              │ OpenCodeNotifi-  │    │
+│                                │              │ cationService    │    │
+│                                │              │  - 通知发送     │    │
+│                                │              │  - 模板占位符    │    │
+│                                │              └──────────────────┘    │
+│                                ▼                                          │
+│                  ┌────────────────────┐                                  │
+│                  │  FullRefreshCoord-  │                                  │
+│                  │  inator(防抖+调度)  │                                  │
+│                  └────────────────────┘                                  │
 │                                                                    │
 │         IDE 进程内(单 JBR 运行时)                                   │
 └──────────────┬─────────────────────────────────────────────────────┘
-               │ HTTP + SSE  (127.0.0.1:12396)
-               ▼
+                │ HTTP + SSE  (127.0.0.1:12396/event?directory=<path>)
+                ▼
 ┌────────────────────────────────────────┐
 │      OpenCode CLI 进程(用户启动)        │
 │      - HTTP /global/health             │
-│      - SSE  /global/event               │
+│      - SSE  /event?directory=...        │
 │      - POST /global/dispose            │
-│      - GET  /session/:id              │
-│      - GET  /session?directory=...     │
+│      - GET  /session/:id               │
 └────────────────────────────────────────┘
 ```
 
 **关键事实**:
 
 - IDE 进程与 OpenCode CLI 是**两个独立进程**,通过 localhost:12396 通信
-- 单 IDE 实例 → 单 OpenCodeServerManager 单例 → 单 SSE consumer(共享给所有打开的 Project)
+- 每 Project 一个 `OpenCodeSSEConsumer` 实例(`SSEConsumerFactory.create(project)`),独立维护 `sessionTitles` / `idleNotifiedSessions` 状态
 - OpenCode CLI 启动方式: `/bin/zsh -l -c "source ~/.zshrc && opencode serve --hostname 127.0.0.1 --port 12396"`(为加载用户 `.zshrc` 中的 PATH)
 
 ---
@@ -85,27 +90,28 @@
 
 ### 1.1 核心矛盾(已解决)
 
-| 矛盾                                        | 解决方案                                                     |
-| ------------------------------------------- | ------------------------------------------------------------ |
-| 单 IDE 实例多 Project 打开,SSE 事件如何路由 | `OpenCodeNotificationRouter` 用 `directory → Project` 注册表 |
-| Subagent 通知会污染主会话,需区分            | `OpenCodeSSEConsumer` 静态 `subagentSessionIds` 本地追踪     |
-| OpenCode 进程可能崩溃,IDE 必须能清理        | `OpenCodeServerManager` 4 阶段关闭策略(§3.2)                 |
-| HTTP 调用阻塞 SSE 事件分发                  | 30s TTL `SessionInfoCache` + 三级 fallback 字段提取          |
+| 矛盾                                        | 解决方案                                                                                |
+| ------------------------------------------- | --------------------------------------------------------------------------------------- |
+| 单 IDE 实例多 Project 打开,SSE 事件如何隔离 | 每 Project 独立 `OpenCodeSSEConsumer` 实例,经 `SSEConsumerFactory.create(project)` 获取 |
+| Subagent 通知会污染主会话,需区分            | `OpenCodeSSEConsumer.sessionTitles` + title 正则(`SUBAGENT_TITLE_REGEX`)本地追踪        |
+| OpenCode 进程可能崩溃,IDE 必须能清理        | `OpenCodeServerManager` 4 阶段关闭策略(§3.2)                                            |
+| HTTP 调用阻塞 SSE 事件分发                  | 30s TTL `SessionInfoCache` + 3 级 fallback 字段提取                                     |
 
 ### 1.2 关键决策
 
-| 决策                | 方案                                                                                                                                 | 收益                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| **进程隔离**        | IDE 进程内仅做客户端消费,OpenCode CLI 独立进程                                                                                       | 故障隔离 + 利用 OpenCode 已有的能力                          |
-| **SSE 复用**        | 复用已有 `/global/event` SSE 连接消费所有事件(文件 + 通知 + bash)                                                                    | 一个连接处理所有事件类型                                     |
-| **单 SSE consumer** | 全局共享一个 consumer(全局单例),按 `directory` 路由通知                                                                              | 资源效率 + 简化协调                                          |
-| **Subagent 追踪**   | 本地 `Set<String>` + `session.created` 增 / `session.status(idle)` 查                                                                | 无 HTTP 调用,无竞态                                          |
-| **通知去抖**        | 2s 时间窗口内同 sessionID 重复 idle 抑制(`idleLastFired` LRU 500)                                                                    | 防止 `session.idle` + `session.status(idle)` 双发            |
-| **通知双模式**      | IDE 前台 + 项目窗口有焦点 → BALLOON;IDE 后台 → macOS 系统通知;多显示器无焦点 → 当前实现静默丢弃(已知限制,详见 §6.2 / `SPEC.md §4.4`) | 覆盖主要使用场景 + 点击跳转正确 IDE                          |
-| **配置存储**        | `PropertiesComponent`(IDE 级别 key-value),无独立文件                                                                                 | 零开销读 + 自动持久化                                        |
-| **进程启动**        | zsh login shell(`-l -c "source ~/.zshrc && opencode serve..."`)                                                                      | 加载用户 `.zshrc` 中的 PATH,确保 opencode 可执行文件可被找到 |
-| **HTTP 客户端**     | `java.net.http.HttpClient` by lazy 共享(无 OkHttp 依赖)                                                                              | JDK 内置,自动 keep-alive 连接池                              |
-| **工厂解耦**        | `SSEConsumerFactory.create(project)` 单例工厂                                                                                        | 工具类 `toolWindow` → `listeners` 依赖单向,无循环引用        |
+| 决策                        | 方案                                                                                                                                           | 收益                                                         |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| **进程隔离**                | IDE 进程内仅做客户端消费,OpenCode CLI 独立进程                                                                                                 | 故障隔离 + 利用 OpenCode 已有的能力                          |
+| **SSE 复用**                | 复用单个 `/event?directory=<path>` SSE 连接消费所有事件(文件 + 通知 + bash),连接按 project 路径分流                                            | 一个连接处理所有事件类型                                     |
+| **每 Project 一 consumer**  | 通过 `SSEConsumerFactory.create(project)` 单例工厂创建独立 consumer(全局 SSE 连接由 `OpenCodeApi.createEventSource(directory)` 按目录路径建立) | 多项目状态隔离 + 简化协调                                    |
+| **Subagent 追踪**           | 本地 `sessionTitles: ConcurrentHashMap<String, String>` + title 正则(`OpenCodeSSEConsumer.SUBAGENT_TITLE_REGEX`)+ `session.created/updated` 增 | 无 HTTP 调用,无竞态                                          |
+| **通知去抖**                | per-consumer `idleNotifiedSessions` 集合(LRU 1000),`add() return false` 原子拦截重复 idle(`OpenCodeSSEConsumer.kt:286`)                        | 防止 `session.idle` + `session.status(idle)` 双发            |
+| **手动启动 + Singleflight** | Go-style `Singleflight.kt` leader/follower 模式 + `MyToolWindow.isServerReadyHandled` CAS 守卫拦截重复 `onServerReady` 回调                    | 并发/重复点击合并为单次进程启动                              |
+| **通知双模式**              | IDE 前台 + 项目窗口有焦点 → BALLOON;IDE 后台 → macOS 系统通知;多显示器无焦点 → 当前实现静默丢弃(已知限制,详见 §6.2 / `SPEC.md §4.4`)           | 覆盖主要使用场景 + 点击跳转正确 IDE                          |
+| **配置存储**                | `PropertiesComponent`(IDE 级别 key-value),无独立文件                                                                                           | 零开销读 + 自动持久化                                        |
+| **进程启动**                | zsh login shell(`-l -c "source ~/.zshrc && opencode serve..."`)                                                                                | 加载用户 `.zshrc` 中的 PATH,确保 opencode 可执行文件可被找到 |
+| **HTTP 客户端**             | `java.net.http.HttpClient` by lazy 共享(无 OkHttp 依赖)                                                                                        | JDK 内置,自动 keep-alive 连接池                              |
+| **工厂解耦**                | `SSEConsumerFactory.create(project)` 单例工厂                                                                                                  | 工具类 `toolWindow` → `listeners` 依赖单向,无循环引用        |
 
 ### 1.3 设计原则
 
@@ -144,7 +150,7 @@ object OpenCodeServerManager {
 
 ### 2.2 `OpenCodeSSEConsumer`(BackgroundEventHandler)
 
-**职责**:消费 SSE 事件流,按事件类型分发给:文件刷新 / 通知 / bash 处理。
+**职责**:消费 SSE 事件流,按事件类型分发给:文件刷新 / 通知 / bash 处理。**每 Project 一个实例**,独立维护 `sessionTitles` / `idleNotifiedSessions` 状态。
 
 **事件分发架构**(在 `onMessage()` line 153+):
 
@@ -155,21 +161,17 @@ onMessage(event, messageEvent)
     │
     ├── 2. dedup 检查 (payload.id)
     │
-    ├── 3. eventType = syncEventType ?: payloadType ?: return
+    ├── 3. eventType = payload.type ?: return
     │
-    ├── 4. session.created → subagentSessionIds 追踪
+    ├── 4. session.created / session.updated → sessionTitles.put(sessionID, title)
     │      session.deleted → DEBUG 日志(不删除追踪,防竞态)
     │
     ├── 5. when(eventType) 通知事件分发
-    │      session.status(idle) → handleSessionIdle
-    │      session.idle        → handleSessionIdle
-    │      session.error       → error / user_cancelled
-    │      permission.asked    → permission
-    │      session.next.tool.called(question) → question
-    │      session.next.tool.called(plan_exit) → plan_exit
-    │      question.asked      → question(fallback)
-    │      message.updated(user) → user_message + sessionIdleFired.remove
-    │      server.connected    → client_connected
+    │      session.status(idle)  → handleSessionIdle
+    │      session.idle          → handleSessionIdle
+    │      permission.asked      → permission 通知
+    │      question.asked        → question 通知
+    │      message.updated(user) → idleNotifiedSessions.remove(不触发通知)
     │
     ├── 6. 文件事件处理
     │      session.diff / file.edited / file.watcher.updated → FullRefreshCoordinator
@@ -178,46 +180,49 @@ onMessage(event, messageEvent)
     └── 7. directory 匹配检查 (eventDir == projectDir)
 ```
 
-**三层去重(`handleSessionIdle`)**(从外到内,任一命中即跳过):
+**两层去重(`handleSessionIdle`)**(从外到内,任一命中即跳过):
 
-1. **子 agent 识别**:`sessionID in subagentSessionIds` → 发 `subagent_complete`,返回
-2. **父 session 抑制**:`sessionID in sessionIdleFired` → 抑制
-3. **时间窗口**:`idleLastFired` 在 2s 内已记录 → 抑制
+1. **子 agent 识别**:title 匹配 `SUBAGENT_TITLE_REGEX`(匹配 `@<agent> subagent` 模式) → 抑制 complete 通知(`OpenCodeSSEConsumer.kt:277`)
+2. **父 session 抑制**:`!idleNotifiedSessions.add(sessionID)` → 抑制(`OpenCodeSSEConsumer.kt:286`)
+3. **用户新消息重置**:`message.updated(role=user)` 时 `idleNotifiedSessions.remove(sessionID)`(`OpenCodeSSEConsumer.kt:235`)
 
 ### 2.3 `SSEEventParser`(object)
 
 **职责**:解析 SSE 事件 JSON,统一为 `ParsedSSEEvent`。
 
-**6 级 sessionID fallback**(`extractSessionID()` 扩展函数):
+**3 级 sessionID fallback**(`extractSessionID()` 扩展函数,`SSEEventParser.kt:37-43`):
 
 ```kotlin
 fun ParsedSSEEvent.extractSessionID(): String? {
-    return props?.get("sessionID")                                  // 1. payload.properties.sessionID
-        ?: data?.get("sessionID")                                   // 2. data.sessionID
-        ?: data?.get("id")                                          // 3. data.id
-        ?: (data?.get("info") as? Map<*, *>)?.get("sessionID")       // 4. data.info.sessionID
-        ?: (data?.get("info") as? Map<*, *>)?.get("id")              // 5. data.info.id
-        ?: syncEvent?.get("aggregateID")                             // 6. syncEvent.aggregateID(SyncEvent V2 实际)
+    val props = parsedMap?.get("properties") as? Map<*, *>
+    val info = props?.get("info") as? Map<*, *>
+    return props?.get("sessionID") as? String        // 1. payload.properties.sessionID
+        ?: info?.get("sessionID") as? String         // 2. payload.properties.info.sessionID
+        ?: info?.get("id") as? String                // 3. payload.properties.info.id
 }
 ```
+
+新 wire 格式(`/event?directory=...` 端点)直出 `{id, type, properties}` 三键,无外层包装,故只需在 `properties.*` 路径内做 3 级 fallback。**已废弃**:旧 wire 格式的 `data.*` / `syncEvent.aggregateID` 路径不再使用(代码 grep 0 命中)。
 
 完整字段位置解释见 `SSEEventParser.kt:21-43` 的 KDoc。
 
 **`parse()` 高频事件快速路径**(`message.part.delta` 跳过 Map 转换):节省每事件 ~2-5KB 对象分配。
 
-### 2.4 `OpenCodeNotificationRouter`(object)
+### 2.4 `OpenCodeNotificationRouter`(object,极简直通)
 
-**职责**:按 SSE 事件的 `directory` 字段路由到正确 Project 的通知 Service。
+**职责**:作为 utils 与 listeners 之间的薄层解耦点。当前实现是单行转发。
 
-**注册时机**(实际只在 1 处,**非**双保险):
+**实现**(`OpenCodeNotificationRouter.kt:1-10`):
 
-- `OpenCodeProjectActivity.execute(project)` 在 `postStartupActivity` 时机注册(line 13)
-- `MyToolWindowFactory.createToolWindowContent()` **不**直接调 `register`,只通过 `OpenCodeServerManager.ensureSSEConsumer(project)` 间接建立 SSE consumer
-- **SPEC GAP-5**:理论上的双保险机制未实施;实际场景下足够(项目级 `ProjectActivity` 在所有项目打开时都会触发)
+```kotlin
+object OpenCodeNotificationRouter {
+    fun notify(eventType: String, properties: Map<*, *>?, project: Project) {
+        OpenCodeNotificationService.send(eventType, properties, project)
+    }
+}
+```
 
-**反注册**:`OpenCodeProjectActivity.projectClosing(project)` 调 `unregister` + 移除 `contentManagerListeners`
-
-**路径规范化**:`File.canonicalPath`,处理符号链接 + 大小写不敏感。
+**注意**:文档早期版本描述的"按 directory 多项目路由"机制**当前未实现**。多项目隔离通过 `OpenCodeSSEConsumer` per-instance 状态(`sessionTitles`、`idleNotifiedSessions`)实现,每个 Project 持有独立 consumer,无需 directory → Project 注册表。
 
 ### 2.5 `OpenCodeNotificationService`(object)
 
@@ -225,7 +230,7 @@ fun ParsedSSEEvent.extractSessionID(): String? {
 
 **30s TTL SessionInfoCache**:消除通知路径上的同步 HTTP 调用,见 `SPEC.md §1.2`。
 
-**双模式通知流程**(参考 `ide-native-notifications/design.md`):
+**双模式通知流程**(参考 `OpenCodeNotificationService.kt:62-113`):
 
 ```kotlin
 fun send(eventType: String, properties: Map<*, *>?, project: Project) {
@@ -233,8 +238,8 @@ fun send(eventType: String, properties: Map<*, *>?, project: Project) {
     val tw = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
     if (tw?.isVisible == true && tw.isActive) return
 
-    // 2. minDuration 过滤 (complete / subagent_complete)
-    if (eventType == "complete" || eventType == "subagent_complete" && minDuration > 0) {
+    // 2. minDuration 过滤(仅 complete;subagent_complete 未实现)
+    if (eventType == "complete" && OpenCodeConfig.minDuration > 0) {
         val info = SessionInfoCache.getOrFetch(sessionID) ?: ...
         if (duration < minDuration) return
     }
@@ -270,29 +275,13 @@ fun send(eventType: String, properties: Map<*, *>?, project: Project) {
 **职责**:
 
 - 4 个通用设置(`notificationEnabled` / `showProjectName` / `showSessionTitle` / `minDuration`)
-- 11 个事件开关(`isEventEnabled` / `setEventEnabled`)
-- 11 个消息模板(`getMessageTemplate` / `setMessageTemplate`)
-- 总计 26 个 key-value
+- **未实现**的事件级别开关(11 个事件类型)和消息模板(11 个模板),总计预期 26 个 key-value —— 当前 GAP-1
 
 **Key 命名**:
 
 - `opencode.settings.{name}` — 4 个通用设置
-- `opencode.event.{type}.enabled` — 11 个事件开关
-- `opencode.message.{type}` — 11 个消息模板
 
-**事件列表**(`ALL_EVENT_TYPES`,11 个):
-
-- `permission`, `complete`, `subagent_complete`, `error`, `question`, `interrupted`, `user_cancelled`, `plan_exit`, `session_started`, `user_message`, `client_connected`
-
-**默认开关**(`defaultEvents()`,10 个 — 注意 `interrupted` **不**在 `defaultEvents` 中,默认 `false`):
-
-- `permission=true`, `complete=true`, `error=true`, `question=true`, `plan_exit=true`
-- `client_connected=false`, `subagent_complete=false`, `interrupted=false`, `user_cancelled=false`, `session_started=false`, `user_message=false`
-- **SPEC GAP-1**:`subagent_complete` 默认关闭是已知问题
-
-**UI 特殊处理**(`OpenCodeConfigurable.createComponent`):
-
-- `interrupted` 复选框 `isEnabled = false`,`toolTipText = "当前环境不支持"`(无 SSE 事件映射)
+**当前实现**(25 行,`OpenCodeConfig.kt`):
 
 ```kotlin
 object OpenCodeConfig {
@@ -300,12 +289,10 @@ object OpenCodeConfig {
     var showProjectName: Boolean
     var showSessionTitle: Boolean
     var minDuration: Int
-    fun isEventEnabled(eventType: String): Boolean
-    fun setEventEnabled(eventType: String, enabled: Boolean)
-    fun getMessageTemplate(eventType: String): String
-    fun setMessageTemplate(eventType: String, template: String)
 }
 ```
+
+**未实现**:`isEventEnabled` / `setEventEnabled` / `getMessageTemplate` / `setMessageTemplate` API;`ALL_EVENT_TYPES` / `defaultEvents()`;Settings UI(`plugin.xml` 无 `<applicationConfigurable>` 注册)。详见 SPEC 附录 A GAP-1。
 
 ---
 
@@ -319,7 +306,6 @@ object OpenCodeConfig {
     ▼
 MyToolWindowFactory.createToolWindowContent()
     │  - 创建 BrowserPanel
-    │  - OpenCodeNotificationRouter.register(project)
     │  - OpenCodeServerManager.ensureSSEConsumer(project)
     │      │
     │      └─ sseConsumer == null → startServer()
@@ -346,27 +332,27 @@ MyToolWindowFactory.createToolWindowContent()
 ```
 OpenCode CLI
     │
-    ├─ session.created.1 [subagent]  ─────────→ OpenCodeSSEConsumer
+    ├─ session.created [subagent]  ─────────→ OpenCodeSSEConsumer
     │                                              │
-    │                                              ├─ extractSessionID() → "ses_sub" (via aggregateID)
-    │                                              ├─ extractParentID() → "ses_parent"
-    │                                              └─ subagentSessionIds.add("ses_sub")
+    │                                              ├─ extractSessionID() → "ses_sub"
+    │                                              ├─ sessionTitles.put("ses_sub", "@code-reviewer subagent: review foo")
+    │                                              └─ return
     │
     ├─ [subagent 工作流 ... file.edited, message.part.delta ...]
     │
     ├─ session.status(type=idle) [subagent] ───→ handleSessionIdle
     │                                              │
-    │                                              ├─ subagentSessionIds 命中 → 发 subagent_complete
+    │                                              ├─ title 匹配 SUBAGENT_TITLE_REGEX → 抑制 complete 通知
     │                                              └─ return
     │
-    ├─ message.updated(role=user) ──────────────→ sessionIdleFired.remove (如果父 session 发新消息)
+    ├─ message.updated(role=user) ──────────────→ idleNotifiedSessions.remove(如果父 session 发新消息)
     │
     └─ session.status(type=idle) [parent] ──────→ handleSessionIdle
-                                                   │
-                                                   ├─ subagentSessionIds 未命中
-                                                   ├─ sessionIdleFired 未命中
-                                                   ├─ 2s 时间窗口未命中
-                                                   └─ 发 complete + sessionIdleFired.add
+                                                    │
+                                                    ├─ title 不匹配 SUBAGENT_TITLE_REGEX
+                                                    ├─ idleNotifiedSessions.add(parentSID) 返回 true
+                                                    ├─ 发 complete 通知
+                                                    └─ return
 ```
 
 ### 3.3 关闭时序(IDE 退出)
@@ -402,25 +388,25 @@ IDE 退出触发 OpenCodeServerManager.stopServer()
 
 ### 4.1 Subagent 本地追踪
 
-**Why**:用 `session.created(parentID)` 识别子 agent,本地 Set 追踪,避免 HTTP API 查 `parentID` 的竞态。
+**Why**:用 `session.created(parentID)` 识别子 agent,本地 Map 追踪,避免 HTTP API 查 `parentID` 的竞态。
 
 **How**:
 
-- 加入:`session.created` 事件 `extractSessionID() + extractParentID()` 都非 null → `subagentSessionIds.add(sid)`
-- 查询:`handleSessionIdle` 中 `sessionID in subagentSessionIds` 决定发 `subagent_complete` 或 `complete`
-- 清理:**不**在 `session.deleted` 移除(防 `session.deleted` 先于 `session.status(idle)` 到达的竞态),只在 SSE 重连时清空
+- 加入:`session.created` / `session.updated` 事件携带 `properties.info.title` → `sessionTitles.put(sid, title)`(`OpenCodeSSEConsumer.kt:225-227`)
+- 查询:`handleSessionIdle` 中检查 `title` 是否匹配 `SUBAGENT_TITLE_REGEX`(匹配 `@<agent> subagent` 模式)决定是否抑制 complete 通知
+- 清理:**不**在 `session.deleted` 移除(防 `session.deleted` 先于 `session.status(idle)` 到达的竞态),只在 SSE 重连和 `stop()` 时清空
 
-**LRU 容量**:1000,超限自动淘汰最久未访问。
+**容量**:无硬性 LRU 上限(per-instance,典型场景 < 1000)。
 
-### 4.2 通知三层去重
+### 4.2 通知两层去重
 
-参考 `SPEC.md §7.1` + `openspec/specs/idle-notification-suppression/spec.md`。
+参考 `SPEC.md §7.1`。
 
-| 层级 | 触发条件                               | 抑制目标                                     |
-| ---- | -------------------------------------- | -------------------------------------------- |
-| 1    | `sessionID in subagentSessionIds`      | 子 agent 误发 complete                       |
-| 2    | `sessionID in sessionIdleFired`        | 父 session 重复 complete                     |
-| 3    | `now - lastFired < 2s` (idleLastFired) | `session.idle` + `session.status(idle)` 双发 |
+| 层级 | 触发条件                                               | 抑制目标                                               |
+| ---- | ------------------------------------------------------ | ------------------------------------------------------ |
+| 1    | title 匹配 `SUBAGENT_TITLE_REGEX`(`@<agent> subagent`) | 子 agent 误发 complete(`OpenCodeSSEConsumer.kt:277`)   |
+| 2    | `!idleNotifiedSessions.add(sessionID)`                 | 父 session 重复 complete(`OpenCodeSSEConsumer.kt:286`) |
+| -    | `message.updated(role=user)` 重置抑制                  | 用户新消息(`OpenCodeSSEConsumer.kt:235`)               |
 
 ### 4.3 SessionInfo 30s LRU 缓存
 
@@ -451,12 +437,12 @@ watchdogThread (daemon)
 3. `old?.close()` 旧连接
 4. `connectionGen.incrementAndGet()` 旧 consumer 的 `onClosed` 自动短路(generation 不匹配)
 
-**重连后清理**(在 `onClosed()`):
+**重连后清理**(在 `onClosed()`,per-instance 状态):
 
-- `SSEEventParser.clearCache()` (dedup cache)
-- `subagentSessionIds.clear()`
-- `sessionIdleFired.clear()`
-- `idleLastFired.clear()`
+- `sessionTitles.clear()` (`OpenCodeSSEConsumer.kt:308`)
+- `idleNotifiedSessions.clear()` (`OpenCodeSSEConsumer.kt:309`)
+
+**`SSEEventParser.dedupCache` 不在 `onClosed()` 清空**,仅由 `stop()` 清空(`SSEEventParser.clearCache()`,`SSEEventParser.kt:98`)。
 
 ### 4.5 ProcessHandle 进程树清理
 
@@ -479,92 +465,71 @@ handle.onExit().get(3s)  // 等待确认
 
 ## 5. SSE 事件协议详解
 
-### 5.1 Direct BusEvent 格式
+### 5.1 当前 wire 格式(`/event?directory=...` 端点)
 
 ```json
 {
-  "directory": "/Users/yutao/IdeaProjects/xxx",
-  "project": "hash",
-  "payload": {
-    "id": "evt_e208271300012MZGbu2gNc47xU",
-    "type": "server.connected",
-    "properties": {}
-  }
-}
-```
-
-- `payload.id` 用于去重(`SSEEventParser.dedupCache`)
-- `payload.type` 用于 Direct BusEvent 路由
-- `directory` 用于多项目路由
-
-### 5.2 SyncEvent V2 格式
-
-```json
-{
-  "directory": "/Users/yutao/IdeaProjects/xxx",
-  "project": "hash",
-  "payload": {
-    "type": "sync",
-    "syncEvent": {
-      "type": "session.created.1",
-      "id": "evt_xxx",
-      "seq": 0,
-      "aggregateID": "ses_xxx",
-      "data": { "info": { "parentID": "ses_parent" } }
+  "id": "evt_e208271300012MZGbu2gNc47xU",
+  "type": "session.status",
+  "properties": {
+    "sessionID": "ses_xxx",
+    "info": {
+      "id": "ses_xxx",
+      "parentID": "ses_parent",
+      "title": "@code-reviewer subagent: review foo"
     },
-    "id": "evt_xxx"
+    "status": { "type": "idle" }
   }
 }
 ```
 
-- `payload.type == "sync"` → SyncEvent 路径
-- `syncEvent.type` 去掉 `.N` 后缀后用于路由(例: `session.created.1 → session.created`)
-- `syncEvent.aggregateID` = session 实体 ID(subagent 追踪关键)
-- `syncEvent.data` = 业务数据
+- `id` 用于去重(`SSEEventParser.dedupCache`)
+- `type` 用于直接路由(无 SyncEvent 嵌套)
+- `properties` 包含 sessionID / info.title / parentID / status.type
+- **已废弃**:旧 SyncEvent V2 格式(`payload.type == "sync"` + `syncEvent.aggregateID`)不再使用
 
-### 5.3 完整事件 → 通知映射
+### 5.2 完整事件 → 通知映射
 
-| SSE 事件                                   | 通知事件类型                     | 默认开关           | 触发条件                                                            |
-| ------------------------------------------ | -------------------------------- | ------------------ | ------------------------------------------------------------------- |
-| `server.connected`                         | `client_connected`               | ❌ false           | SSE 连接建立                                                        |
-| `session.created`(无 parentID)             | `session_started`                | ❌ false           | 用户新会话                                                          |
-| `session.status(type=idle)`                | `complete` / `subagent_complete` | ✅ true / ❌ false | 父/子 session 完成                                                  |
-| `session.idle`(deprecated)                 | 同上                             | 同上               | 兼容旧格式                                                          |
-| `session.error`                            | `error` / `user_cancelled`       | ✅ true / ❌ false | error.name == "MessageAbortedError" → user_cancelled,否则 error     |
-| `permission.asked`                         | `permission`                     | ✅ true            | OpenCode 申请权限                                                   |
-| `message.updated(role=user)`               | `user_message`                   | ❌ false           | 用户发新消息 + 重置 `sessionIdleFired`                              |
-| `session.next.tool.called(tool=question)`  | `question`                       | ✅ true            | 询问用户                                                            |
-| `session.next.tool.called(tool=plan_exit)` | `plan_exit`                      | ✅ true            | Plan 完成                                                           |
-| `question.asked`                           | `question`(fallback)             | ✅ true            | `session.next.tool.called` 不可用时                                 |
-| **`interrupted`**(无 SSE 事件)             | `interrupted`                    | ❌ false(灰色 UI)  | 配置兼容 opencode-notifier 旧配置,Settings 中标灰("当前环境不支持") |
-| `file.edited` / `file.watcher.updated`     | (无通知)                         | —                  | VFS 刷新                                                            |
-| `session.diff`                             | (无通知)                         | —                  | VFS 刷新                                                            |
-| `message.part.updated`                     | (无通知)                         | —                  | BashCommandHandler 检测 bash 工具                                   |
-| `message.part.delta`                       | (无通知)                         | —                  | 高频流式文本增量,SKIP_PARSE 快速路径直接 return                     |
+| SSE 事件                               | 通知事件类型 | 触发条件                                                                      |
+| -------------------------------------- | ------------ | ----------------------------------------------------------------------------- |
+| `session.status(type=idle)`            | `complete`   | 父 session 完成(`OpenCodeSSEConsumer.kt:286`)                                 |
+| `session.status(type=idle)`            | (抑制)       | 子 agent 完成(title 匹配 `SUBAGENT_TITLE_REGEX`,`OpenCodeSSEConsumer.kt:277`) |
+| `session.idle`(deprecated)             | 同上         | 兼容旧格式                                                                    |
+| `permission.asked`                     | `permission` | OpenCode 申请权限                                                             |
+| `question.asked`                       | `question`   | 询问用户                                                                      |
+| `message.updated(role=user)`           | (无通知)     | 仅移除 `idleNotifiedSessions`(重置抑制)                                       |
+| `file.edited` / `file.watcher.updated` | (无通知)     | VFS 刷新                                                                      |
+| `session.diff`                         | (无通知)     | VFS 刷新                                                                      |
+| `message.part.updated`                 | (无通知)     | BashCommandHandler 检测 bash 工具                                             |
+| `message.part.delta`                   | (无通知)     | 高频流式文本增量,SKIP_PARSE 快速路径直接 return                               |
+
+**未实现的映射**(`OpenCodeNotificationService.formatMessage` 中 hardcode 3 个事件模板 `permission` / `complete` / `question`,其余 fallback 到 `eventType` 字符串本身):
+
+- `session.error` → `error` / `user_cancelled`
+- `message.updated(role=user)` → `user_message`
+- `server.connected` → `client_connected`
+- `session.next.tool.called(tool=plan_exit)` → `plan_exit`
+- `session.created`(无 parentID) → `session_started`
+- `subagent_complete`(独立分支)
 
 ---
 
 ## 6. 通知路由与去重
 
-### 6.1 多项目路由
+### 6.1 路由总览(简化,详见 §2.4)
 
 ```
-SSE event (directory=/p/A)
+OpenCodeSSEConsumer.onMessage()
     │
     ▼
-OpenCodeNotificationRouter.notify(eventType, properties, directory)
-    │
-    ├─ normalize(directory) = File.canonicalPath
-    ├─ projectRegistry[dir] = Project?
-    │   ├─ null → 静默丢弃
-    │   └─ non-null → OpenCodeNotificationService.send(eventType, properties, project)
+OpenCodeNotificationRouter.notify(eventType, properties, project)  // 10 行直通
     │
     ▼
 OpenCodeNotificationService.send()
     │
     ├─ 工具窗口聚焦抑制 → 跳过
-    ├─ 事件开关 (OpenCodeConfig.isEventEnabled) → 关闭则跳过
-    ├─ minDuration 过滤 (complete / subagent_complete)
+    ├─ notificationEnabled 关 → 跳过
+    ├─ minDuration 过滤 (仅 complete)
     └─ invokeLater (EDT) 发送
 ```
 
@@ -580,12 +545,12 @@ OpenCodeNotificationService.send()
 
 ### 6.3 通知去重
 
-| 抑制类型                                     | 机制                                                    |
-| -------------------------------------------- | ------------------------------------------------------- |
-| 同一事件 BusEvent + SyncEvent 双发           | `dedupCache`(payload.id,LRU 1000)                       |
-| `session.idle` + `session.status(idle)` 双发 | `idleLastFired` 2s 时间窗口                             |
-| 父 session 重复 complete                     | `sessionIdleFired` 集合 + `message.updated(user)` 重置  |
-| subagent 误发 complete                       | `subagentSessionIds` 集合 + `handleSessionIdle` 第 1 层 |
+| 抑制类型                                     | 机制                                                                   |
+| -------------------------------------------- | ---------------------------------------------------------------------- |
+| 同一事件 BusEvent + SyncEvent 双发           | `dedupCache`(payload.id,LRU 1000)                                      |
+| `session.idle` + `session.status(idle)` 双发 | `idleNotifiedSessions` per-consumer 集合(`add() return false` 拦截)    |
+| 父 session 重复 complete                     | `idleNotifiedSessions` 集合 + `message.updated(user)` 重置             |
+| subagent 误发 complete                       | `sessionTitles` + `SUBAGENT_TITLE_REGEX` + `handleSessionIdle` 第 1 层 |
 
 ---
 
@@ -615,9 +580,8 @@ OpenCodeNotificationService.send()
 | 集合                                           | 容量                   | 线程安全                                     |
 | ---------------------------------------------- | ---------------------- | -------------------------------------------- |
 | `SSEEventParser.dedupCache`                    | 1000                   | `Collections.synchronizedMap(LinkedHashMap)` |
-| `OpenCodeSSEConsumer.subagentSessionIds`       | 1000                   | `Collections.synchronizedSet(LinkedHashMap)` |
-| `OpenCodeSSEConsumer.sessionIdleFired`         | 1000                   | 同上                                         |
-| `OpenCodeSSEConsumer.idleLastFired`            | 500                    | `Collections.synchronizedMap(LinkedHashMap)` |
+| `OpenCodeSSEConsumer.sessionTitles`            | 无界                   | `ConcurrentHashMap`                          |
+| `OpenCodeSSEConsumer.idleNotifiedSessions`     | 1000                   | `Collections.synchronizedSet(LinkedHashMap)` |
 | `OpenCodeNotificationService.SessionInfoCache` | 无界(30s TTL 自然淘汰) | `ConcurrentHashMap`                          |
 
 ### 7.4 Thread 管理
@@ -631,58 +595,51 @@ OpenCodeNotificationService.send()
 
 ### 7.5 Alarm / Editor / MessageBusConnection
 
-| 资源                                                        | 释放方式                                                                                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `JcefJsInjector` 注入 JS 的重试 `Alarm`                     | 不显式 dispose,`Alarms` 在项目关闭时自动清理                                                                        |
-| `BrowserPanel.disposeBrowser()` 释放 3 个 JCEF handler      | `contextMenuHandler` / `loadHandler` / `displayHandler` 全部 `remove*Handler` + `null` 引用清理                     |
-| `MyToolWindowFactory.init` 块的 `MessageBusConnection`      | 无 parent disposable,跟随 application 生命周期                                                                      |
-| `OpenCodeProjectActivity.execute` 的 `MessageBusConnection` | parent = `project`,`projectClosing` 消息触发 `unregister` + 移除 `contentManagerListeners`                          |
-| `OpenCodeNotificationRouter.projectRegistry`                | `OpenCodeProjectActivity.projectClosing` 调 `unregister` 清                                                         |
-| `MyToolWindowFactory.contentManagerListeners`               | `OpenCodeProjectActivity.projectClosing` 移除(配对 `try-catch IllegalStateException` 防御项目已 dispose)            |
-| `MyToolWindowFactory.sharedJBCefClient`                     | JVM 退出时清理(全局单例,`by lazy` 初始化时设置 `ide.browser.jcef.gpu.disable=false` + `--use-angle=metal` 系统属性) |
-| `MyToolWindow` `focusListenerWindow` + `focusListener`      | 浏览器 panel 重新加入 hierarchy 时移除旧 listener,防累积                                                            |
+| 资源                                                   | 释放方式                                                                                                            |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `JcefJsInjector` 注入 JS 的重试 `Alarm`                | 不显式 dispose,`Alarms` 在项目关闭时自动清理                                                                        |
+| `BrowserPanel.disposeBrowser()` 释放 3 个 JCEF handler | `contextMenuHandler` / `loadHandler` / `displayHandler` 全部 `remove*Handler` + `null` 引用清理                     |
+| `MyToolWindowFactory.init` 块的 `MessageBusConnection` | 无 parent disposable,跟随 application 生命周期                                                                      |
+| `MyToolWindowFactory.contentManagerListeners`          | 项目关闭时移除(配对 `try-catch IllegalStateException` 防御项目已 dispose)                                           |
+| `MyToolWindowFactory.sharedJBCefClient`                | JVM 退出时清理(全局单例,`by lazy` 初始化时设置 `ide.browser.jcef.gpu.disable=false` + `--use-angle=metal` 系统属性) |
+| `MyToolWindow` `focusListenerWindow` + `focusListener` | 浏览器 panel 重新加入 hierarchy 时移除旧 listener,防累积                                                            |
 
 ---
 
 ## 8. 关键文件路径速查
 
-| 想做的事                     | 改哪里                                                                        |
-| ---------------------------- | ----------------------------------------------------------------------------- |
-| 工具窗口入口/布局            | `toolWindow/MyToolWindowFactory.kt`                                           |
-| 浏览器面板/生命周期          | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`                              |
-| 服务器进程启停               | `toolWindow/OpenCodeServerManager.kt`                                         |
-| 项目级健康检查(5s 轮询)      | **已删**(Part D),改由 `OpenCodeSSEConsumer.onConnectionLost/Established` 替代 |
-| SSE watchdog + 自动重连(30s) | `listeners/OpenCodeSSEConsumer.kt` 中 `startWatchdog()`                       |
-| 键盘快捷键(ESC/Cmd+K/Emacs)  | `toolWindow/JcefKeyboardInterceptor.kt` + `EmacsKeyHandler.kt`                |
-| JCEF 右键菜单                | `toolWindow/LinkContextMenuHandler.kt`                                        |
-| 项目启动/通知路由            | `toolWindow/OpenCodeProjectActivity.kt`                                       |
-| SSE 事件消费与降噪           | `listeners/OpenCodeSSEConsumer.kt`                                            |
-| SSE 解析                     | `listeners/SSEEventParser.kt`                                                 |
-| Bash 工具事件                | `listeners/BashCommandHandler.kt`                                             |
-| 文件刷新(生产者-消费者)      | `listeners/FullRefreshCoordinator.kt`                                         |
-| HTTP API(健康/session 等)    | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`                               |
-| 通知发送(IDEA 原生)          | `utils/OpenCodeNotificationService.kt`                                        |
-| 通知路由(事件→类型)          | `utils/OpenCodeNotificationRouter.kt`                                         |
-| 通知配置/状态                | `utils/OpenCodeConfig.kt`                                                     |
-| JCEF JS 注入                 | `utils/JcefJsInjector.kt`                                                     |
-| IdeaVim visual 模式选区      | `utils/IdeaVimIntegration.kt`                                                 |
-| 复制为 Prompt 格式           | `actions/CopyAsPromptAction.kt`                                               |
-| 选中代码 → Prompt 编辑器     | `actions/AddToPromptAction.kt`                                                |
-| 端口/超时/间隔常量           | `OpenCodeConstants.kt`                                                        |
-| Settings UI                  | `settings/OpenCodeConfigurable.kt`                                            |
+| 想做的事                                      | 改哪里                                                      |
+| --------------------------------------------- | ----------------------------------------------------------- |
+| 工具窗口入口/布局/JCEF 焦点恢复               | `toolWindow/MyToolWindowFactory.kt`(含 `resetToolWindow()`) |
+| 浏览器面板/生命周期                           | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`            |
+| 服务器进程启停(4 阶段关闭)                    | `toolWindow/OpenCodeServerManager.kt`                       |
+| Singleflight 防抖(手动启动去重)               | `toolWindow/Singleflight.kt`                                |
+| SSE 消费、降噪、自动重连                      | `listeners/OpenCodeSSEConsumer.kt`                          |
+| SSE 解析(含 3 级 sessionID fallback)          | `listeners/SSEEventParser.kt`                               |
+| Bash 工具事件检测                             | `listeners/BashCommandHandler.kt`                           |
+| 文件刷新(生产者-消费者)                       | `listeners/FullRefreshCoordinator.kt`                       |
+| HTTP API(健康/session 等)                     | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`             |
+| 通知发送(IDEA 原生 + macOS 系统)              | `utils/OpenCodeNotificationService.kt`                      |
+| 通知路由(直通薄层)                            | `utils/OpenCodeNotificationRouter.kt`                       |
+| 通知配置(4 个通用设置)                        | `utils/OpenCodeConfig.kt`                                   |
+| SSE consumer 单例工厂                         | `utils/SSEConsumerFactory.kt`                               |
+| JCEF JS 注入                                  | `utils/JcefJsInjector.kt`                                   |
+| IdeaVim visual 模式选区(注入 JS 路径)         | `utils/IdeaVimIntegration.kt`                               |
+| 复制为 Prompt 格式                            | `actions/CopyAsPromptAction.kt`                             |
+| 选中代码 → Prompt 编辑器(含 im-select 硬编码) | `actions/AddToPromptAction.kt`                              |
+| 端口/超时/间隔常量(端口 12396)                | `OpenCodeConstants.kt`                                      |
 
 ---
 
 ## 附录 A:已知的设计权衡
 
-| 决策                                                                              | 权衡                                                                                                       |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| 全局单例 `OpenCodeServerManager`                                                  | 多项目窗口需共享单 SSE consumer + 通过 `directory` 路由                                                    |
-| 静态 `companion object` 集合(subagent 追踪)                                       | 违反 AGENTS.md "禁止静态全局可变状态" HARD RULE,但有前置条件(单 consumer 约束),已加 NOTE                   |
-| `OpenCodeConfig` 用 `PropertiesComponent` 而非 `PersistentStateComponent`         | 简单 key-value 无需对象序列化,代价是不支持嵌套结构(本项目无此需求)                                         |
-| `SessionInfoCache` 30s TTL                                                        | stale 30s 可接受(只缓存 timeCreated,title 不缓存),代价是错过 30s 内的实时变更                              |
-| `zsh -l` 启动 opencode                                                            | 必须 login shell 加载 `.zshrc` 中的 PATH,代价是启动慢 0.5-2s(原 `logDiagnosticEnvironment` 调试代码已删除) |
-| `LruSet` 用 `Collections.synchronizedMap(LinkedHashMap)` 而非 `ConcurrentHashMap` | access-order LRU 需要整体同步(LinkedHashMap 不支持),synchronizedMap 在低竞争下开销可接受                   |
-| `OpenCodeConfigurable.isModified()` 用 `!!` 强转                                  | IntelliJ Platform 契约保证 `createComponent()` 先于 `isModified()`,NPE 不会触发,代码可读性 OK(SPEC GAP-7)  |
-| `OpenCodeNotificationRouter` 注册单点(非双保险)                                   | 实际场景下 `OpenCodeProjectActivity.execute(postStartupActivity)` 已覆盖所有项目打开时机(SPEC GAP-5)       |
-| `JcefKeyboardInterceptor.interceptKeysRecursive` 死代码                           | 保留为工具方法供未来递归场景使用,当前只调单层 `interceptKeys`(SPEC GAP-6)                                  |
+| 决策                                                                                         | 权衡                                                                                                       |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 每 Project 一个 `OpenCodeSSEConsumer` 实例                                                   | 多项目状态天然隔离,无需 directory → Project 注册表                                                         |
+| 静态 `companion object` 集合(`idleNotifiedSessions` / `dedupCache` / `SUBAGENT_TITLE_REGEX`) | 违反 AGENTS.md "禁止静态全局可变状态" HARD RULE,但有前置条件(per-consumer 单例约束),已加 NOTE              |
+| `OpenCodeConfig` 用 `PropertiesComponent` 而非 `PersistentStateComponent`                    | 简单 key-value 无需对象序列化,代价是不支持嵌套结构(本项目无此需求)                                         |
+| `SessionInfoCache` 30s TTL                                                                   | stale 30s 可接受(只缓存 timeCreated,title 不缓存),代价是错过 30s 内的实时变更                              |
+| `zsh -l` 启动 opencode                                                                       | 必须 login shell 加载 `.zshrc` 中的 PATH,代价是启动慢 0.5-2s(原 `logDiagnosticEnvironment` 调试代码已删除) |
+| `LruSet` 用 `Collections.synchronizedMap(LinkedHashMap)` 而非 `ConcurrentHashMap`            | access-order LRU 需要整体同步(LinkedHashMap 不支持),synchronizedMap 在低竞争下开销可接受                   |
+| `OpenCodeNotificationRouter` 当前是 10 行直通(无 directory 路由)                             | 历史上预期按 directory → Project 路由,实际未实现(SPEC GAP-5);当前 per-consumer 隔离已覆盖需求              |
+| `JcefKeyboardInterceptor.interceptKeysRecursive` 死代码                                      | 保留为工具方法供未来递归场景使用,当前只调单层 `interceptKeys`(SPEC GAP-6)                                  |
