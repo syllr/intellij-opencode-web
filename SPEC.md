@@ -63,12 +63,12 @@ IntelliJ Plugin
 | 端点                                 | P99 时延目标    | 备注                                                       |
 | ------------------------------------ | --------------- | ---------------------------------------------------------- |
 | `GET /global/health`(健康检查)       | < 100ms         | HEAD 请求;**实际超时上限由 `HTTP_TIMEOUT_MS=8000ms` 决定** |
-| `GET /session/:id`(SessionInfo 查询) | < 200ms         | 30s LRU 缓存命中后零开销                                   |
+| `GET /session/:id`(SessionInfo 查询) | < 200ms         | 1h LRU 缓存命中后零开销                                    |
 | `POST /global/dispose`(优雅关闭)     | < 2s 客户端超时 | 异步 fire-and-forget, 不阻塞主线程                         |
 
 **Spec**:
 
-- 系统 MUST 用 `SessionInfoCache`(30s TTL)消除通知路径上的同步 HTTP 调用
+- 系统 MUST 用 `SessionInfoCache`(1h TTL)消除通知路径上的同步 HTTP 调用
 - 系统 MUST 在 `getSession` 失败时降级为不带标题的占位符模板,不抛异常中断通知
 
 ### 1.3 可用性目标

@@ -95,7 +95,7 @@
 | 单 IDE 实例多 Project 打开,SSE 事件如何隔离 | 每 Project 独立 `OpenCodeSSEConsumer` 实例,经 `SSEConsumerFactory.create(project)` 获取 |
 | Subagent 通知会污染主会话,需区分            | `OpenCodeSSEConsumer.sessionTitles` + title 正则(`SUBAGENT_TITLE_REGEX`)本地追踪        |
 | OpenCode 进程可能崩溃,IDE 必须能清理        | `OpenCodeServerManager` 4 阶段关闭策略(§3.2)                                            |
-| HTTP 调用阻塞 SSE 事件分发                  | 30s TTL `SessionInfoCache` + 3 级 fallback 字段提取                                     |
+| HTTP 调用阻塞 SSE 事件分发                  | 1h TTL `SessionInfoCache` + 3 级 fallback 字段提取                                      |
 
 ### 1.2 关键决策
 
@@ -228,7 +228,7 @@ object OpenCodeNotificationRouter {
 
 **职责**:构造通知内容(模板 + 占位符) + 双模式发送(BALLOON + SystemNotifications)。
 
-**30s TTL SessionInfoCache**:消除通知路径上的同步 HTTP 调用,见 `SPEC.md §1.2`。
+**1h TTL SessionInfoCache**:消除通知路径上的同步 HTTP 调用,见 `SPEC.md §1.2`。
 
 **双模式通知流程**(参考 `OpenCodeNotificationService.kt:62-113`):
 
@@ -414,14 +414,14 @@ IDE 退出触发 OpenCodeServerManager.stopServer()
 | 2    | `!idleNotifiedSessions.add(sessionID)`                 | 父 session 重复 complete(`OpenCodeSSEConsumer.kt:286`) |
 | -    | `message.updated(role=user)` 重置抑制                  | 用户新消息(`OpenCodeSSEConsumer.kt:235`)               |
 
-### 4.3 SessionInfo 30s LRU 缓存
+### 4.3 SessionInfo 1h LRU 缓存
 
 **Why**:通知路径上 `getSession` 同步 HTTP 调用会阻塞 SSE 事件线程。
 
 **How**:
 
 - `SessionInfoCache` 私有 `object`,`ConcurrentHashMap<String, Entry>`
-- `Entry(info: SessionInfo, cachedAt: Long)`,TTL 30s
+- `Entry(info: SessionInfo, cachedAt: Long)`,TTL 1h
 - `get(sessionID)` 命中且未过期 → 返回;过期或未命中 → 调 `OpenCodeApi.getSession`
 - **不**缓存会变的字段(title),只缓存稳定的 `timeCreated`
 
@@ -583,12 +583,12 @@ OpenCodeNotificationService.send()
 
 ### 7.3 LRU 缓存
 
-| 集合                                           | 容量                   | 线程安全                                     |
-| ---------------------------------------------- | ---------------------- | -------------------------------------------- |
-| `SSEEventParser.dedupCache`                    | 1000                   | `Collections.synchronizedMap(LinkedHashMap)` |
-| `OpenCodeSSEConsumer.sessionTitles`            | 无界                   | `ConcurrentHashMap`                          |
-| `OpenCodeSSEConsumer.idleNotifiedSessions`     | 1000                   | `Collections.synchronizedSet(LinkedHashMap)` |
-| `OpenCodeNotificationService.SessionInfoCache` | 无界(30s TTL 自然淘汰) | `ConcurrentHashMap`                          |
+| 集合                                           | 容量                  | 线程安全                                     |
+| ---------------------------------------------- | --------------------- | -------------------------------------------- |
+| `SSEEventParser.dedupCache`                    | 1000                  | `Collections.synchronizedMap(LinkedHashMap)` |
+| `OpenCodeSSEConsumer.sessionTitles`            | 无界                  | `ConcurrentHashMap`                          |
+| `OpenCodeSSEConsumer.idleNotifiedSessions`     | 1000                  | `Collections.synchronizedSet(LinkedHashMap)` |
+| `OpenCodeNotificationService.SessionInfoCache` | 无界(1h TTL 自然淘汰) | `ConcurrentHashMap`                          |
 
 ### 7.4 Thread 管理
 
@@ -644,7 +644,7 @@ OpenCodeNotificationService.send()
 | 每 Project 一个 `OpenCodeSSEConsumer` 实例                                                   | 多项目状态天然隔离,无需 directory → Project 注册表                                                         |
 | 静态 `companion object` 集合(`idleNotifiedSessions` / `dedupCache` / `SUBAGENT_TITLE_REGEX`) | 违反 AGENTS.md "禁止静态全局可变状态" HARD RULE,但有前置条件(per-consumer 单例约束),已加 NOTE              |
 | `OpenCodeConfig` 用 `PropertiesComponent` 而非 `PersistentStateComponent`                    | 简单 key-value 无需对象序列化,代价是不支持嵌套结构(本项目无此需求)                                         |
-| `SessionInfoCache` 30s TTL                                                                   | stale 30s 可接受(只缓存 timeCreated,title 不缓存),代价是错过 30s 内的实时变更                              |
+| `SessionInfoCache` 1h TTL                                                                    | stale 1h 可接受(只缓存 timeCreated,title 不缓存),代价是错过 1h 内的实时变更                                |
 | `zsh -l` 启动 opencode                                                                       | 必须 login shell 加载 `.zshrc` 中的 PATH,代价是启动慢 0.5-2s(原 `logDiagnosticEnvironment` 调试代码已删除) |
 | `LruSet` 用 `Collections.synchronizedMap(LinkedHashMap)` 而非 `ConcurrentHashMap`            | access-order LRU 需要整体同步(LinkedHashMap 不支持),synchronizedMap 在低竞争下开销可接受                   |
 | `OpenCodeNotificationRouter` 当前是 10 行直通(无 directory 路由)                             | 历史上预期按 directory → Project 路由,实际未实现(SPEC GAP-5);当前 per-consumer 隔离已覆盖需求              |
