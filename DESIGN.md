@@ -298,7 +298,7 @@ object OpenCodeConfig {
 
 **职责**:工具窗口入口,创建 JCEF 浏览器面板并注册各类 listener。
 
-**焦点恢复 listener**:在 `createToolWindowContent()` 末尾通过 `project.messageBus.connect(toolWindow.disposable)` 订阅 `ToolWindowManagerListener`(接口位于 `com.intellij.openapi.wm.ex` 包,非私有 API,从 2020.1 起已稳定)。监听 `ActivateToolWindow` 事件,在用户主动切换到 OpenCodeWeb 工具窗口 tab 时自动调用 `MyToolWindowFactory.resetToolWindow(project)`(hide + activate 窗口级焦点恢复)。防抖机制:1.5s `AtomicLong`(`lastResetAt`)阻挡 `ActivateToolWindow` 事件内部循环回调。listener 生命周期绑定 `toolWindow.disposable`(IntelliJ Platform 标准 disposable 模式),工具窗口关闭时自动反注册,无内存泄漏。
+**焦点恢复 listener**:在 `createToolWindowContent()` 末尾通过 `toolWindow.component.addFocusListener(FocusAdapter)` 监听焦点获得事件,在用户主动切换到 OpenCodeWeb 工具窗口 tab 时自动调用 `MyToolWindowFactory.resetToolWindow(project)`(hide + activate 窗口级焦点恢复)。**历史方案曾用 `ToolWindowManagerListener.stateChanged`(位于 `com.intellij.openapi.wm.ex` 包),但被 JetBrains Marketplace Validator 标为 internal API,1.0.25 publish 报告确认。已替换为完全公开 API**。防抖机制:1.5s `AtomicLong`(`lastResetAt`)阻挡 reset 内部 activate 循环 + 内部 input 切换误触。listener 通过 `Disposer.register(toolWindow.disposable)` 反注册(IntelliJ Platform 标准 disposable 模式),工具窗口关闭时自动清理,无内存泄漏。
 
 ---
 

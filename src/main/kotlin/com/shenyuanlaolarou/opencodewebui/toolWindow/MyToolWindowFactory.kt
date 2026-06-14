@@ -4,11 +4,10 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.openapi.wm.ex.ToolWindowManagerListener
-import com.intellij.openapi.wm.ex.ToolWindowManagerListener.ToolWindowManagerEventType
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
@@ -122,29 +121,24 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             myToolWindow.checkAndLoadContent()
         }
 
-        // 焦点监听:用户切到 OpenCodeWeb 工具窗口时自动 resetToolWindow 恢复 JCEF 焦点
-        val focusListener = object : ToolWindowManagerListener {
-            override fun stateChanged(
-                mgr: com.intellij.openapi.wm.ToolWindowManager,
-                tw: ToolWindow,
-                type: ToolWindowManagerEventType
-            ) {
-                if (tw.id != OPCODE_WEB_TOOL_WINDOW_ID) return
-                if (type != ToolWindowManagerEventType.ActivateToolWindow) return
+        // 用户切到 OpenCodeWeb 时自动 resetToolWindow 恢复 JCEF 焦点卡死。
+        // 替代之前的 ToolWindowManagerListener(.ex 包,被 Validator 标 internal API)。
+        // 1.5s AtomicLong 防抖:防 reset 内部 activate 循环 + 内部 input 切换误触。
+        // Disposer.register(toolWindow.disposable) 反注册,工具窗口关闭时自动清理。
+        val focusListener = object : java.awt.event.FocusAdapter() {
+            override fun focusGained(e: java.awt.event.FocusEvent?) {
                 val now = System.currentTimeMillis()
                 val last = lastResetAtMs.get()
                 if (now - last < RESET_DEBOUNCE_MS) return  // 防 reset 内部 activate 循环触发
                 lastResetAtMs.set(now)
-                thisLogger().debug("[Lifecycle] OpenCodeWeb tool window activated, triggering resetToolWindow")
-                resetToolWindow(tw.project)
+                thisLogger().debug("[Lifecycle] OpenCodeWeb tool window focus gained, triggering resetToolWindow")
+                resetToolWindow(project)
             }
         }
-        // 订阅 project message bus,用 toolWindow.disposable 作为 parent,
-        // toolWindow 销毁时 listener 自动反注册,无内存泄漏。
-        project.messageBus.connect(toolWindow.disposable).subscribe(
-            ToolWindowManagerListener.TOPIC,
-            focusListener
-        )
+        toolWindow.component.addFocusListener(focusListener)
+        Disposer.register(toolWindow.disposable) {
+            toolWindow.component.removeFocusListener(focusListener)
+        }
     }
 
     override suspend fun isApplicableAsync(project: Project) = true
