@@ -1,5 +1,7 @@
 package com.shenyuanlaolarou.opencodewebui.utils
 
+import com.github.benmanes.caffeine.cache.Cache
+import com.github.benmanes.caffeine.cache.Caffeine
 import com.intellij.notification.Notification
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationType
@@ -9,9 +11,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.ui.SystemNotifications
-import java.util.Collections
-import java.util.LinkedHashMap
+import com.shenyuanlaolarou.opencodewebui.LRU_MAX_ENTRIES
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 object OpenCodeNotificationService {
 
@@ -19,12 +21,10 @@ object OpenCodeNotificationService {
     private const val NOTIFICATION_DEDUP_WINDOW_MS = 1000L
     private val logger = thisLogger()
 
-    /** Session 维度 1s 防抖 LRU：Key = (sessionID, eventType)，1s 内同 session + 同事件类型抑制 */
-    private val lastNotificationFired = Collections.synchronizedMap(
-        object : LinkedHashMap<Pair<String, String>, Long>(1000, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, String>, Long>) = size > 1000
-        }
-    )
+    private val lastNotificationFired: Cache<Pair<String, String>, Long> = Caffeine.newBuilder()
+        .maximumSize(LRU_MAX_ENTRIES)
+        .expireAfterWrite(NOTIFICATION_DEDUP_WINDOW_MS, TimeUnit.MILLISECONDS)
+        .build()
 
     /**
      * SessionInfo LRU 缓存(1 hour TTL),消除通知路径上的同步 HTTP 调用。
@@ -55,13 +55,20 @@ object OpenCodeNotificationService {
     }
 
     fun send(eventType: String, properties: Map<*, *>?, project: Project) {
-        if (!OpenCodeConfig.notificationEnabled) {
+        val notificationEnabled = OpenCodeConfig.notificationEnabled
+        if (!notificationEnabled) {
             return
         }
+        val showProjectName = OpenCodeConfig.showProjectName
+        val minDuration = OpenCodeConfig.minDuration
+        val showSessionTitle = OpenCodeConfig.showSessionTitle
+
+        val propertiesMap = properties?.get("properties") as? Map<*, *>
+
+        val sessionID = extractSessionIDFromPropsMap(propertiesMap)
 
         // 1s Session 维度防抖：1s 内同 session + 同事件类型抑制
-        val dedupSessionID = extractSessionID(properties)
-        if (dedupSessionID != null && tryRecordAndCheckDedup(dedupSessionID, eventType)) {
+        if (sessionID != null && tryRecordAndCheckDedup(sessionID, eventType)) {
             return  // 1s 内同 session 同事件抑制
         }
 
@@ -71,21 +78,18 @@ object OpenCodeNotificationService {
         }
 
         // minDuration 过滤
-        if (eventType == "complete" && OpenCodeConfig.minDuration > 0) {
-            val sessionID = extractSessionID(properties)
-            if (sessionID != null) {
-                val info = SessionInfoCache.getOrFetch(sessionID)
-                if (info != null) {
-                    val now = System.currentTimeMillis()
-                    val duration = if (info.timeCreated != null) (now - info.timeCreated) / 1000 else 0L
-                    if (duration < OpenCodeConfig.minDuration) {
-                        return
-                    }
+        if (eventType == "complete" && minDuration > 0 && sessionID != null) {
+            val info = SessionInfoCache.getOrFetch(sessionID)
+            if (info != null) {
+                val now = System.currentTimeMillis()
+                val duration = if (info.timeCreated != null) (now - info.timeCreated) / 1000 else 0L
+                if (duration < minDuration) {
+                    return
                 }
             }
         }
 
-        val projectName = if (OpenCodeConfig.showProjectName)
+        val projectName = if (showProjectName)
             project.name.ifEmpty { null } else null
 
         val title = buildString {
@@ -93,7 +97,7 @@ object OpenCodeNotificationService {
             if (projectName != null) append(" ($projectName)")
         }
 
-        val body = formatMessage(eventType, properties, project)
+        val body = formatMessage(eventType, propertiesMap, project, showSessionTitle)
 
         val frame = WindowManager.getInstance().getFrame(project)
         val projectWindowActive = frame != null && frame.isActive
@@ -129,37 +133,80 @@ object OpenCodeNotificationService {
         else -> NotificationType.INFORMATION
     }
 
-    internal fun formatMessage(eventType: String, properties: Map<*, *>?, project: Project): String {
+    internal fun formatMessage(
+        eventType: String,
+        propertiesMap: Map<*, *>?,
+        project: Project,
+        showSessionTitle: Boolean,
+    ): String {
         val template = when (eventType) {
             "permission" -> "权限申请: {sessionTitle}"
             "complete" -> "回答完成: {sessionTitle}"
             "question" -> "询问用户: {sessionTitle}"
             else -> eventType
         }
-        var result = template
 
-        if (result.contains("{sessionTitle}")) {
-            val sessionTitle = lookupSessionTitle(properties)
-            result = result.replace("{sessionTitle}", sessionTitle ?: "")
+        val needsSessionTitle = template.contains("{sessionTitle}")
+        val needsAgentName = template.contains("{agentName}")
+        val needsSessionInfo = needsSessionTitle || needsAgentName
+        val sessionInfo = if (needsSessionInfo) lookupSessionInfo(propertiesMap, showSessionTitle) else null
+
+        val params: Map<String, String?> = mapOf(
+            "sessionTitle" to htmlEscape(sessionInfo?.title),
+            "projectName" to project.name.ifEmpty { "未知项目" },
+            "timestamp" to currentTimestampString(),
+            "agentName" to if (needsAgentName) extractAgentName(sessionInfo?.title) else null,
+        )
+        return replacePlaceholders(template, params)
+    }
+
+    private fun currentTimestampString(): String {
+        val now = java.time.LocalTime.now()
+        return String.format("%02d:%02d:%02d", now.hour, now.minute, now.second)
+    }
+
+    internal fun replacePlaceholders(template: String, params: Map<String, String?>): String {
+        val result = StringBuilder(template.length)
+        var i = 0
+        while (i < template.length) {
+            if (template[i] == '{' && i + 1 < template.length) {
+                val end = template.indexOf('}', i + 1)
+                if (end > i + 1) {
+                    val key = template.substring(i + 1, end)
+                    val value = params[key]
+                    if (value != null) {
+                        result.append(value)
+                        i = end + 1
+                        continue
+                    }
+                }
+            }
+            result.append(template[i])
+            i++
         }
-        if (result.contains("{projectName}")) {
-            result = result.replace("{projectName}", project.name.ifEmpty { "未知项目" })
-        }
-        if (result.contains("{timestamp}")) {
-            val now = java.time.LocalTime.now()
-            val ts = String.format("%02d:%02d:%02d", now.hour, now.minute, now.second)
-            result = result.replace("{timestamp}", ts)
-        }
-        if (result.contains("{agentName}")) {
-            val agentName = lookupAgentName(properties)
-            result = result.replace("{agentName}", agentName ?: "")
-        }
-        return result
+        return result.toString()
+    }
+
+    private fun lookupSessionInfo(propertiesMap: Map<*, *>?, showSessionTitle: Boolean): SessionInfo? {
+        if (!showSessionTitle) return null
+        val sid = extractSessionIDFromPropsMap(propertiesMap) ?: return null
+        return SessionInfoCache.getOrFetch(sid)
+    }
+
+    private fun extractAgentName(title: String?): String? {
+        if (title == null) return null
+        return SUBAGENT_REGEX.find(title)?.groupValues?.get(1)
     }
 
     internal fun extractSessionID(properties: Map<*, *>?): String? {
-        val props = properties?.get("properties") as? Map<*, *>
+        return extractSessionIDFromPropsMap(properties?.get("properties") as? Map<*, *>)
+    }
+
+    internal fun extractSessionIDFromPropsMap(props: Map<*, *>?): String? {
+        val info = props?.get("info") as? Map<*, *>
         return props?.get("sessionID") as? String
+            ?: info?.get("sessionID") as? String
+            ?: info?.get("id") as? String
     }
 
     /**
@@ -172,34 +219,23 @@ object OpenCodeNotificationService {
         now: Long = System.currentTimeMillis()
     ): Boolean {
         val key = sessionID to eventType
-        val last = lastNotificationFired.put(key, now)
-        return last != null && now - last < NOTIFICATION_DEDUP_WINDOW_MS
+        val last = lastNotificationFired.getIfPresent(key)
+        if (last != null && now - last < NOTIFICATION_DEDUP_WINDOW_MS) return true
+        lastNotificationFired.put(key, now)
+        return false
     }
 
-    /** 测试可见: 重置防抖 LRU Map(测试间隔离) */
     internal fun clearDedupForTesting() {
-        lastNotificationFired.clear()
-    }
-
-    private fun lookupSessionTitle(properties: Map<*, *>?): String? {
-        if (!OpenCodeConfig.showSessionTitle) return null
-        val sessionID = extractSessionID(properties) ?: return null
-        return SessionInfoCache.getOrFetch(sessionID)?.title
+        lastNotificationFired.invalidateAll()
     }
 
     private val SUBAGENT_REGEX = Regex("""\s*\(@([^\s)]+)\s+subagent\)\s*$""")
 
-    private fun lookupAgentName(properties: Map<*, *>?): String? {
-        val sessionID = extractSessionID(properties) ?: return null
-        try {
-            val info = SessionInfoCache.getOrFetch(sessionID)
-            if (info != null && info.title != null) {
-                val match = SUBAGENT_REGEX.find(info.title)
-                if (match != null) return match.groupValues[1]
-            }
-        } catch (e: Exception) {
-            logger.debug("[OpenCodeNotificationService] Agent name lookup failed: ${e.message}")
-        }
-        return null
+    internal fun htmlEscape(s: String?): String? {
+        if (s == null) return null
+        return s.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
     }
 }
