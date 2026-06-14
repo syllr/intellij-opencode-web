@@ -2,38 +2,80 @@ package com.shenyuanlaolarou.opencodewebui.utils
 
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.util.TextRange
+import java.lang.reflect.Constructor
+import java.lang.reflect.Field
+import java.lang.reflect.Method
 
 object IdeaVimIntegration {
     private val logger = thisLogger()
 
-    private val ideaVimAvailable: Boolean by lazy {
-        try {
-            Class.forName("com.maddyhome.idea.vim.VimPlugin")
-            true
-        } catch (_: ClassNotFoundException) {
-            false
+    // 每次 AddToPromptAction.actionPerformed 触发 ~10 次 Class.forName + getMethod;
+    // 用 lazy + runCatching 缓存 Method/Field/Constructor 引用,首次解析后命中。
+    // "动态卸载" caveat:IdeaVim 运行时卸载会拿到 stale handle → 抛异常被外层 catch,
+    // 安全降级为 null/false,符合现有契约。
+    private val vimPluginClass: Class<*>? by lazy {
+        runCatching { Class.forName("com.maddyhome.idea.vim.VimPlugin") }.getOrNull()
+    }
+    private val isEnabledMethod: Method? by lazy {
+        vimPluginClass?.let { cls -> runCatching { cls.getMethod("isEnabled") }.getOrNull() }
+    }
+    private val getInstanceMethod: Method? by lazy {
+        vimPluginClass?.let { cls -> runCatching { cls.getMethod("getInstance") }.getOrNull() }
+    }
+    private val getInjectorMethod: Method? by lazy {
+        vimPluginClass?.let { cls -> runCatching { cls.getMethod("getInjector") }.getOrNull() }
+    }
+    private val injectorField: Field? by lazy {
+        vimPluginClass?.let { cls ->
+            runCatching { cls.getDeclaredField("injector").apply { isAccessible = true } }.getOrNull()
         }
     }
+    private val getVimStateMethod: Method? by lazy {
+        val injectorType = getInjectorMethod?.returnType ?: injectorField?.type ?: return@lazy null
+        runCatching { injectorType.getMethod("getVimState") }.getOrNull()
+    }
+    private val getModeMethod: Method? by lazy {
+        getVimStateMethod?.returnType?.let { vimStateType ->
+            runCatching { vimStateType.getMethod("getMode") }.getOrNull()
+        }
+    }
+    private val exitVisualModeMethod: Method? by lazy {
+        getVimStateMethod?.returnType?.let { vimStateType ->
+            runCatching { vimStateType.getMethod("exitVisualMode") }.getOrNull()
+        }
+    }
+    private val ijVimEditorClass: Class<*>? by lazy {
+        runCatching { Class.forName("com.maddyhome.idea.vim.vimscript.model.IjVimEditor") }.getOrNull()
+    }
+    private val ijVimEditorConstructor: Constructor<*>? by lazy {
+        ijVimEditorClass?.let { cls ->
+            runCatching { cls.getConstructor(Editor::class.java) }.getOrNull()
+        }
+    }
+    private val getSelectionMethod: Method? by lazy {
+        ijVimEditorClass?.let { cls ->
+            runCatching { cls.getMethod("getSelection") }.getOrNull()
+        }
+    }
+    private val vimTextRangeClass: Class<*>? by lazy {
+        runCatching { Class.forName("com.maddyhome.idea.vim.api.VimTextRange") }.getOrNull()
+    }
+    private val getStartOffsetMethod: Method? by lazy {
+        vimTextRangeClass?.let { cls -> runCatching { cls.getMethod("getStartOffset") }.getOrNull() }
+    }
+    private val getEndOffsetMethod: Method? by lazy {
+        vimTextRangeClass?.let { cls -> runCatching { cls.getMethod("getEndOffset") }.getOrNull() }
+    }
 
-    fun isIdeaVimInstalled(): Boolean = ideaVimAvailable
+    fun isIdeaVimInstalled(): Boolean = vimPluginClass != null
 
-    /**
-     * 获取 IdeaVim 的 injector 实例。
-     * 优先使用 getInjector() 方法，降级到 injector 字段反射。
-     */
     private fun getVimInjector(instance: Any): Any? {
         return try {
-            instance::class.java.getMethod("getInjector").invoke(instance)
-        } catch (_: NoSuchMethodException) {
-            logger.debug("[IdeaVimIntegration] getInjector() not found, using field fallback")
-            try {
-                val field = instance::class.java.getDeclaredField("injector")
-                field.isAccessible = true
-                field.get(instance)
-            } catch (e: Exception) {
-                logger.warn("[IdeaVimIntegration] Field fallback failed: ${e.message}")
-                null
-            }
+            getInjectorMethod?.invoke(instance) ?: injectorField?.get(instance)
+        } catch (e: Exception) {
+            logger.debug("[IdeaVimIntegration] injector resolve failed: ${e.message}")
+            null
         }
     }
 
@@ -43,41 +85,27 @@ object IdeaVimIntegration {
      * 调用链: VimPlugin.getInstance() → injector → vimState → mode
      * 如果当前处于 VISUAL 模式，通过 VimEditor 获取选中范围。
      */
-    @Suppress("SwallowedException", "TooGenericExceptionCaught")
     fun getVisualSelection(editor: Editor?): Triple<String, Int, Int>? {
         if (editor == null) return null
         return try {
-            val vimPluginClass = Class.forName("com.maddyhome.idea.vim.VimPlugin")
-            val isEnabled = vimPluginClass.getMethod("isEnabled").invoke(null) as Boolean
-            if (!isEnabled) return null
+            if (isEnabledMethod?.invoke(null) as? Boolean != true) return null
 
-            val instance = vimPluginClass.getMethod("getInstance").invoke(null)
+            val instance = getInstanceMethod?.invoke(null) ?: return null
+            val injector = getVimInjector(instance) ?: return null
+            val vimState = getVimStateMethod?.invoke(injector) ?: return null
+            val mode = getModeMethod?.invoke(vimState) ?: return null
 
-            val injector = getVimInjector(instance)
+            if (!mode::class.java.name.contains("VISUAL", ignoreCase = true)) return null
 
-            if (injector == null) return null
+            val vimEditor = ijVimEditorConstructor?.newInstance(editor) ?: return null
+            val textRange = getSelectionMethod?.invoke(vimEditor) ?: return null
 
-            val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
-            val mode = vimState::class.java.getMethod("getMode").invoke(vimState)
-            val modeClassName = mode::class.java.name ?: ""
-
-            if (!modeClassName.contains("VISUAL", ignoreCase = true)) return null
-
-            val ijVimEditorClass = Class.forName("com.maddyhome.idea.vim.vimscript.model.IjVimEditor")
-            val vimEditor = ijVimEditorClass.getConstructor(Editor::class.java).newInstance(editor)
-
-            val textRangeClass = Class.forName("com.maddyhome.idea.vim.api.VimTextRange")
-            val getSelectionMethod = vimEditor::class.java.getMethod("getSelection")
-            val textRange = getSelectionMethod.invoke(vimEditor)
-
-            if (textRange == null) return null
-
-            val startOffset = textRange::class.java.getMethod("getStartOffset").invoke(textRange) as Int
-            val endOffset = textRange::class.java.getMethod("getEndOffset").invoke(textRange) as Int
+            val startOffset = getStartOffsetMethod?.invoke(textRange) as? Int ?: return null
+            val endOffset = getEndOffsetMethod?.invoke(textRange) as? Int ?: return null
 
             if (startOffset < 0 || endOffset <= startOffset || endOffset > editor.document.textLength) return null
 
-            val text = editor.document.getText(com.intellij.openapi.util.TextRange(startOffset, endOffset))
+            val text = editor.document.getText(TextRange(startOffset, endOffset))
             if (text.isBlank()) return null
 
             Triple(text, startOffset, endOffset)
@@ -87,19 +115,15 @@ object IdeaVimIntegration {
         }
     }
 
-    @Suppress("SwallowedException", "TooGenericExceptionCaught")
     fun isInVisualMode(editor: Editor?): Boolean {
         if (editor == null) return false
         return try {
-            val vimPluginClass = Class.forName("com.maddyhome.idea.vim.VimPlugin")
-            val isEnabled = vimPluginClass.getMethod("isEnabled").invoke(null) as Boolean
-            if (!isEnabled) return false
+            if (isEnabledMethod?.invoke(null) as? Boolean != true) return false
 
-            val instance = vimPluginClass.getMethod("getInstance").invoke(null)
+            val instance = getInstanceMethod?.invoke(null) ?: return false
             val injector = getVimInjector(instance) ?: return false
-
-            val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
-            val mode = vimState::class.java.getMethod("getMode").invoke(vimState)
+            val vimState = getVimStateMethod?.invoke(injector) ?: return false
+            val mode = getModeMethod?.invoke(vimState) ?: return false
             mode::class.java.name.contains("VISUAL", ignoreCase = true)
         } catch (e: Exception) {
             thisLogger().warn("[IdeaVimIntegration] isInVisualMode failed: ${e.message}")
@@ -107,17 +131,13 @@ object IdeaVimIntegration {
         }
     }
 
-    @Suppress("SwallowedException", "TooGenericExceptionCaught")
     fun exitVisualMode(editor: Editor?) {
         if (editor == null) return
         try {
-            val vimPluginClass = Class.forName("com.maddyhome.idea.vim.VimPlugin")
-            val instance = vimPluginClass.getMethod("getInstance").invoke(null)
+            val instance = getInstanceMethod?.invoke(null) ?: return
             val injector = getVimInjector(instance) ?: return
-
-            val vimState = injector::class.java.getMethod("getVimState").invoke(injector)
-            val exitMethod = vimState::class.java.getMethod("exitVisualMode")
-            exitMethod.invoke(vimState)
+            val vimState = getVimStateMethod?.invoke(injector) ?: return
+            exitVisualModeMethod?.invoke(vimState)
             thisLogger().debug("[IdeaVimIntegration] Exited visual mode via reflection")
         } catch (e: Exception) {
             thisLogger().warn("[IdeaVimIntegration] exitVisualMode failed: ${e.message}")
