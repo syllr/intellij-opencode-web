@@ -28,6 +28,12 @@ internal val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
 internal fun isSubagentTitle(title: String): Boolean =
     SUBAGENT_TITLE_REGEX.containsMatchIn(title)
 
+internal fun ParsedSSEEvent.propertiesAsMap(): Map<*, *>? =
+    parsedMap?.get("properties") as? Map<*, *>
+
+internal fun Map<*, *>.getAsMap(key: String): Map<*, *>? =
+    get(key) as? Map<*, *>
+
 class OpenCodeSSEConsumer(
     private val project: Project,
     /**
@@ -72,11 +78,6 @@ class OpenCodeSSEConsumer(
         val lastEvent = maxOf(lastEventAt.get(), lastHeartbeatAt.get())
         if (lastEvent == 0L) return false
         return System.currentTimeMillis() - lastEvent <= maxIdleMs
-    }
-
-    private companion object {
-        // subagent title 模式: "@<agent-name> subagent" (如 "(@explore subagent)")
-        private val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
     }
 
     private val sessionTitles: java.util.concurrent.ConcurrentHashMap<String, String> = java.util.concurrent.ConcurrentHashMap()
@@ -219,21 +220,22 @@ class OpenCodeSSEConsumer(
         val eventId = parsedMap["id"] as? String
         if (eventId != null && SSEEventParser.isEventProcessed(eventId)) return
 
+        val sessionID = parsed.extractSessionID()
+
         if (type == "session.created" || type == "session.updated") {
-            val sid = parsed.extractSessionID()
             val title = parsed.extractTitle()
-            if (sid != null && title != null) {
-                sessionTitles[sid] = title
-                subagentSessionIds.put(sid, isSubagentTitle(title))
+            if (sessionID != null && title != null) {
+                sessionTitles[sessionID] = title
+                subagentSessionIds.put(sessionID, isSubagentTitle(title))
             }
         }
 
         if (type == "message.updated") {
             // [Fix #4] 用户发新消息时重置 idle 抑制,允许下次 idle 再次通知
-            val info = (parsedMap["properties"] as? Map<*, *>)?.get("info") as? Map<*, *>
+            val info = parsed.propertiesAsMap()?.getAsMap("info")
             val role = info?.get("role") as? String
             if (role == "user") {
-                parsed.extractSessionID()?.let { idleNotifiedSessions.invalidate(it) }
+                sessionID?.let { idleNotifiedSessions.invalidate(it) }
             }
         }
 
@@ -241,8 +243,7 @@ class OpenCodeSSEConsumer(
         when (type) {
             "permission.asked" -> dispatchNotification("permission", parsedMap, project)
             "session.status" -> {
-                val props = parsedMap["properties"] as? Map<*, *>
-                val statusObj = props?.get("status") as? Map<*, *>
+                val statusObj = parsed.propertiesAsMap()?.getAsMap("status")
                 if (statusObj?.get("type") == "idle") {
                     handleSessionIdle(parsed, project)
                 }
