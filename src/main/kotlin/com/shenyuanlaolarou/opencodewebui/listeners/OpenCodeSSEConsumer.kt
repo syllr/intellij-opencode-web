@@ -23,6 +23,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+internal val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
+
+internal fun isSubagentTitle(title: String): Boolean =
+    SUBAGENT_TITLE_REGEX.containsMatchIn(title)
+
 class OpenCodeSSEConsumer(
     private val project: Project,
     /**
@@ -70,20 +75,20 @@ class OpenCodeSSEConsumer(
     }
 
     private companion object {
-        private const val MAX_TRACKED_SESSIONS = 1000L
-
         // subagent title 模式: "@<agent-name> subagent" (如 "(@explore subagent)")
         private val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
     }
 
-    // [Fix ISSUE-3 多项目隔离] per-instance 缓存/状态集,不再放 companion object:
-    // title 匹配和 idle 抑制都是 per-project 语义,跨 project 共享反而是 bug
-    // (Project A 关闭时 stop() 全局 clear 会污染 Project B 的状态)。
-    // 注:故意违反 AGENTS.md "禁止静态全局可变状态" 注释已删除——这些字段放实例更正确。
     private val sessionTitles: java.util.concurrent.ConcurrentHashMap<String, String> = java.util.concurrent.ConcurrentHashMap()
     private val idleNotifiedSessions: com.github.benmanes.caffeine.cache.Cache<String, Boolean> =
         com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
-            .maximumSize(MAX_TRACKED_SESSIONS)
+            .maximumSize(com.shenyuanlaolarou.opencodewebui.LRU_MAX_ENTRIES)
+            .build()
+
+    @Volatile
+    private var subagentSessionIds: com.github.benmanes.caffeine.cache.Cache<String, Boolean> =
+        com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+            .maximumSize(com.shenyuanlaolarou.opencodewebui.LRU_MAX_ENTRIES)
             .build()
 
     fun start() {
@@ -107,9 +112,9 @@ class OpenCodeSSEConsumer(
         // [Fix #2] 清理静态集合，防止 stop() 后 companion object 集合继续增长
         // onClosed() 只在 SSE 连接关闭时调用，stop() 主动关闭时也需要清理
         SSEEventParser.clearCache()
-        // [Fix #5] 清理 per-instance LRU:title 缓存 + idle 抑制
         sessionTitles.clear()
         idleNotifiedSessions.invalidateAll()
+        subagentSessionIds.invalidateAll()
         logger.info("[OpenCodeSSEConsumer] SSE consumer stopped, static collections cleared")
     }
 
@@ -215,11 +220,11 @@ class OpenCodeSSEConsumer(
         if (eventId != null && SSEEventParser.isEventProcessed(eventId)) return
 
         if (type == "session.created" || type == "session.updated") {
-            // [Fix #3] 缓存 session title 供 handleSessionIdle 用,避免 8s 同步 HTTP 阻塞 SSE 线程
             val sid = parsed.extractSessionID()
             val title = parsed.extractTitle()
             if (sid != null && title != null) {
                 sessionTitles[sid] = title
+                subagentSessionIds.put(sid, isSubagentTitle(title))
             }
         }
 
@@ -267,10 +272,8 @@ class OpenCodeSSEConsumer(
         val parsedMap = parsed.parsedMap
         val sessionID = parsed.extractSessionID() ?: return
 
-        // [Fix #3] 用 session.created/updated 事件缓存的 title,不再同步 HTTP
-        // (8s 超时会阻塞 SSE 线程,所有后续事件延迟)
         val title = sessionTitles[sessionID]
-        if (title != null && SUBAGENT_TITLE_REGEX.containsMatchIn(title)) {
+        if (title != null && (subagentSessionIds.getIfPresent(sessionID) ?: isSubagentTitle(title))) {
             if (logger.isDebugEnabled) {
                 logger.debug("[OpenCodeSSEConsumer] Subagent idle suppressed by title: $sessionID (title=$title)")
             }

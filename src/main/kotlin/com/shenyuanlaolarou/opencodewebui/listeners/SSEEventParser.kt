@@ -7,6 +7,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.thisLogger
+import com.shenyuanlaolarou.opencodewebui.LRU_MAX_ENTRIES
 import java.io.Reader
 
 /**
@@ -60,12 +61,10 @@ fun ParsedSSEEvent.extractTitle(): String? {
 }
 
 object SSEEventParser {
-    internal var gson: Gson = Gson()
-
-    private const val MAX_DEDUP_CACHE_SIZE = 1000L
+    private var gson: Gson = Gson()
 
     internal val dedupCache: Cache<String, Boolean> = Caffeine.newBuilder()
-        .maximumSize(MAX_DEDUP_CACHE_SIZE)
+        .maximumSize(LRU_MAX_ENTRIES)
         .build()
 
     /** 12 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */

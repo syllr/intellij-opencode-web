@@ -39,42 +39,38 @@ class SSEEventParserParseOnceTest {
 
     @Test
     fun `whitelisted event parse should not call gson_fromJson_on_JsonElement_Map`() {
-        // 用 spy 替换内部 gson,监控 fromJson(JsonElement, Class) 类型的调用
-        val realGson = SSEEventParser.gson
-        val spyGson = spy(realGson)
-        SSEEventParser.gson = spyGson
-        try {
+        withGsonSpy { spyGson ->
             val event = """{"id":"e1","type":"file.edited","properties":{"file":"/p/Foo.kt"}}"""
             val parsed = SSEEventParser.parse("message", StringReader(event))
 
-            // 白名单事件必须正确返回 parsedMap
             assertNotNull("白名单事件应有 parsedMap", parsed.parsedMap)
             assertEquals("file.edited", parsed.type)
 
-            // 关键断言:gson.fromJson(JsonElement, Class) **不应被调用**
-            // 当前实现会调 1 次(JsonObject → Map),改实现后应为 0 次
             verify(spyGson, Mockito.never()).fromJson(any<JsonElement>(), eq(Map::class.java))
-        } finally {
-            SSEEventParser.gson = realGson
         }
     }
 
     @Test
     fun `non-whitelisted event parse should not call gson_fromJson_at_all`() {
-        val realGson = SSEEventParser.gson
-        val spyGson = spy(realGson)
-        SSEEventParser.gson = spyGson
-        try {
+        withGsonSpy { spyGson ->
             val event = """{"id":"e1","type":"message.part.delta","properties":{}}"""
             val parsed = SSEEventParser.parse("message", StringReader(event))
 
-            // 非白名单 → parsedMap 为 null
             assertNull(parsed.parsedMap)
 
-            // 非白名单早退,**任何 fromJson 都不该被调用**
             verify(spyGson, Mockito.never()).fromJson(any<JsonElement>(), eq(Map::class.java))
+        }
+    }
+
+    private fun withGsonSpy(block: (Gson) -> Unit) {
+        val field = SSEEventParser::class.java.getDeclaredField("gson").apply { isAccessible = true }
+        val original = field.get(SSEEventParser) as Gson
+        val spyGson = spy(original)
+        field.set(SSEEventParser, spyGson)
+        try {
+            block(spyGson)
         } finally {
-            SSEEventParser.gson = realGson
+            field.set(SSEEventParser, original)
         }
     }
 
