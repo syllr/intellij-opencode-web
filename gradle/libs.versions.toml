@@ -6,6 +6,7 @@ gson = "2.10.1"
 okhttpEventsource = "4.3.0"
 mockito = "5.19.0"
 mockitoKotlin = "6.3.0"
+caffeine = "3.1.8"
 
 # plugins
 changelog = "2.5.0"
@@ -21,6 +22,7 @@ gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 okhttpEventsource = { group = "com.launchdarkly", name = "okhttp-eventsource", version.ref = "okhttpEventsource" }
 mockito = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 mockitoKotlin = { group = "org.mockito.kotlin", name = "mockito-kotlin", version.ref = "mockitoKotlin" }
+caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
 
 [plugins]
 changelog = { id = "org.jetbrains.changelog", version.ref = "changelog" }

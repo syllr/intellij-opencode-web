@@ -77,14 +77,28 @@ object OpenCodeApi {
     }
 
     fun waitForServerHealthy(timeoutMs: Long): Boolean {
-        Thread.sleep(HEALTH_CHECK_INITIAL_DELAY_MS)
-        val startTime = System.currentTimeMillis()
-        val interval = HEALTH_CHECK_POLL_INTERVAL_MS
-        while (System.currentTimeMillis() - startTime < timeoutMs) {
-            if (isServerHealthySync()) return true
+        for (interval in pollIntervals(timeoutMs)) {
             Thread.sleep(interval)
+            if (isServerHealthySync()) return true
         }
         return false
+    }
+
+    internal fun pollIntervals(
+        timeoutMs: Long,
+        initialDelay: Long = HEALTH_CHECK_INITIAL_DELAY_MS,
+        pollInterval: Long = HEALTH_CHECK_POLL_INTERVAL_MS,
+    ): List<Long> {
+        if (timeoutMs <= 0) return emptyList()
+        if (timeoutMs <= initialDelay) return listOf(timeoutMs)
+        val result = mutableListOf(initialDelay)
+        var remaining = timeoutMs - initialDelay
+        while (remaining > 0) {
+            val step = minOf(pollInterval, remaining)
+            result.add(step)
+            remaining -= step
+        }
+        return result
     }
 
     fun getSession(sessionID: String): OpenCodeApiResult<SessionInfo> {

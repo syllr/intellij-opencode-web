@@ -4,7 +4,7 @@ const val OPENCODE_PORT = 12396
 const val OPENCODE_HOST = "127.0.0.1"
 
 // 健康检查相关（HealthMonitor.kt 在 Part D 整删,仅保留 OpenCodeApi 依赖的轮询常量）
-const val HEALTH_CHECK_POLL_INTERVAL_MS = 2000L
+const val HEALTH_CHECK_POLL_INTERVAL_MS = 500L
 const val HEALTH_CHECK_INITIAL_DELAY_MS = 1000L
 
 // 浏览器就绪重试（[O6] 收紧到 8×400ms=3.2s，平衡加载等待与重试开销）

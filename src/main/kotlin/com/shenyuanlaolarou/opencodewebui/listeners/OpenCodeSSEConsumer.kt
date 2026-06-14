@@ -56,7 +56,7 @@ class OpenCodeSSEConsumer(
     @Volatile
     private var connected = false
     @Volatile
-    private var watchdogThread: Thread? = null
+    private var watchdogScheduler: java.util.concurrent.ScheduledExecutorService? = null
 
     /**
      * SSE 连接健康度:连接已确认建立(connected=true) 或 最近收到过 heartbeat,
@@ -70,15 +70,7 @@ class OpenCodeSSEConsumer(
     }
 
     private companion object {
-        private const val MAX_TRACKED_SESSIONS = 1000
-
-        private fun newLruSet(): MutableSet<String> = java.util.Collections.synchronizedSet(
-            java.util.Collections.newSetFromMap(
-                object : LinkedHashMap<String, Boolean>(MAX_TRACKED_SESSIONS, 0.75f, true) {
-                    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean = size > MAX_TRACKED_SESSIONS
-                }
-            )
-        )
+        private const val MAX_TRACKED_SESSIONS = 1000L
 
         // subagent title 模式: "@<agent-name> subagent" (如 "(@explore subagent)")
         private val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
@@ -89,7 +81,10 @@ class OpenCodeSSEConsumer(
     // (Project A 关闭时 stop() 全局 clear 会污染 Project B 的状态)。
     // 注:故意违反 AGENTS.md "禁止静态全局可变状态" 注释已删除——这些字段放实例更正确。
     private val sessionTitles: java.util.concurrent.ConcurrentHashMap<String, String> = java.util.concurrent.ConcurrentHashMap()
-    private val idleNotifiedSessions: MutableSet<String> = newLruSet()
+    private val idleNotifiedSessions: com.github.benmanes.caffeine.cache.Cache<String, Boolean> =
+        com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+            .maximumSize(MAX_TRACKED_SESSIONS)
+            .build()
 
     fun start() {
         logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, projectBasePath='$projectBasePath'")
@@ -104,8 +99,9 @@ class OpenCodeSSEConsumer(
         if (wasConnected) {
             onConnectionLost()
         }
-        watchdogThread?.interrupt()
-         watchdogThread = null
+        watchdogScheduler?.shutdownNow()
+        watchdogScheduler?.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)
+        watchdogScheduler = null
         FullRefreshCoordinator.stop()
         eventSourceRef.getAndSet(null)?.close()
         // [Fix #2] 清理静态集合，防止 stop() 后 companion object 集合继续增长
@@ -113,7 +109,7 @@ class OpenCodeSSEConsumer(
         SSEEventParser.clearCache()
         // [Fix #5] 清理 per-instance LRU:title 缓存 + idle 抑制
         sessionTitles.clear()
-        idleNotifiedSessions.clear()
+        idleNotifiedSessions.invalidateAll()
         logger.info("[OpenCodeSSEConsumer] SSE consumer stopped, static collections cleared")
     }
 
@@ -160,23 +156,23 @@ class OpenCodeSSEConsumer(
         old?.close()
     }
 
-    private fun startWatchdog() {
-        watchdogThread?.interrupt()
-        watchdogThread = Thread {
-            while (!Thread.currentThread().isInterrupted) {
-                try {
-                    Thread.sleep(SSE_WATCHDOG_INTERVAL_MS)
-                } catch (_: InterruptedException) {
-                    return@Thread
-                }
-                val idle = System.currentTimeMillis() - lastEventAt.get()
-                if (idle > SSE_IDLE_TIMEOUT_MS) reconnect()
-            }
-        }.apply {
-            isDaemon = true
-            name = "SSE-Watchdog"
-            start()
+    internal fun startWatchdog() {
+        watchdogScheduler?.shutdownNow()
+        val scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "SSE-Watchdog").apply { isDaemon = true }
         }
+        watchdogScheduler = scheduler
+        scheduler.scheduleWithFixedDelay(
+            {
+                try {
+                    val idle = System.currentTimeMillis() - lastEventAt.get()
+                    if (idle > SSE_IDLE_TIMEOUT_MS) reconnect()
+                } catch (t: Throwable) {
+                    logger.error("watchdog task failed: ${t.message}", t)
+                }
+            },
+            SSE_WATCHDOG_INTERVAL_MS, SSE_WATCHDOG_INTERVAL_MS, java.util.concurrent.TimeUnit.MILLISECONDS,
+        )
     }
 
     override fun onOpen() {
@@ -232,7 +228,7 @@ class OpenCodeSSEConsumer(
             val info = (parsedMap["properties"] as? Map<*, *>)?.get("info") as? Map<*, *>
             val role = info?.get("role") as? String
             if (role == "user") {
-                parsed.extractSessionID()?.let { idleNotifiedSessions.remove(it) }
+                parsed.extractSessionID()?.let { idleNotifiedSessions.invalidate(it) }
             }
         }
 
@@ -283,12 +279,13 @@ class OpenCodeSSEConsumer(
 
         // [Fix #4] Per-session idle 抑制:同一 session 第一次 idle 发通知,后续 idle 全抑制
         // 直到用户发新消息(message.updated role=user)重置
-        if (!idleNotifiedSessions.add(sessionID)) {
+        if (idleNotifiedSessions.getIfPresent(sessionID) != null) {
             if (logger.isDebugEnabled) {
                 logger.debug("[OpenCodeSSEConsumer] Idle already notified for session=$sessionID, suppressing")
             }
             return
         }
+        idleNotifiedSessions.put(sessionID, true)
         dispatchNotification("complete", parsedMap, project)
     }
 
@@ -306,7 +303,7 @@ class OpenCodeSSEConsumer(
         // (之前在 companion object,跨实例共享,stop() 全局清即可;
         // 现在是实例字段,onClosed 也应清——否则 onError 未触发 + watchdog 未重连的死角下泄漏)
         sessionTitles.clear()
-        idleNotifiedSessions.clear()
+        idleNotifiedSessions.invalidateAll()
     }
 
     override fun onComment(comment: String) {

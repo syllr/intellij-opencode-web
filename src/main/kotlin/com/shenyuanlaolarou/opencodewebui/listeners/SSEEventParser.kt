@@ -1,12 +1,13 @@
 package com.shenyuanlaolarou.opencodewebui.listeners
 
+import com.github.benmanes.caffeine.cache.Cache
+import com.github.benmanes.caffeine.cache.Caffeine
 import com.google.gson.Gson
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.thisLogger
 import java.io.Reader
-import java.util.Collections
-import java.util.LinkedHashMap
 
 /**
  * SSE 事件解析结果。
@@ -59,16 +60,13 @@ fun ParsedSSEEvent.extractTitle(): String? {
 }
 
 object SSEEventParser {
-    private val gson = Gson()
+    internal var gson: Gson = Gson()
 
-    // LRU 去重缓存：按 event id 去重，最大 1000 条
-    private val dedupCache = Collections.synchronizedMap(
-        object : LinkedHashMap<String, Boolean>(1000, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean {
-                return size > 1000
-            }
-        }
-    )
+    private const val MAX_DEDUP_CACHE_SIZE = 1000L
+
+    internal val dedupCache: Cache<String, Boolean> = Caffeine.newBuilder()
+        .maximumSize(MAX_DEDUP_CACHE_SIZE)
+        .build()
 
     /** 12 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */
     private val ALLOW_PARSE_EVENT_TYPES = setOf(
@@ -91,11 +89,13 @@ object SSEEventParser {
 
     fun isEventProcessed(eventID: String): Boolean {
         if (eventID.isEmpty()) return false
-        return dedupCache.put(eventID, true) != null
+        if (dedupCache.getIfPresent(eventID) != null) return true
+        dedupCache.put(eventID, true)
+        return false
     }
 
     fun clearCache() {
-        dedupCache.clear()
+        dedupCache.invalidateAll()
     }
 
     /**
@@ -117,18 +117,38 @@ object SSEEventParser {
             val root = jsonElement
             val type = root.get("type")?.asString
 
-            // 白名单过滤：不在白名单内 → 不完整解析，节省 80% 临时对象
             if (type == null || type !in ALLOW_PARSE_EVENT_TYPES) {
                 return ParsedSSEEvent(eventType = eventType, parsedMap = null)
             }
 
-            // 在白名单内：完整 Gson 解析
-            val parsedMap: Map<*, *> = gson.fromJson(root, Map::class.java)
-            return ParsedSSEEvent(eventType = eventType, parsedMap = parsedMap)
+            return ParsedSSEEvent(eventType = eventType, parsedMap = extractFields(root))
         } catch (e: Exception) {
             logger.warn("[SSEEventParser] Failed to parse JSON: ${e.message}")
             return ParsedSSEEvent(eventType = eventType, parsedMap = null)
         }
+    }
+
+    private fun extractFields(root: JsonObject): Map<String, Any?> {
+        val result = LinkedHashMap<String, Any?>(root.size())
+        for ((key, value) in root.entrySet()) {
+            result[key] = unwrap(value)
+        }
+        return result
+    }
+
+    private fun unwrap(element: JsonElement): Any? = when {
+        element.isJsonNull -> null
+        element.isJsonPrimitive -> {
+            val p = element.asJsonPrimitive
+            when {
+                p.isBoolean -> p.asBoolean
+                p.isString -> p.asString
+                else -> p.asNumber
+            }
+        }
+        element.isJsonArray -> element.asJsonArray.map(::unwrap)
+        element.isJsonObject -> extractFields(element.asJsonObject)
+        else -> null
     }
 
     /**

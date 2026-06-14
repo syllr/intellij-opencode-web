@@ -37,6 +37,7 @@ dependencies {
     testImplementation(libs.mockitoKotlin)
     implementation(libs.gson)
     implementation(libs.okhttpEventsource)
+    implementation(libs.caffeine)
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {

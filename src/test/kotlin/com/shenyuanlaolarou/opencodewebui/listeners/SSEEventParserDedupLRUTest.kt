@@ -59,18 +59,12 @@ class SSEEventParserDedupLRUTest {
     }
 
     @Test
-    fun `LRU evicts after 1000 entries`() {
-        // 插入 1000 个不同 eventID
-        for (i in 0 until 1000) {
+    fun `cache respects maximum size of 1000`() {
+        for (i in 0 until 2000) {
             assertFalse(SSEEventParser.isEventProcessed("evt-$i"))
         }
-        // 全部应可查
-        for (i in 0 until 1000) {
-            assertTrue(SSEEventParser.isEventProcessed("evt-$i"))
-        }
-        // 插入第 1001 个 (触发 LRU 驱逐: evt-0 被驱逐)
-        assertFalse(SSEEventParser.isEventProcessed("evt-1000"))
-        // evt-0 现在重新出现应返回 false (被驱逐)
-        assertFalse(SSEEventParser.isEventProcessed("evt-0"))
+        SSEEventParser.dedupCache.cleanUp()
+        val size = SSEEventParser.dedupCache.estimatedSize()
+        assertTrue("cache 大小应 <= 1000 (实际=$size)", size <= 1000)
     }
 }
