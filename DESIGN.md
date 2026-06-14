@@ -294,6 +294,12 @@ object OpenCodeConfig {
 
 **未实现**:`isEventEnabled` / `setEventEnabled` / `getMessageTemplate` / `setMessageTemplate` API;`ALL_EVENT_TYPES` / `defaultEvents()`;Settings UI(`plugin.xml` 无 `<applicationConfigurable>` 注册)。详见 SPEC 附录 A GAP-1。
 
+### 2.7 `MyToolWindowFactory`(ToolWindowFactory)
+
+**职责**:工具窗口入口,创建 JCEF 浏览器面板并注册各类 listener。
+
+**焦点恢复 listener**:在 `createToolWindowContent()` 末尾通过 `project.messageBus.connect(toolWindow.disposable)` 订阅 `ToolWindowManagerListener`(接口位于 `com.intellij.openapi.wm.ex` 包,非私有 API,从 2020.1 起已稳定)。监听 `ActivateToolWindow` 事件,在用户主动切换到 OpenCodeWeb 工具窗口 tab 时自动调用 `MyToolWindowFactory.resetToolWindow(project)`(hide + activate 窗口级焦点恢复)。防抖机制:1.5s `AtomicLong`(`lastResetAt`)阻挡 `ActivateToolWindow` 事件内部循环回调。listener 生命周期绑定 `toolWindow.disposable`(IntelliJ Platform 标准 disposable 模式),工具窗口关闭时自动反注册,无内存泄漏。
+
 ---
 
 ## 3. 关键时序
