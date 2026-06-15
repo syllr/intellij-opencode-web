@@ -4,7 +4,6 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -29,12 +28,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     companion object {
         internal const val OPCODE_WEB_TOOL_WINDOW_ID = "OpenCodeWeb"
 
-        // 防 resetToolWindow 内部 activate() 触发 stateChanged(..., ActivateToolWindow) 回调形成循环。
-        // 用 AtomicLong 记录上次 reset 时间戳(非 @Volatile var,符合 AGENTS.md 静态全局状态 HARD RULE)。
-        // 1.5s 窗口:hide→activate 内部回调会被挡掉;真实"从无焦点到有焦点"事件(>1.5s)才放行。
-        internal val lastResetAtMs = java.util.concurrent.atomic.AtomicLong(0)
-        private const val RESET_DEBOUNCE_MS = 1500L
-
         fun openOpenCodeWebToolWindow(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             val toolWindow = toolWindowManager.getToolWindow(OPCODE_WEB_TOOL_WINDOW_ID) ?: return
@@ -56,9 +49,7 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
          * 推迟到 hide 完成 HIDE 事件派发之后。不能在 EDT 上 sleep 制造延迟,
          * 会冻结整个 IDE UI。
          *
-         * 自动调用方:
-         * - 用户主动点击 OpenCodeWeb 标签 → stateChanged 事件 ActivateToolWindow → 自动 reset(80% 场景解决 JCEF 焦点卡死)
-         * - 详见 createToolWindowContent 末尾的 focusListener(防循环用 1.5s 时间窗)
+         * 当前调用方:右键菜单 Reset(LinkContextMenuHandler)。
          */
         fun resetToolWindow(project: Project) {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
@@ -119,25 +110,6 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
             toolWindow.contentManager.addContent(content)
 
             myToolWindow.checkAndLoadContent()
-        }
-
-        // 用户切到 OpenCodeWeb 时自动 resetToolWindow 恢复 JCEF 焦点卡死。
-        // 替代之前的 ToolWindowManagerListener(.ex 包,被 Validator 标 internal API)。
-        // 1.5s AtomicLong 防抖:防 reset 内部 activate 循环 + 内部 input 切换误触。
-        // Disposer.register(toolWindow.disposable) 反注册,工具窗口关闭时自动清理。
-        val focusListener = object : java.awt.event.FocusAdapter() {
-            override fun focusGained(e: java.awt.event.FocusEvent?) {
-                val now = System.currentTimeMillis()
-                val last = lastResetAtMs.get()
-                if (now - last < RESET_DEBOUNCE_MS) return  // 防 reset 内部 activate 循环触发
-                lastResetAtMs.set(now)
-                thisLogger().debug("[Lifecycle] OpenCodeWeb tool window focus gained, triggering resetToolWindow")
-                resetToolWindow(project)
-            }
-        }
-        toolWindow.component.addFocusListener(focusListener)
-        Disposer.register(toolWindow.disposable) {
-            toolWindow.component.removeFocusListener(focusListener)
         }
     }
 
