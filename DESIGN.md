@@ -298,7 +298,12 @@ object OpenCodeConfig {
 
 **职责**:工具窗口入口,创建 JCEF 浏览器面板并注册各类 listener。
 
-**焦点恢复 listener**:在 `createToolWindowContent()` 末尾通过 `toolWindow.component.addFocusListener(FocusAdapter)` 监听焦点获得事件,在用户主动切换到 OpenCodeWeb 工具窗口 tab 时自动调用 `MyToolWindowFactory.resetToolWindow(project)`(hide + activate 窗口级焦点恢复)。**历史方案曾用 `ToolWindowManagerListener.stateChanged`(位于 `com.intellij.openapi.wm.ex` 包),但被 JetBrains Marketplace Validator 标为 internal API,1.0.25 publish 报告确认。已替换为完全公开 API**。防抖机制:1.5s `AtomicLong`(`lastResetAt`)阻挡 reset 内部 activate 循环 + 内部 input 切换误触。listener 通过 `Disposer.register(toolWindow.disposable)` 反注册(IntelliJ Platform 标准 disposable 模式),工具窗口关闭时自动清理,无内存泄漏。
+**手动焦点恢复**:`createToolWindowContent()` **不注册任何自动焦点监听**。JCEF 焦点卡死时由用户通过右键菜单 Reset(`LinkContextMenuHandler`)手动调用 `MyToolWindowFactory.resetToolWindow(project)`(hide + activate 工具窗口级焦点恢复)。**历史方案**(均已移除,见 commits `95d7faf` + `9a959ea`):
+
+- `ToolWindowManagerListener.stateChanged`:监听 `ActivateToolWindow` 事件,接口位于 `com.intellij.openapi.wm.ex` 包,被 JetBrains Marketplace Validator 标 internal API,1.0.25 publish 报告确认
+- `FocusAdapter.focusGained`:走完全公开 API,但实测无效(单纯触发 Swing focus 重派发,未走 hide+activate 路径)
+
+两种方案均不能稳定恢复 JCEF 焦点卡死。若未来需恢复自动焦点监听,需同时避开 internal API 警告和"未走 hide+activate"的无效恢复路径,SPEC.md / DESIGN.md 无现成方案可参考。
 
 ---
 
@@ -614,26 +619,26 @@ OpenCodeNotificationService.send()
 
 ## 8. 关键文件路径速查
 
-| 想做的事                                      | 改哪里                                                      |
-| --------------------------------------------- | ----------------------------------------------------------- |
-| 工具窗口入口/布局/JCEF 焦点恢复               | `toolWindow/MyToolWindowFactory.kt`(含 `resetToolWindow()`) |
-| 浏览器面板/生命周期                           | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`            |
-| 服务器进程启停(4 阶段关闭)                    | `toolWindow/OpenCodeServerManager.kt`                       |
-| Singleflight 防抖(手动启动去重)               | `toolWindow/Singleflight.kt`                                |
-| SSE 消费、降噪、自动重连                      | `listeners/OpenCodeSSEConsumer.kt`                          |
-| SSE 解析(含 3 级 sessionID fallback)          | `listeners/SSEEventParser.kt`                               |
-| Bash 工具事件检测                             | `listeners/BashCommandHandler.kt`                           |
-| 文件刷新(生产者-消费者)                       | `listeners/FullRefreshCoordinator.kt`                       |
-| HTTP API(健康/session 等)                     | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`             |
-| 通知发送(IDEA 原生 + macOS 系统)              | `utils/OpenCodeNotificationService.kt`                      |
-| 通知路由(直通薄层)                            | `utils/OpenCodeNotificationRouter.kt`                       |
-| 通知配置(4 个通用设置)                        | `utils/OpenCodeConfig.kt`                                   |
-| SSE consumer 单例工厂                         | `utils/SSEConsumerFactory.kt`                               |
-| JCEF JS 注入                                  | `utils/JcefJsInjector.kt`                                   |
-| IdeaVim visual 模式选区(注入 JS 路径)         | `utils/IdeaVimIntegration.kt`                               |
-| 复制为 Prompt 格式                            | `actions/CopyAsPromptAction.kt`                             |
-| 选中代码 → Prompt 编辑器(含 im-select 硬编码) | `actions/AddToPromptAction.kt`                              |
-| 端口/超时/间隔常量(端口 12396)                | `OpenCodeConstants.kt`                                      |
+| 想做的事                                      | 改哪里                                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 工具窗口入口/布局/手动焦点恢复                | `toolWindow/MyToolWindowFactory.kt`(含 `resetToolWindow()`,右键菜单 Reset 触发,无自动监听) |
+| 浏览器面板/生命周期                           | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`                                           |
+| 服务器进程启停(4 阶段关闭)                    | `toolWindow/OpenCodeServerManager.kt`                                                      |
+| Singleflight 防抖(手动启动去重)               | `toolWindow/Singleflight.kt`                                                               |
+| SSE 消费、降噪、自动重连                      | `listeners/OpenCodeSSEConsumer.kt`                                                         |
+| SSE 解析(含 3 级 sessionID fallback)          | `listeners/SSEEventParser.kt`                                                              |
+| Bash 工具事件检测                             | `listeners/BashCommandHandler.kt`                                                          |
+| 文件刷新(生产者-消费者)                       | `listeners/FullRefreshCoordinator.kt`                                                      |
+| HTTP API(健康/session 等)                     | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`                                            |
+| 通知发送(IDEA 原生 + macOS 系统)              | `utils/OpenCodeNotificationService.kt`                                                     |
+| 通知路由(直通薄层)                            | `utils/OpenCodeNotificationRouter.kt`                                                      |
+| 通知配置(4 个通用设置)                        | `utils/OpenCodeConfig.kt`                                                                  |
+| SSE consumer 单例工厂                         | `utils/SSEConsumerFactory.kt`                                                              |
+| JCEF JS 注入                                  | `utils/JcefJsInjector.kt`                                                                  |
+| IdeaVim visual 模式选区(注入 JS 路径)         | `utils/IdeaVimIntegration.kt`                                                              |
+| 复制为 Prompt 格式                            | `actions/CopyAsPromptAction.kt`                                                            |
+| 选中代码 → Prompt 编辑器(含 im-select 硬编码) | `actions/AddToPromptAction.kt`                                                             |
+| 端口/超时/间隔常量(端口 12396)                | `OpenCodeConstants.kt`                                                                     |
 
 ---
 
