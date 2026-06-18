@@ -2,6 +2,7 @@ package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.project.Project
+import com.shenyuanlaolarou.opencodewebui.utils.JcefJsInjector
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
 import org.cef.callback.CefContextMenuParams
@@ -19,6 +20,10 @@ class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandl
         model: CefMenuModel
     ) {
         model.clear()
+        // PasteTo 置顶:把 JCEF 页面里选中的文本追加到 prompt input(光标落末尾)。
+        // 仅在有 selection 时启用,空选区点击无效。
+        model.addItem(PASTE_TO_COMMAND_ID, "PasteTo")
+        model.setEnabled(PASTE_TO_COMMAND_ID, !params.selectionText.isNullOrBlank())
         model.addItem(RESET_TOOL_WINDOW_COMMAND_ID, "Reset")
         model.addItem(REFRESH_COMMAND_ID, "Refresh")
         model.addItem(100, "Back")
@@ -65,6 +70,10 @@ class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandl
             MyToolWindowFactory.resetToolWindow(project)
             return true
         }
+        if (commandId == PASTE_TO_COMMAND_ID) {
+            JcefJsInjector.pasteSelectionToEditor(browser)
+            return true
+        }
         if (commandId == SHUTDOWN_COMMAND_ID) {
             MyToolWindowFactory.shutdownServer()
             return true
@@ -78,5 +87,6 @@ class LinkContextMenuHandler(private val project: Project) : CefContextMenuHandl
         const val SHUTDOWN_COMMAND_ID = 26502
         const val COPY_LINK_AS_PROMPT_COMMAND_ID = 26503
         const val RESET_TOOL_WINDOW_COMMAND_ID = 26504
+        const val PASTE_TO_COMMAND_ID = 26505
     }
 }

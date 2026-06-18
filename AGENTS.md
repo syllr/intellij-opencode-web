@@ -53,33 +53,32 @@ IntelliJ Platform 插件 (Kotlin)，为 OpenCode Web UI 提供 JetBrains IDE 集
 
 ## WHERE TO LOOK
 
-| 想做的事                                            | 改哪里                                                                                       |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **高频改动入口**                                    |                                                                                              |
-| 工具窗口入口/布局/手动焦点恢复                      | `toolWindow/MyToolWindowFactory.kt`（含 `resetToolWindow()`,右键菜单 Reset 触发,无自动监听） |
-| 浏览器面板/生命周期                                 | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`                                             |
-| 服务器进程启停（4 阶段关闭）                        | `toolWindow/OpenCodeServerManager.kt`                                                        |
-| Singleflight 防抖（手动启动去重）                   | `toolWindow/Singleflight.kt`                                                                 |
-| SSE 消费、降噪、自动重连（替代旧 HealthMonitor）    | `listeners/OpenCodeSSEConsumer.kt`                                                           |
-| **键盘 / 输入**                                     |                                                                                              |
-| 键盘拦截（ESC/Cmd+K/Cmd+,）                         | `toolWindow/JcefKeyboardInterceptor.kt`                                                      |
-| Emacs 风格按键（Ctrl+N/P/E/A/B/F）                  | `toolWindow/EmacsKeyHandler.kt`                                                              |
-| JCEF 右键菜单（Reset/Refresh/Back）                 | `toolWindow/LinkContextMenuHandler.kt`                                                       |
-| Add to Prompt 含 im-select 硬编码（macOS IME 切换） | `actions/AddToPromptAction.kt`                                                               |
-| **通知 / 事件**                                     |                                                                                              |
-| SSE 解析（含 3 级 `extractSessionID` fallback）     | `listeners/SSEEventParser.kt`                                                                |
-| Bash 工具事件检测                                   | `listeners/BashCommandHandler.kt`                                                            |
-| 文件刷新（生产者-消费者）                           | `listeners/FullRefreshCoordinator.kt`                                                        |
-| HTTP API（健康/session 等）                         | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`                                              |
-| 通知发送（IDEA 原生 + macOS 系统）                  | `utils/OpenCodeNotificationService.kt`                                                       |
-| 通知路由（10 行直通薄层）                           | `utils/OpenCodeNotificationRouter.kt`                                                        |
-| 通知配置（4 个通用设置，无 UI）                     | `utils/OpenCodeConfig.kt`                                                                    |
-| SSE consumer 单例工厂                               | `utils/SSEConsumerFactory.kt`                                                                |
-| **配置 / 常量**                                     |                                                                                              |
-| JCEF JS 注入                                        | `utils/JcefJsInjector.kt`                                                                    |
-| IdeaVim visual 模式选区（注入 JS 路径）             | `utils/IdeaVimIntegration.kt`                                                                |
-| 复制为 Prompt 格式                                  | `actions/CopyAsPromptAction.kt`                                                              |
-| 端口/超时/间隔常量（端口 12396）                    | `OpenCodeConstants.kt`                                                                       |
+| 想做的事                                         | 改哪里                                                                                       |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| **高频改动入口**                                 |                                                                                              |
+| 工具窗口入口/布局/手动焦点恢复                   | `toolWindow/MyToolWindowFactory.kt`（含 `resetToolWindow()`,右键菜单 Reset 触发,无自动监听） |
+| 浏览器面板/生命周期                              | `toolWindow/MyToolWindow.kt` + `BrowserPanel.kt`                                             |
+| 服务器进程启停（4 阶段关闭）                     | `toolWindow/OpenCodeServerManager.kt`                                                        |
+| Singleflight 防抖（手动启动去重）                | `toolWindow/Singleflight.kt`                                                                 |
+| SSE 消费、降噪、自动重连（替代旧 HealthMonitor） | `listeners/OpenCodeSSEConsumer.kt`                                                           |
+| **键盘 / 输入**                                  |                                                                                              |
+| 键盘拦截（ESC/Cmd+K/Cmd+,）                      | `toolWindow/JcefKeyboardInterceptor.kt`                                                      |
+| Emacs 风格按键（Ctrl+N/P/E/A/B/F）               | `toolWindow/EmacsKeyHandler.kt`                                                              |
+| JCEF 右键菜单（PasteTo/Reset/Refresh/Back）      | `toolWindow/LinkContextMenuHandler.kt`                                                       |
+| **通知 / 事件**                                  |                                                                                              |
+| SSE 解析（含 3 级 `extractSessionID` fallback）  | `listeners/SSEEventParser.kt`                                                                |
+| Bash 工具事件检测                                | `listeners/BashCommandHandler.kt`                                                            |
+| 文件刷新（生产者-消费者）                        | `listeners/FullRefreshCoordinator.kt`                                                        |
+| HTTP API（健康/session 等）                      | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`                                              |
+| 通知发送（IDEA 原生 + macOS 系统）               | `utils/OpenCodeNotificationService.kt`                                                       |
+| 通知路由（10 行直通薄层）                        | `utils/OpenCodeNotificationRouter.kt`                                                        |
+| 通知配置（4 个通用设置，无 UI）                  | `utils/OpenCodeConfig.kt`                                                                    |
+| SSE consumer 单例工厂                            | `utils/SSEConsumerFactory.kt`                                                                |
+| **配置 / 常量**                                  |                                                                                              |
+| JCEF JS 注入                                     | `utils/JcefJsInjector.kt`                                                                    |
+| IdeaVim visual 模式选区（注入 JS 路径）          | `utils/IdeaVimIntegration.kt`                                                                |
+| 复制为 Prompt 格式                               | `actions/CopyAsPromptAction.kt`                                                              |
+| 端口/超时/间隔常量（端口 12396）                 | `OpenCodeConstants.kt`                                                                       |
 
 ## HARD RULES
 
@@ -131,7 +130,6 @@ CI 全在外部仓库 `syllr/intellij-opencode-web` GitHub Actions，本仓库�
 - 多项目实例用 `ConcurrentHashMap<Project, MyToolWindow>` 管理
 - 共享 JBCefClient 实例（`sharedJBCefClient`）
 - 每 Project 独立 `OpenCodeSSEConsumer` 实例（`SSEConsumerFactory.create(project)`），独立维护 `sessionTitles` / `idleNotifiedSessions` per-consumer 状态
-- `AddToPromptAction` 中 `IM_SELECT_PATH` 和 `IM_SELECT_ARG_EN` 是硬编码（macOS 输入法切换，仅开发者本机有效；其他开发者 clone 后 im-select 不存在时降级为 noop，待重构为可配置，SPEC GAP-3）
 - 日志: `thisLogger().info/warn/error()`；日志前缀 `[<类名>] <消息>`（SPEC §7.6）
 - `OpenCodeApiResult` sealed class（`Success` / `Failure` / `Unavailable` / `Unauthorized`）统一 HTTP 调用错误处理，调用方用 `.dataOrNull()` 取值
 - SSE watchdog: `lastEventAt` 30s 没更新 → 强制重连（`SSE_WATCHDOG_INTERVAL_MS=5s`，`SSE_IDLE_TIMEOUT_MS=30s`）

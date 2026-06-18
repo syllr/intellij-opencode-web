@@ -1,7 +1,5 @@
 package com.shenyuanlaolarou.opencodewebui.actions
 
-import com.shenyuanlaolarou.opencodewebui.IM_SELECT_ARG_EN
-import com.shenyuanlaolarou.opencodewebui.IM_SELECT_PATH
 import com.shenyuanlaolarou.opencodewebui.toolWindow.MyToolWindowFactory
 import com.shenyuanlaolarou.opencodewebui.utils.IdeaVimIntegration
 import com.shenyuanlaolarou.opencodewebui.utils.JcefJsInjector
@@ -16,32 +14,13 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import java.awt.KeyboardFocusManager
-import java.io.File
 import javax.swing.SwingUtilities
 
 class AddToPromptAction : AnAction(), DumbAware {
-
-    companion object {
-        // 插件启动时检查一次 im-select 是否存在,结果缓存到进程退出。
-        // 不存在时降级为 noop,不会抛错。im-select 配置集中在 OpenCodeConstants,见那里 TODO。
-        private val imSelectAvailable by lazy { File(IM_SELECT_PATH).exists() }
-    }
-
-    private fun switchInputMethod(arg: String) {
-        if (imSelectAvailable) {
-            try {
-                Runtime.getRuntime().exec(arrayOf(IM_SELECT_PATH, arg))
-            } catch (e: Exception) {
-                thisLogger().debug("[AddToPromptAction] Failed to switch input method: ${e.message}")
-            }
-        }
-    }
-
     override fun actionPerformed(e: AnActionEvent) {
         val project: Project = e.project ?: return
 
         // 如果焦点在 OpenCode Web 面板中，将焦点移回 IDE 编辑器
-        // 注意：不切输入法——这个方向是从 JCEF 回到编辑器，用户可能正在用中文输入
         if (isFocusInOpenCodeWeb(project)) {
             thisLogger().debug("[AddToPromptAction] Focus in OpenCodeWeb, moving focus to editor")
             val editorManager = FileEditorManager.getInstance(project)
@@ -79,7 +58,6 @@ class AddToPromptAction : AnAction(), DumbAware {
 
         if (selectedText.isNullOrBlank() || selStart < 0 || selEnd <= selStart) {
             thisLogger().info("[AddToPromptAction] No valid selection, opening OpenCode Web")
-            switchInputMethod(IM_SELECT_ARG_EN)
             MyToolWindowFactory.openOpenCodeWebToolWindow(project)
             return
         }
@@ -95,9 +73,6 @@ class AddToPromptAction : AnAction(), DumbAware {
         val formattedContent = formatAsPrompt(filePath, startLine, endLine, selectedText)
 
         JcefJsInjector.appendTextToEditor(project, formattedContent)
-
-        // 焦点进入 OpenCode Web 页面时，默认切英文输入法
-        switchInputMethod(IM_SELECT_ARG_EN)
 
         if (IdeaVimIntegration.isIdeaVimInstalled() && IdeaVimIntegration.isInVisualMode(safeEditor)) {
             IdeaVimIntegration.exitVisualMode(safeEditor)

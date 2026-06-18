@@ -421,7 +421,6 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 | ----- | ----------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------- |
 | GAP-1 | `OpenCodeConfigurable` Settings UI 缺失(commit `a5eafc4` 1.0.20 整删);`OpenCodeConfig` 4 个通用设置当前无法通过 UI 配置 | ⚠️ 中  | 重新实现 Settings UI 并补 11 个事件开关/11 个模板 |
 | GAP-2 | `sessionTitles` 无硬性 LRU 上限,可能在超长会话中无界增长                                                                | ℹ️ 低  | 典型场景 < 1000,可接受                            |
-| GAP-3 | im-select 硬编码开发者个人路径(`OpenCodeConstants.kt:28-29`)                                                            | ℹ️ 低  | 待抽离为插件配置(已 TODO)                         |
 | GAP-4 | `subagent_complete` 通知未实现(代码中无该分支)                                                                          | ⚠️ 中  | 配合 GAP-1 Settings UI 补齐事件开关               |
 | GAP-5 | `OpenCodeSSEConsumer.sessionTitles` 注册只在 SSE consumer 启动路径中,**非**多保险                                       | ℹ️ 低  | 实际场景下足够(每 Project 独立 consumer 已覆盖)   |
 | GAP-6 | `JcefKeyboardInterceptor.interceptKeysRecursive` 是死代码(`interceptKeys` 单层调用)                                     | ℹ️ 低  | 删除方法(不破坏接口)                              |
