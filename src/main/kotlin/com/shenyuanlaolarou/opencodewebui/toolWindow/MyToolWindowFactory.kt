@@ -4,6 +4,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -64,9 +65,29 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         internal val sharedJBCefClient by lazy {
-            Registry.get("ide.browser.jcef.gpu.disable").setValue(false)
-            System.setProperty("ide.browser.jcef.extra.args", "--enable-gpu-compositing,--use-gl=angle,--use-angle=metal")
+            applyMacJcefArgsIfNeeded()
             JBCefApp.getInstance().createClient()
+        }
+
+        /**
+         * macOS 专用 JCEF GPU/ANGLE 参数配置。
+         *
+         * 设计决策:IDE 2026.1 / JCEF 142+ (Chromium 142+) 默认已开启 Metal ANGLE 与 GPU 合成,
+         * 这里显式只传 `--use-angle=metal`:
+         *   - `--enable-gpu-compositing`:macOS 默认值,冗余
+         *   - `--use-gl=angle`:Chromium `gl_implementation.cc:164-167` 明确当 `--use-angle`
+         *     存在但 `--use-gl` 不存在时自动补全为 `angle`,冗余
+         *
+         * 非 mac 平台跳过整个配置块,走 JetBrains 默认 Metal ANGLE 渲染路径
+         * (Chromium `gl_switches.cc` 中 `kDefaultANGLEMetal` = `FEATURE_ENABLED_BY_DEFAULT`)。
+         *
+         * 抽成独立函数便于单元测试,不依赖 JBCefApp runtime。
+         */
+        internal fun applyMacJcefArgsIfNeeded() {
+            if (SystemInfo.isMac) {
+                Registry.get("ide.browser.jcef.gpu.disable").setValue(false)
+                System.setProperty("ide.browser.jcef.extra.args", "--use-angle=metal")
+            }
         }
 
         internal val myToolWindowInstances: ConcurrentHashMap<Project, MyToolWindow> = ConcurrentHashMap()
