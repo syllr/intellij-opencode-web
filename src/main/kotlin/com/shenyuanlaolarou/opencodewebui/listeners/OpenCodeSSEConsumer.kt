@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
-internal val SUBAGENT_TITLE_REGEX = Regex("""@\w+ subagent""")
+internal val SUBAGENT_TITLE_REGEX = Regex("""@[^\s)]+ subagent""")
 
 internal fun isSubagentTitle(title: String): Boolean =
     SUBAGENT_TITLE_REGEX.containsMatchIn(title)
