@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.ui.jcef.JBCefBrowser
+import java.awt.Component
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
@@ -18,6 +19,9 @@ class MyToolWindow(toolWindow: ToolWindow) {
     private val browserPanel = BrowserPanel(OPENCODE_HOST, OPENCODE_PORT, MyToolWindowFactory.sharedJBCefClient)
     private var mainBrowser: JBCefBrowser? = null
 
+    @Volatile
+    private var emacsRootComponent: Component? = null
+
     init {
         MyToolWindowFactory.myToolWindowInstances[project] = this
 
@@ -25,6 +29,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
         Disposer.register(project) {
             logger.info("[Lifecycle] Cleaning up MyToolWindow for project=${project.name}")
             MyToolWindowFactory.myToolWindowInstances.remove(project)
+            uninstallEmacsHandler()
             browserPanel.disposeBrowser()
             // [Fix #3] 停止该项目的 SSE consumer，断开 OpenCodeServerManager → SSEConsumer → Project 引用链
             OpenCodeServerManager.disposeForProject(project)
@@ -98,6 +103,7 @@ class MyToolWindow(toolWindow: ToolWindow) {
         hasLoaded = false
         mainBrowser = null
         isShowingStartButton = true
+        uninstallEmacsHandler()
         browserPanel.disposeBrowser()
         browserPanel.showStartButton { onStartClicked() }
         // [Fix 启动时序] 停止后台线程,避免 server 未运行时线程空转:
@@ -116,10 +122,24 @@ class MyToolWindow(toolWindow: ToolWindow) {
 
     private fun setupBrowserComponent(browser: JBCefBrowser) {
         val osrComponent = browser.cefBrowser.uiComponent
+        val rootComponent: Component = browser.component
 
         osrComponent?.let { comp ->
             JcefKeyboardInterceptor.interceptKeys(comp)
-            EmacsKeyHandler.addEmacsKeyMapping(comp)
+        }
+
+        // root = browser.component (MyPanel), 用于 SwingUtilities.isDescendingFrom 焦点祖先判定
+        // target = osrComponent, 用于派发合成 KeyEvent。详见 EmacsKeyHandler KDoc。
+        // 先赋值再 install:若 install 抛异常或 EDT 调度触发 showServerNotRunning,
+        // uninstallEmacsHandler 仍能从 emacsRootComponent 读到正确 root 完成清理,避免 TOCTOU。
+        emacsRootComponent = rootComponent
+        EmacsKeyHandler.install(rootComponent, osrComponent ?: rootComponent)
+    }
+
+    private fun uninstallEmacsHandler() {
+        emacsRootComponent?.let {
+            EmacsKeyHandler.uninstall(it)
+            emacsRootComponent = null
         }
     }
 
