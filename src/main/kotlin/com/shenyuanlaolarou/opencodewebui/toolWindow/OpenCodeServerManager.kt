@@ -4,9 +4,11 @@ import com.shenyuanlaolarou.opencodewebui.OPENCODE_HOST
 import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
 import com.shenyuanlaolarou.opencodewebui.listeners.OpenCodeSSEConsumer
 import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
+import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApiResult
 import com.shenyuanlaolarou.opencodewebui.utils.SSEConsumerFactory
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -29,9 +31,12 @@ object OpenCodeServerManager {
         onConnectionLost: () -> Unit = {},
         onConnectionEstablished: () -> Unit = {},
     ): OpenCodeSSEConsumer {
+        thisLogger().info("[OpenCodeServerManager] getOrCreateConsumer called for project=${project.name} (consumers.size before=${consumers.size})")
         return consumers.computeIfAbsent(project) { p ->
+            thisLogger().info("[OpenCodeServerManager] getOrCreateConsumer: no existing consumer, creating new one for project=${p.name}")
             SSEConsumerFactory.create(p, onConnectionLost, onConnectionEstablished).also { it.start() }
         }.also { existing ->
+            thisLogger().info("[OpenCodeServerManager] getOrCreateConsumer: existing consumer for project=${project.name}, updating callbacks (isHealthy=${existing.isHealthy()})")
             // 原子更新回调(支持 getOrCreateConsumer 重入时新 caller 覆盖旧 callback)
             existing.onConnectionLost = onConnectionLost
             existing.onConnectionEstablished = onConnectionEstablished
@@ -57,22 +62,39 @@ object OpenCodeServerManager {
         // 1. 本 IDE 实例之前启动的进程仍存活 → 复用,直接创建 consumer
         // 2. 端口已被监听(外部 server 或其他 IDE 启动) → 200ms TCP 探测,跳过进程启动
         // 3. 否则 → 后台启动新进程
+        // 三条路径都在 onStarted() 前 register project → 让上游 web app /project 列表能显示当前目录
         val existing = serverProcess.get()
         if (existing != null && existing.isAlive) {
             thisLogger().debug("[OpenCodeServerManager] Reusing existing server process, project=${project.name}")
-            getOrCreateConsumer(project)
+            registerProjectInBackground(project)
             onStarted()
             return
         }
 
         if (OpenCodeApi.isServerPortOpen()) {
             thisLogger().debug("[OpenCodeServerManager] Server already listening on port (external), skipping process start, project=${project.name}")
-            getOrCreateConsumer(project)
+            registerProjectInBackground(project)
             onStarted()
             return
         }
 
-        startServerSingleflight(project, onStarted, onFailed)
+        startServerSingleflight(project, {
+            registerProjectInBackground(project)
+            onStarted()
+        }, onFailed)
+    }
+
+    private fun registerProjectInBackground(project: com.intellij.openapi.project.Project) {
+        val directory = project.basePath ?: return
+        Thread({
+            val result = OpenCodeApi.createSession(directory)
+            when (result) {
+                is OpenCodeApiResult.Success -> thisLogger().info("[OpenCodeServerManager] Created session ${result.data} for project $directory")
+                is OpenCodeApiResult.Failure -> thisLogger().warn("[OpenCodeServerManager] createSession failed (${result.code}): ${result.message}")
+                OpenCodeApiResult.Unavailable -> thisLogger().debug("[OpenCodeServerManager] createSession unavailable (server still starting?)")
+                OpenCodeApiResult.Unauthorized -> thisLogger().warn("[OpenCodeServerManager] createSession unauthorized (auth required?)")
+            }
+        }, "OpenCode-createSession-${project.name}").start()
     }
 
     /**

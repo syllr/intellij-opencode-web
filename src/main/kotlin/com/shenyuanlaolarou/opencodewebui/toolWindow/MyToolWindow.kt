@@ -1,215 +1,354 @@
 package com.shenyuanlaolarou.opencodewebui.toolWindow
 
-import com.shenyuanlaolarou.opencodewebui.OPENCODE_HOST
-import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
-import com.intellij.ui.jcef.JBCefBrowser
-import java.awt.Component
-import java.nio.charset.StandardCharsets
-import java.util.Base64
-import java.util.concurrent.atomic.AtomicBoolean
+import com.intellij.ui.JBColor
+import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBScrollPane
+import com.shenyuanlaolarou.opencodewebui.OPENCODE_HOST
+import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
+import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
+import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApiResult
+import com.shenyuanlaolarou.opencodewebui.utils.SessionInfo
+import java.awt.BorderLayout
+import java.awt.Cursor
+import java.awt.Dimension
+import java.awt.FlowLayout
+import java.awt.Font
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import javax.swing.BorderFactory
+import javax.swing.Box
+import javax.swing.BoxLayout
+import javax.swing.JButton
+import javax.swing.JComponent
+import javax.swing.JLabel
+import javax.swing.JPanel
+import javax.swing.SwingWorker
+import javax.swing.border.EmptyBorder
 
-class MyToolWindow(toolWindow: ToolWindow) {
+/**
+ * OpenCodeWeb 工具窗口的纯 Swing Dashboard。
+ *
+ * 设计:
+ * - 打开工具窗口自动调 [OpenCodeServerManager.startServer] 启 server(若已在跑则复用,fast path)
+ * - **Sessions 列表是主入口** — 每行点击 → Edge --app 模式打开对应 session URL
+ * - **"+ New Session" 入口**(列表最上方固定一行):点击后 Edge 打开项目 URL(无 /session/<id> 段),
+ *   opencode Web UI 落地后自己起新 session,IDE 端不再调 createSession
+ * - 顶部状态区:Server 状态点(彩色 ●)+ "Server: running"/"Server: stopped" 文字
+ * - 底部控制区:Stop / Restart
+ * - Edge 未安装时点 session 行 → 弹 dialog 提示用户安装(不 throw,不 crash)
+ *
+ * Sessions 通过 [OpenCodeApi.getSessions] 异步拉取,SwingWorker 不阻塞 EDT。
+ */
+class MyToolWindow(
+    @Suppress("unused") private val toolWindow: ToolWindow,
+    private val project: Project,
+) {
+    private val log = thisLogger()
 
-    private val project = toolWindow.project
-    private val logger = thisLogger()
-    private val browserPanel = BrowserPanel(OPENCODE_HOST, OPENCODE_PORT, MyToolWindowFactory.sharedJBCefClient)
-    private var mainBrowser: JBCefBrowser? = null
+    private val statusDot = JBLabel("●")
+    private val statusText = JBLabel("Server: stopped")
+    private val sessionsTitleLabel = JBLabel("Recent Sessions")
+    private val sessionsPanel = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
 
-    @Volatile
-    private var emacsRootComponent: Component? = null
+    private val stopButton = JButton("Stop").apply { isEnabled = false }
+    private val restartButton = JButton("Restart").apply { isEnabled = false }
 
     init {
         MyToolWindowFactory.myToolWindowInstances[project] = this
-
-        // 项目关闭时清理：移除 map 引用并释放资源，防止内存泄漏
         Disposer.register(project) {
-            logger.info("[Lifecycle] Cleaning up MyToolWindow for project=${project.name}")
             MyToolWindowFactory.myToolWindowInstances.remove(project)
-            uninstallEmacsHandler()
-            browserPanel.disposeBrowser()
-            // [Fix #3] 停止该项目的 SSE consumer，断开 OpenCodeServerManager → SSEConsumer → Project 引用链
             OpenCodeServerManager.disposeForProject(project)
         }
     }
 
-    private var isShowingStartButton = false
-    @Volatile
-    private var hasLoaded = false
+    fun getContent(): JComponent = buildPanel()
 
-    /**
-     * 防 onStarted 5 次回调导致 onServerReady 被调 5 次(单飞在 OpenCodeServerManager
-     * 端已做 5→1 进程启动,这里防止 5 个 onStarted 都进 startConsumerAndMonitor
-     * 重建 consumer 5 次)。
-     *
-     * 每次用户点 Start(onStartClicked 入口)重置回 false;
-     * onServerReady 入口 compareAndSet(false, true) 拦截后续 4 次。
-     */
-    private val isServerReadyHandled = AtomicBoolean(false)
+    fun buildOpenUrl(sessionId: String = ""): String =
+        OpenCodeBrowserLauncher.buildUrl(project.basePath ?: "", OPENCODE_PORT, sessionId)
 
-    /**
-     * 工具窗口内容加载入口(用户首次打开 toolWindow 时调一次)。
-     *
-     * 手动模式:不做 TCP 探测,永远显示 Start 按钮。server 启停完全由用户点 Start 按钮控制。
-     */
-    fun checkAndLoadContent() {
-        showServerNotRunning()
+    private fun buildPanel(): JPanel {
+        val root = JPanel(BorderLayout(0, 8))
+        root.border = EmptyBorder(12, 12, 12, 12)
+
+        root.add(buildHeaderPanel(), BorderLayout.NORTH)
+        root.add(buildSessionsScrollPane(), BorderLayout.CENTER)
+
+        refreshStatus()
+        refreshSessions()
+        wireSseStatusCallbacks()
+        ensureServerRunning()
+        return root
     }
 
-    /**
-     * 创建/复用 SSE consumer。startServer() 成功后也会调。
-     * onConnectionLost 快速通道:server 主动 shutdown 时绕过 15s debounce 立即显示 Start 按钮。
-     * onConnectionEstablished 通道(Part C):SSE 重建 1.5s debounce 后自动调 loadProjectPage 恢复 UI。
-     *
-     * [Fix 线程违规] onConnectionLost/onConnectionEstablished 在 LaunchDarkly 后台线程被调,
-     * showServerNotRunning/loadProjectPage 内部含 Swing UI 操作(disposeBrowser/showStartButton),
-     * 必须 wrap 进 invokeLater 切到 EDT,否则违反 Swing 线程模型 → UI 损坏/死锁。
-     */
-    private fun startConsumerAndMonitor() {
-        OpenCodeServerManager.getOrCreateConsumer(
+    private fun ensureServerRunning() {
+        OpenCodeServerManager.startServer(
             project = project,
-            onConnectionLost = {
-                ApplicationManager.getApplication().invokeLater {
-                    showServerNotRunning()
+            onStarted = {
+                log.info("[Dashboard] ensureServerRunning: server up, refreshing UI")
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                    refreshStatus()
+                    refreshSessions()
                 }
             },
-            onConnectionEstablished = {
-                ApplicationManager.getApplication().invokeLater {
-                    loadProjectPage(force = true)
-                }
+            onFailed = { e ->
+                log.warn("[Dashboard] ensureServerRunning: server start failed: ${e.message}")
             }
         )
     }
 
-    private fun showServerNotRunning() {
-        // [Fix 重入守卫] LaunchDarkly 库 alwaysContinue 策略 + server 已 down
-        // → 库内部 1s/2s/4s... 指数退避重试,每次失败都触发 onError → onConnectionLost → showServerNotRunning。
-        // 如果没有守卫,会反复 disposeBrowser + showStartButton → UI 闪烁 + 组件泄漏。
-        // isShowingStartButton 守卫(已存在但此前从未被读)实现幂等。
-        if (isShowingStartButton) {
-            thisLogger().debug("showServerNotRunning skipped: already showing start button (幂等)")
-            return
+    private fun buildHeaderPanel(): JPanel {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.border = EmptyBorder(0, 0, 12, 0)
+
+        val statusRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+            add(statusDot)
+            add(statusText)
         }
-        // [Fix #4 资源泄漏] onConnectionLost 回调在 LaunchDarkly 后台线程触发(onClosed/onError 异步),
-        // 可能晚于 Disposer.register(project) 的清理回调。如果 project 已 dispose,
-        // 访问 browserPanel/mainBrowser 等 Swing 组件会触发 "Already disposed" 异常。
-        if (project.isDisposed) {
-            thisLogger().debug("showServerNotRunning skipped: project already disposed")
-            return
-        }
-        hasLoaded = false
-        mainBrowser = null
-        isShowingStartButton = true
-        uninstallEmacsHandler()
-        browserPanel.disposeBrowser()
-        browserPanel.showStartButton { onStartClicked() }
-        // [Fix 启动时序] 停止后台线程,避免 server 未运行时线程空转:
-        // - SSE consumer.watchdog(30s 后每 5s reconnect,连接风暴)
-        // - FullRefreshCoordinator(ScheduledExecutorService 常驻)
-        // - EventSource 内部 LaunchDarkly 线程(指数退避重试)
-        // disposeForProject 幂等(remove 返回 null 时 no-op),用户点 Start 后 startServer() 会重新创建
-        OpenCodeServerManager.disposeForProject(project)
+        panel.add(statusRow)
+
+        return panel
     }
 
-    fun getContent() = browserPanel
-
-    fun getBrowser() = browserPanel.getBrowser()
-
-    fun isPageLoaded() = browserPanel.isPageLoaded()
-
-    private fun setupBrowserComponent(browser: JBCefBrowser) {
-        val osrComponent = browser.cefBrowser.uiComponent
-        val rootComponent: Component = browser.component
-
-        osrComponent?.let { comp ->
-            JcefKeyboardInterceptor.interceptKeys(comp)
-        }
-
-        // root = browser.component (MyPanel), 用于 SwingUtilities.isDescendingFrom 焦点祖先判定
-        // target = osrComponent, 用于派发合成 KeyEvent。详见 EmacsKeyHandler KDoc。
-        // 先赋值再 install:若 install 抛异常或 EDT 调度触发 showServerNotRunning,
-        // uninstallEmacsHandler 仍能从 emacsRootComponent 读到正确 root 完成清理,避免 TOCTOU。
-        emacsRootComponent = rootComponent
-        EmacsKeyHandler.install(rootComponent, osrComponent ?: rootComponent)
+    private fun buildSessionsScrollPane(): JComponent {
+        val outer = JPanel(BorderLayout(0, 4))
+        sessionsTitleLabel.font = sessionsTitleLabel.font.deriveFont(Font.BOLD)
+        outer.add(sessionsTitleLabel, BorderLayout.NORTH)
+        outer.add(JBScrollPane(sessionsPanel).apply {
+            preferredSize = Dimension(400, 240)
+        }, BorderLayout.CENTER)
+        return outer
     }
 
-    private fun uninstallEmacsHandler() {
-        emacsRootComponent?.let {
-            EmacsKeyHandler.uninstall(it)
-            emacsRootComponent = null
+    private fun buildControlPanel(): JPanel {
+        val panel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        panel.add(stopButton)
+        panel.add(restartButton)
+        return panel
+    }
+
+    private fun wireActions() {
+        stopButton.addActionListener {
+            runCatching { OpenCodeServerManager.shutdownServer() }
+                .onFailure { log.warn("[Dashboard] shutdownServer failed: ${it.message}") }
         }
+        restartButton.addActionListener {
+            OpenCodeServerManager.startServer(
+                project = project,
+                onStarted = { },
+                onFailed = { e -> log.warn("[Dashboard] restart failed: ${e.message}") }
+            )
+        }
+    }
+
+    private fun refreshStatus() {
+        val portOpen = OpenCodeApi.isServerPortOpen()
+        statusDot.foreground = if (portOpen) JBColor.GREEN else JBColor.GRAY
+        statusText.text = if (portOpen) "Server: running" else "Server: stopped"
+        stopButton.isEnabled = portOpen
+        restartButton.isEnabled = portOpen
     }
 
     /**
-     * 用户点 Start 按钮的回调。每次点击都重置 CAS 守卫,
-     * 允许上一次启动失败后重试时 onServerReady 能正常进入。
+     * 把 SSE 连接的 onConnectionLost / onConnectionEstablished 接到 refreshStatus。
      */
-    fun onStartClicked() {
-        isServerReadyHandled.set(false)
-        OpenCodeServerManager.startServer(
+    private fun wireSseStatusCallbacks() {
+        log.info("[Dashboard] wireSseStatusCallbacks: registering SSE callbacks for project=${project.name}, projectBasePath=${project.basePath}")
+        OpenCodeServerManager.getOrCreateConsumer(
             project = project,
-            onStarted = { ApplicationManager.getApplication().invokeLater { onServerReady() } },
-            onFailed  = { e -> ApplicationManager.getApplication().invokeLater { onServerFailed(e) } }
+            onConnectionLost = {
+                log.info("[Dashboard] SSE onConnectionLost callback fired (background thread=${Thread.currentThread().name})")
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                    log.info("[Dashboard] SSE onConnectionLost -> invokeLater -> refreshStatus()")
+                    refreshStatus()
+                }
+            },
+            onConnectionEstablished = {
+                log.info("[Dashboard] SSE onConnectionEstablished callback fired (background thread=${Thread.currentThread().name})")
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                    log.info("[Dashboard] SSE onConnectionEstablished -> invokeLater -> refreshStatus()")
+                    refreshStatus()
+                }
+            }
         )
+        log.info("[Dashboard] wireSseStatusCallbacks: getOrCreateConsumer returned, consumer active")
+    }
+
+    private fun refreshSessions() {
+        setSessionsState(SessionsState.Loading)
+        val worker = object : SwingWorker<List<SessionInfo>, Void>() {
+            override fun doInBackground(): List<SessionInfo> {
+                val result = OpenCodeApi.getSessions(project.basePath)
+                return when (result) {
+                    is OpenCodeApiResult.Success<List<SessionInfo>> -> result.data
+                    else -> emptyList()
+                }
+            }
+            override fun done() {
+                try {
+                    val sessions = get().sortedByDescending { it.timeCreated ?: 0L }.take(20)
+                    setSessionsState(SessionsState.Sessions(sessions))
+                } catch (e: Exception) {
+                    log.warn("[Dashboard] fetch sessions failed: ${e.message}")
+                    setSessionsState(SessionsState.Error(e.message ?: "Unknown error"))
+                }
+            }
+        }
+        worker.execute()
+    }
+
+    internal fun setSessionsState(state: SessionsState) {
+        sessionsPanel.removeAll()
+        when (state) {
+            is SessionsState.Loading -> {
+                val label = JBLabel("Loading sessions…")
+                label.foreground = JBColor.GRAY
+                label.border = EmptyBorder(24, 8, 24, 8)
+                sessionsPanel.add(label)
+            }
+            is SessionsState.Sessions -> {
+                sessionsPanel.add(buildNewSessionRow())
+                sessionsPanel.add(Box.createVerticalStrut(2))
+                if (state.sessions.isEmpty()) {
+                    val emptyLabel = JBLabel("No sessions yet")
+                    emptyLabel.foreground = JBColor.GRAY
+                    emptyLabel.border = EmptyBorder(24, 8, 24, 8)
+                    sessionsPanel.add(emptyLabel)
+                } else {
+                    state.sessions.forEach { session ->
+                        sessionsPanel.add(buildSessionRow(session))
+                        sessionsPanel.add(Box.createVerticalStrut(2))
+                    }
+                }
+            }
+            is SessionsState.Error -> {
+                val label = JBLabel("Failed to load: ${state.message}")
+                label.foreground = JBColor.RED
+                label.border = EmptyBorder(24, 8, 24, 8)
+                sessionsPanel.add(label)
+            }
+        }
+        sessionsPanel.revalidate()
+        sessionsPanel.repaint()
     }
 
     /**
-     * server 启动成功的回调(经 OpenCodeServerManager 单飞后,5 个 onStarted 都会触发)。
-     * CAS 守卫拦截后续 4 次,只让第一个真跑 startConsumerAndMonitor + loadProjectPage。
-     *
-     * 注意:失败时 try-catch 只 log,不重置 isServerReadyHandled——下次用户点 Start
-     * 时 onStartClicked 入口会重置,语义最清晰。
+     * 特殊的 "+ New Session" 行:点击后调 [launchEdgeForSession] 传空 sessionId,
+     * Edge 打开项目 URL(无 /session/<id> 段),opencode Web UI 自己起新 session。
+     * 与 [buildSessionRow] 同形(同 BorderLayout + 下边框 + Hand cursor),
+     * 仅文案和 click handler 不同,视觉与普通 session 行对齐。
      */
-    private fun onServerReady() {
-        if (!isServerReadyHandled.compareAndSet(false, true)) return
-        try {
-            startConsumerAndMonitor()
-            loadProjectPage(force = true)
-        } catch (e: Exception) {
-            thisLogger().warn("[MyToolWindow] onServerReady failed: ${e.message}", e)
+    internal fun buildNewSessionRow(): JPanel {
+        val row = JPanel(BorderLayout())
+        row.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 1, 0, JBColor.border()),
+            EmptyBorder(6, 8, 6, 8)
+        )
+        row.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        row.isOpaque = false
+
+        val title = JBLabel("+ New Session")
+        title.font = title.font.deriveFont(Font.BOLD)
+        val hint = JBLabel("open project →")
+        hint.foreground = JBColor.GRAY
+        hint.font = hint.font.deriveFont(Font.PLAIN, 10f)
+
+        val topRow = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(title, BorderLayout.WEST)
+            add(hint, BorderLayout.EAST)
         }
+
+        val col = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            add(topRow)
+        }
+        row.add(col, BorderLayout.CENTER)
+
+        row.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent?) {
+                launchEdgeForSession("")
+            }
+        })
+        return row
     }
 
-    /**
-     * server 启动失败的回调(单飞后 5 个 onFailed 都会触发,但幂等只 log)。
-     * UI 回按钮态由 onConnectionLost 兜底(单飞层已完成进程清理,server 进程退出触发 SSE onClosed)。
-     */
-    private fun onServerFailed(e: Exception) {
-        thisLogger().error("[MyToolWindow] Server start failed: ${e.message}", e)
-        // 不主动 reset isServerReadyHandled——等用户下次点 Start 时 onStartClicked 入口重置
+    internal sealed class SessionsState {
+        object Loading : SessionsState()
+        data class Sessions(val sessions: List<SessionInfo>) : SessionsState()
+        data class Error(val message: String) : SessionsState()
     }
 
-    private fun loadProjectPage(force: Boolean = false) {
-        if (project.isDisposed) {
-            thisLogger().debug("[loadProjectPage] skipped: project already disposed")
-            return
-        }
-        if (hasLoaded && !force) {
-            logger.debug("[loadProjectPage] Already loaded, skipping duplicate call")
-            return
-        }
-        hasLoaded = true
-        isShowingStartButton = false
-        val projectPath = project.basePath ?: return
-        val encodedPath = Base64.getEncoder().encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+    internal fun buildSessionRow(session: SessionInfo): JPanel {
+        val row = JPanel(BorderLayout())
+        row.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 1, 0, JBColor.border()),
+            EmptyBorder(6, 8, 6, 8)
+        )
+        row.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        row.isOpaque = false
 
-        // [决策:不自动恢复 session] 加载项目页到 DirectoryLayout(显示侧栏 + recent sessions),
-        // 由用户在 web UI 内手动点 session。opencode 桌面版/web app 启动后默认停在 HomePage,
-        // 不提供"启动时自动打开 last session"能力;`opencode run --continue`/`--session` 只对 CLI
-        // run/attach 生效,我们走 serve 模式拿不到。历史曾实现过 `getLatestSessionId` 自动恢复
-        // (c5091e5 移除),如需恢复能力见 git history。
-        val url = "http://$OPENCODE_HOST:$OPENCODE_PORT/$encodedPath"
-        thisLogger().debug("loadProjectPage: url=$url force=$force (manual session selection)")
-        browserPanel.hideStartButton()
-        if (mainBrowser == null) {
-            thisLogger().debug("[Lifecycle] loadProjectPage: mainBrowser is null, creating new browser")
-            mainBrowser = browserPanel.createMainTab(url, projectPath, project)
-            setupBrowserComponent(mainBrowser!!)
-        } else {
-            mainBrowser?.loadURL(url)
+        val title = JBLabel(session.title?.takeIf { it.isNotBlank() } ?: "(untitled)")
+        title.font = title.font.deriveFont(Font.BOLD)
+        val timeAgoLabel = JBLabel(timeAgo(session.timeCreated))
+        timeAgoLabel.foreground = JBColor.GRAY
+        timeAgoLabel.font = timeAgoLabel.font.deriveFont(Font.PLAIN, 10f)
+
+        val topRow = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(title, BorderLayout.WEST)
+            add(timeAgoLabel, BorderLayout.EAST)
+        }
+
+        val col = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            add(topRow)
+        }
+        row.add(col, BorderLayout.CENTER)
+
+        row.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent?) {
+                launchEdgeForSession(session.id)
+            }
+        })
+        return row
+    }
+
+    private fun launchEdgeForSession(sessionId: String) {
+        val edgeMissing = OpenCodeBrowserLauncher.checkEdgeInstalled()
+        if (edgeMissing != null) {
+            log.warn("[Dashboard] Edge not installed, showing install dialog")
+            Messages.showErrorDialog(project, edgeMissing, "Microsoft Edge Required")
+            return
+        }
+        val url = buildOpenUrl(sessionId)
+        val extDir = runCatching { EdgeBootstrapExtension.prepare(project.basePath ?: "") }
+            .onFailure { log.warn("[Dashboard] ext prepare failed: ${it.message}") }
+            .getOrNull()
+        runCatching { OpenCodeBrowserLauncher.launch(url, extDir) }
+            .onFailure { log.warn("[Dashboard] Edge launch failed: ${it.message}") }
+    }
+
+    private fun timeAgo(epochMillis: Long?): String {
+        if (epochMillis == null) return ""
+        val diffSec = (System.currentTimeMillis() - epochMillis) / 1000
+        return when {
+            diffSec < 60 -> "just now"
+            diffSec < 3600 -> "${diffSec / 60}m ago"
+            diffSec < 86400 -> "${diffSec / 3600}h ago"
+            diffSec < 7 * 86400 -> "${diffSec / 86400}d ago"
+            else -> Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
         }
     }
 }

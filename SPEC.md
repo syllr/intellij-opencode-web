@@ -14,19 +14,20 @@
 
 ## 0. 系统概览
 
-**IntelliJ OpenCode Web 插件**是一个 JetBrains IDE 插件(2026.1+),为 OpenCode CLI 提供嵌入式 Web UI 集成 + IDE 原生通知。
+**IntelliJ OpenCode Web 插件**是一个 JetBrains IDE 插件(2026.1+),自启 opencode server 并通过外部 **Microsoft Edge --app 模式**展示 OpenCode Web UI。Dashboard 显示 server 状态 + 3 控制按钮(Stop / Restart / Reset),所有通知由 OpenCode Web UI 自身接管。点击 sessions 列表行直接用 Edge --app 打开对应 session URL。
 
-| 能力                    | 路径                       | 协议/机制                                              |
-| ----------------------- | -------------------------- | ------------------------------------------------------ |
-| JCEF 嵌入式 Web UI      | IDE 侧边栏 ↔ OpenCode CLI  | WSS/HTTP(由 OpenCode 决定)                             |
-| IDE 原生通知            | IDE 通知中心 ↔ 用户        | `Notification.notify(project)` + `SystemNotifications` |
-| 文件变更同步            | OpenCode ↔ IDE VFS         | SSE 事件 → `FullRefreshCoordinator`                    |
-| 子 agent 追踪与通知降噪 | OpenCode 事件流 ↔ 本地状态 | SSE + 本地 per-consumer 状态集合                       |
+| 能力               | 路径                                   | 协议/机制                                                                     |
+| ------------------ | -------------------------------------- | ----------------------------------------------------------------------------- |
+| Edge --app 浏览器  | 系统 Microsoft Edge(日常 profile 复用) | 进程外 Edge binary + `--app=<url>`                                            |
+| Dashboard 工具窗口 | IDE 侧边栏                             | 纯 Swing,无浏览器控件                                                         |
+| 文件变更同步       | OpenCode ↔ IDE VFS                     | SSE 事件 → `FullRefreshCoordinator`                                           |
+| 子 agent 追踪      | OpenCode 事件流 ↔ 本地状态             | SSE + 本地 per-consumer 状态集合                                              |
+| in-IDE 通知        | **已砍掉**(v2.0.0)                     | `OpenCodeNotificationService.send()` no-op 桩;通知由 OpenCode Web UI 自己处理 |
 
 **核心数据流**(详见 `DESIGN.md §0.3`):
 
 ```
-OpenCode CLI (port 12396)
+OpenCode CLI (port 12396, plugin 自启)
     │  SSE /event?directory=<path>
     ▼
 IntelliJ Plugin
@@ -34,10 +35,11 @@ IntelliJ Plugin
     ├── OpenCodeSSEConsumer(每 Project 一个实例)
     │              │
     │              ├─ 文件事件 → VFS 刷新
-    │              ├─ 通知事件 → OpenCodeNotificationService
     │              └─ bash 事件 → BashCommandHandler
     │
     └── HTTP API (/session/:id) ──→ SessionInfo 查询
+
+Dashboard(MyToolWindow) ──[点击 session 行]──→ OpenCodeBrowserLauncher ──→ Edge --app=URL
 ```
 
 ---
@@ -234,29 +236,23 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 
 鉴权在 OpenCode 端(本插件信任 localhost 127.0.0.1)。
 
-### 4.3 IDE ↔ IDE 内部(JCEF 浏览器)
+### 4.3 IDE ↔ 系统 Microsoft Edge(浏览器)
 
-- `BrowserPanel` 创建的 JCEF browser MUST 注入到 `MyToolWindowFactory` 注册的 ToolWindow
-- `MyToolWindowFactory.sharedJBCefClient` MUST 跨项目共享 JBCefClient
-- 关闭策略见 §6.3
+- 点击 Dashboard session 列表行调 `OpenCodeBrowserLauncher.launch(url)`(M1-T2)启动外部 Edge 进程(v2.0.2 起改为只支持 Edge;v2.0.0-v2.0.1 期间为 Chrome,实测 Edge 对 `--load-extension=` 兼容性更好,故全量迁移)
+- 启动后系统 Edge 加载 OpenCode Web UI,后续所有用户交互(权限弹窗 / 工具调用 / 通知)均在 Edge 窗口内完成
+- **不**复用 JCEF(`BrowserPanel` 等 6 个 JCEF 文件已在 v2.0.0 整删,`sharedJBCefClient` 字段已移除)
+- **不**传 `--user-data-dir` — 复用用户日常 Edge profile,保留 localStorage / cookies 缓存(AGENTS.md 硬约束)
+- 主路径 `open -na "Microsoft Edge" --args --app=<url>`;回退路径 `ProcessBuilder` 直接 fork Edge binary + `--app=<url>`
+- 关闭策略:Edge 进程独立于 IDE,关闭 IDE **不**自动 kill Edge 窗口(用户决定)
+- **Edge 未安装处理**:`OpenCodeBrowserLauncher.checkEdgeInstalled()` 在点击时检查,未安装弹 `Messages.showErrorDialog` 提示下载 https://www.microsoft.com/edge,不 throw 不 crash
 
-### 4.4 IDE ↔ IDE 内部(IDE 通知)
+### 4.4 IDE ↔ IDE 内部(in-IDE 通知 — v2.0.0 已砍掉)
 
-- 通知走 `Notification.notify(project)`(BALLOON)+ `SystemNotifications.notify()`(macOS 系统通知)双模式
-- 用户需在 IntelliJ 设置中开启:Preferences → Appearance & Behavior → Notifications → "Enable system notifications"
-- `OpenCodeConfig.notificationEnabled`(默认 true)提供通知总开关(**当前未实现** Settings UI;`plugin.xml` 无 `<applicationConfigurable>` 注册)
-
-**焦点感知路由**(决策 MUST,实现见 `OpenCodeNotificationService.send()`):
-
-| 焦点状态                                                      | 行为                                |
-| ------------------------------------------------------------- | ----------------------------------- |
-| OpenCodeWeb 工具窗口可见且活跃(`tw.isVisible && tw.isActive`) | 抑制(用户正在与 AI 对话,无需通知)   |
-| 项目窗口有焦点(`frame.isActive == true`)+ IDE 在前台          | BALLOON(右下角 IDE 弹窗)            |
-| 项目窗口无焦点 + IDE 在后台(`!Application.isActive()`)        | macOS 系统通知(切到浏览器/Slack 时) |
-| 项目窗口无焦点 + IDE 在前台(多显示器场景)                     | ❌ 静默丢弃(已知行为,详见下方)      |
-
-- `OpenCodeNotificationService.send()` MUST 按上表决策:工具窗口活跃抑制 → IDE 在后台时升级系统通知 → 其余 BALLOON
-- "多显示器项目窗口无焦点但 IDE 在前台"场景 MUST 走当前实现(静默丢弃),已知限制;`OpenCodeConfig.notificationEnabled = false` 可彻底关通知
+- v2.0.0 起 `OpenCodeNotificationService.send()` 是 **no-op 桩**(M3-T4):仅 `thisLogger().debug` 一行,**不**触发任何 IDE 通知 / macOS 系统通知
+- 所有通知由 Edge --app 模式下的 OpenCode Web UI 自身处理(浏览器原生 Notifications API)
+- `OpenCodeNotificationRouter` 保留为 10 行直通薄层(→ Service.send),SSE consumer 调用方不变
+- `OpenCodeNotificationService` 的纯函数 helper(`extractSessionID` / `replacePlaceholders` / `resolveType` / `htmlEscape` / `tryRecordAndCheckDedup`)+ `OpenCodeConfig` 4 个 settings 保留,供将来加 dashboard badge 等新通知渠道复用
+- 5 个单测(NotificationDedupTest / NotificationServiceExtractSessionIdTest / NotificationServiceSendLogicTest / OpenCodeNotificationReplacePlaceholdersTest / OpenCodeNotificationServiceOptimizationTest)继续覆盖纯函数,行为不变
 
 ---
 
@@ -288,11 +284,10 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 
 ### 6.2 端口与协议
 
-| 服务                 | 端口/位置  | 协议                                                          |
-| -------------------- | ---------- | ------------------------------------------------------------- |
-| OpenCode CLI(server) | **12396**  | HTTP + SSE                                                    |
-| JCEF 浏览器          | IDE 进程内 | CEF(本地)                                                     |
-| 通知中心             | OS 级      | macOS NSUserNotification / Windows TrayIcon / Linux libnotify |
+| 服务                 | 端口/位置                      | 协议                                                                 |
+| -------------------- | ------------------------------ | -------------------------------------------------------------------- |
+| OpenCode CLI(server) | **12396**(冲突时升级)          | HTTP + SSE                                                           |
+| Edge 浏览器          | 系统 Microsoft Edge 进程(独立) | `open -na "Microsoft Edge" --args --app=<url>` 或 `--app=<url>` 回退 |
 
 ### 6.3 关闭策略(详见 `DESIGN.md §3.3`)
 
@@ -417,18 +412,20 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 
 ## 附录 A:当前未满足项(Known Gaps)
 
-| ID    | 描述                                                                                                                    | 严重性 | 建议                                              |
-| ----- | ----------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------- |
-| GAP-1 | `OpenCodeConfigurable` Settings UI 缺失(commit `a5eafc4` 1.0.20 整删);`OpenCodeConfig` 4 个通用设置当前无法通过 UI 配置 | ⚠️ 中  | 重新实现 Settings UI 并补 11 个事件开关/11 个模板 |
-| GAP-2 | `sessionTitles` 无硬性 LRU 上限,可能在超长会话中无界增长                                                                | ℹ️ 低  | 典型场景 < 1000,可接受                            |
-| GAP-4 | `subagent_complete` 通知未实现(代码中无该分支)                                                                          | ⚠️ 中  | 配合 GAP-1 Settings UI 补齐事件开关               |
-| GAP-5 | `OpenCodeSSEConsumer.sessionTitles` 注册只在 SSE consumer 启动路径中,**非**多保险                                       | ℹ️ 低  | 实际场景下足够(每 Project 独立 consumer 已覆盖)   |
-| GAP-6 | `JcefKeyboardInterceptor.interceptKeysRecursive` 是死代码(`interceptKeys` 单层调用)                                     | ℹ️ 低  | 删除方法(不破坏接口)                              |
+| ID    | 描述                                                                                                                                  | 严重性 | 建议                                              |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------- |
+| GAP-1 | `OpenCodeConfigurable` Settings UI 缺失(commit `a5eafc4` 1.0.20 整删);`OpenCodeConfig` 4 个通用设置当前无法通过 UI 配置               | ⚠️ 中  | 重新实现 Settings UI 并补 11 个事件开关/11 个模板 |
+| GAP-2 | `sessionTitles` 无硬性 LRU 上限,可能在超长会话中无界增长                                                                              | ℹ️ 低  | 典型场景 < 1000,可接受                            |
+| GAP-4 | `subagent_complete` 通知未实现(代码中无该分支)                                                                                        | ⚠️ 中  | 配合 GAP-1 Settings UI 补齐事件开关               |
+| GAP-5 | `OpenCodeSSEConsumer.sessionTitles` 注册只在 SSE consumer 启动路径中,**非**多保险                                                     | ℹ️ 低  | 实际场景下足够(每 Project 独立 consumer 已覆盖)   |
+| GAP-7 | v2.0.0 砍掉 in-IDE 通知 UI 后,`OpenCodeNotificationService.send()` 是 no-op 桩,纯函数 helper + 4 个 settings 当前**未**被任何 UI 消费 | ℹ️ 低  | 等需要 dashboard badge 等新通知渠道时复用         |
 
 ---
 
 ## 附录 B:版本与变更
 
-| 版本   | 日期       | 变更说明                                                                                   |
-| ------ | ---------- | ------------------------------------------------------------------------------------------ |
-| 1.0.22 | 2026-06-09 | 文档审计:订正 SSE 端点路径、移除不存在的 settings/ProjectActivity 引用、修正集合名与版本号 |
+| 版本   | 日期       | 变更说明                                                                                                                                                               |
+| ------ | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.0.2  | 2026-07-15 | 浏览器切换:`OpenCodeBrowserLauncher` 只支持 Microsoft Edge(移除 Chrome/Brave fallback);`checkEdgeInstalled()` 检测 Edge 未安装时弹 `Messages.showErrorDialog` 提示下载 |
+| 2.0.0  | 2026-07-14 | 架构大改:丢 JCEF,Chrome --app 模式 + Dashboard;自启 server + health gate;通知 UI 砍掉                                                                                  |
+| 1.0.22 | 2026-06-09 | 文档审计:订正 SSE 端点路径、移除不存在的 settings/ProjectActivity 引用、修正集合名与版本号                                                                             |

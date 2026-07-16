@@ -2,12 +2,15 @@ package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.shenyuanlaolarou.opencodewebui.SERVER_START_TIMEOUT_MS
 import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
+import com.shenyuanlaolarou.opencodewebui.utils.dataOrNull
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.openapi.project.Project
 import java.util.concurrent.CompletableFuture
+
+private const val MAX_ESCALATION_DEPTH = 5
 
 /**
  * singleflight:同一时刻只允许一个 Backgroundable 任务真启进程。
@@ -20,7 +23,9 @@ import java.util.concurrent.CompletableFuture
 internal fun OpenCodeServerManager.startServerSingleflight(
     project: Project,
     onStarted: () -> Unit,
-    onFailed: (Exception) -> Unit
+    onFailed: (Exception) -> Unit,
+    depth: Int = 0,
+    port: Int = PORT
 ) {
     val mgr = this
     val (future, isLeader) = mgr.singleflight.acquire("start")
@@ -51,14 +56,43 @@ internal fun OpenCodeServerManager.startServerSingleflight(
                     return
                 }
 
-                val process = mgr.startOpenCodeProcess()
+                val process = mgr.startOpenCodeProcess(project, port)
                 mgr.serverProcess.set(process)
 
                 val healthy = OpenCodeApi.waitForServerHealthy(SERVER_START_TIMEOUT_MS)
 
                 if (healthy) {
-                    thisLogger().info("[OpenCodeServerManager] Server started, PID=${process.toHandle().pid()}, port=${mgr.PORT}, project=${project.name}")
-                    mgr.getOrCreateConsumer(project)
+                    // M2-T1 health gate:验证 server 是否服务于当前项目
+                    // 多 IDE 同端口碰撞检测（HIGH D race 防御）
+                    val dirResult = OpenCodeApi.getHealthDirectory(port)
+                    val serverDir = dirResult.dataOrNull()
+                    if (serverDir != null && serverDir != project.basePath) {
+                        // 端口上的 server 属于不同项目 → 清理并自动升级端口重试
+                        mgr.killProcessTreeByHandle(process)
+                        mgr.serverProcess.set(null)
+                        if (depth < MAX_ESCALATION_DEPTH) {
+                            thisLogger().warn(
+                                "[OpenCodeServerManager] Port $port serves dir '$serverDir'," +
+                                    " expected '${project.basePath}'." +
+                                    " Escalating to port ${port + 1} (depth=$depth)."
+                            )
+                            startServerSingleflight(project, onStarted, onFailed, depth + 1, port + 1)
+                            return
+                        }
+                        val e = Exception(
+                            "OpenCode server on port $port is serving $serverDir," +
+                                " not ${project.basePath}. Max escalation depth reached."
+                        )
+                        onFailed(e)
+                        future.completeExceptionally(e)
+                        return
+                    }
+                    thisLogger().info(
+                        "[OpenCodeServerManager] Server started," +
+                            " PID=${process.toHandle().pid()}," +
+                            " port=$port," +
+                            " project=${project.name}"
+                    )
                     onStarted()
                     future.complete(Unit)
                 } else {
@@ -81,14 +115,20 @@ internal fun OpenCodeServerManager.startServerSingleflight(
     ProgressManager.getInstance().run(task)
 }
 
-internal fun OpenCodeServerManager.startOpenCodeProcess(): Process {
-    val command = getOpenCodeCommand()
-    val homeDir = System.getProperty("user.home", System.getenv("HOME") ?: "/tmp")
+internal fun OpenCodeServerManager.createProcessBuilder(project: Project, port: Int = PORT): ProcessBuilder {
+    val command = getOpenCodeCommand(port)
+    val wd = java.io.File(project.basePath)
     val processBuilder = ProcessBuilder(command)
-    processBuilder.directory(java.io.File(homeDir))
+    processBuilder.directory(wd)
     processBuilder.redirectOutput(ProcessBuilder.Redirect.PIPE)
     processBuilder.redirectError(ProcessBuilder.Redirect.PIPE)
-    thisLogger().debug("[startOpenCodeProcess] Working directory: $homeDir, command: $command")
+    thisLogger().debug("[createProcessBuilder] Working directory: $wd, command: $command")
+    return processBuilder
+}
+
+internal fun OpenCodeServerManager.startOpenCodeProcess(project: Project, port: Int = PORT): Process {
+    val processBuilder = createProcessBuilder(project, port)
+    thisLogger().debug("[startOpenCodeProcess] Working directory: ${processBuilder.directory()}, command: ${processBuilder.command()}")
     val process = processBuilder.start()
     pipeToLogger(process, "[opencode]")
     return process
@@ -98,7 +138,7 @@ internal fun OpenCodeServerManager.pipeToLogger(process: Process, prefix: String
     val logger = thisLogger()
     Thread({
         try {
-            process.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.debug("$prefix $it") }
+            process.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { logger.info("$prefix $it") }
         } catch (_: java.io.IOException) {
             // 进程退出后 stream 关闭,预期行为,静默退出
         } catch (e: Exception) {
@@ -116,11 +156,11 @@ internal fun OpenCodeServerManager.pipeToLogger(process: Process, prefix: String
     }, "opencode-stderr-relay").apply { isDaemon = true }.start()
 }
 
-internal fun OpenCodeServerManager.getOpenCodeCommand(): List<String> {
+internal fun OpenCodeServerManager.getOpenCodeCommand(port: Int = PORT): List<String> {
     // 使用 zsh login mode (-l) 启动 opencode
     // -l 会加载用户的 .zshrc，确保 PATH 包含 Homebrew/NVM 等路径
     // 这样 opencode 命令才能被正确找到
     // source ~/.zshrc 确保 $PATH 包含 nvm/volta 等环境管理器的路径
     // macOS app 环境下 zsh -l 加载的 PATH 可能不完整
-    return listOf("/bin/zsh", "-l", "-c", "source ~/.zshrc && opencode serve --hostname $HOST --port $PORT")
+    return listOf("/bin/zsh", "-l", "-c", "source ~/.zshrc && opencode serve --hostname $HOST --port $port")
 }

@@ -7,6 +7,10 @@ const val OPENCODE_HOST = "127.0.0.1"
 const val HEALTH_CHECK_POLL_INTERVAL_MS = 500L
 const val HEALTH_CHECK_INITIAL_DELAY_MS = 1000L
 
+// 健康目录验证超时:GET /global/health 提取 directory 字段的最大等待时间
+// 用于多 IDE 同端口碰撞检测（M2-T1 health gate）
+const val HEALTH_VERIFY_TIMEOUT_MS = 500L
+
 const val LRU_MAX_ENTRIES = 1000L
 
 // 浏览器就绪重试（[O6] 收紧到 8×400ms=3.2s，平衡加载等待与重试开销）

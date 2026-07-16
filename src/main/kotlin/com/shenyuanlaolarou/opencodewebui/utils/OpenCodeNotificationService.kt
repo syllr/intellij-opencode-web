@@ -2,15 +2,9 @@ package com.shenyuanlaolarou.opencodewebui.utils
 
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
-import com.intellij.notification.Notification
-import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.openapi.wm.WindowManager
-import com.intellij.ui.SystemNotifications
 import com.shenyuanlaolarou.opencodewebui.LRU_MAX_ENTRIES
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -54,78 +48,12 @@ object OpenCodeNotificationService {
         fun clear() = cache.clear()
     }
 
+    /**
+     * M3-T4: no-op stub — Edge --app 接管所有通知,见 SPEC §1.7。
+     * 保留入口以保持 SSE consumer 的 wiring,纯函数 helper 仍可被测试覆盖。
+     */
     fun send(eventType: String, properties: Map<*, *>?, project: Project) {
-        val notificationEnabled = OpenCodeConfig.notificationEnabled
-        if (!notificationEnabled) {
-            return
-        }
-        val showProjectName = OpenCodeConfig.showProjectName
-        val minDuration = OpenCodeConfig.minDuration
-        val showSessionTitle = OpenCodeConfig.showSessionTitle
-
-        val propertiesMap = properties?.get("properties") as? Map<*, *>
-
-        val sessionID = extractSessionIDFromPropsMap(propertiesMap)
-
-        // 1s Session 维度防抖：1s 内同 session + 同事件类型抑制
-        if (sessionID != null && tryRecordAndCheckDedup(sessionID, eventType)) {
-            return  // 1s 内同 session 同事件抑制
-        }
-
-        val tw = ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")
-        if (tw?.isVisible == true && tw.isActive) {
-            return
-        }
-
-        // minDuration 过滤
-        if (eventType == "complete" && minDuration > 0 && sessionID != null) {
-            val info = SessionInfoCache.getOrFetch(sessionID)
-            if (info != null) {
-                val now = System.currentTimeMillis()
-                val duration = if (info.timeCreated != null) (now - info.timeCreated) / 1000 else 0L
-                if (duration < minDuration) {
-                    return
-                }
-            }
-        }
-
-        val projectName = if (showProjectName)
-            project.name.ifEmpty { null } else null
-
-        val title = buildString {
-            append("OpenCode")
-            if (projectName != null) append(" ($projectName)")
-        }
-
-        val body = formatMessage(eventType, propertiesMap, project, showSessionTitle)
-
-        val frame = WindowManager.getInstance().getFrame(project)
-        val projectWindowActive = frame != null && frame.isActive
-
-        ApplicationManager.getApplication().invokeLater {
-            try {
-                if (projectWindowActive && !project.isDisposed) {
-                    val notification = Notification(NOTIFICATION_GROUP, title, body, resolveType(eventType))
-                    addClickAction(notification, eventType, project)
-                    notification.notify(project)
-                } else if (!ApplicationManager.getApplication().isActive()) {
-                    SystemNotifications.getInstance().notify(NOTIFICATION_GROUP, title, body)
-                }
-            } catch (e: Exception) {
-                logger.warn("[OpenCodeNotificationService] Failed to send notification: ${e.message}")
-            }
-        }
-    }
-
-    internal fun addClickAction(notification: Notification, eventType: String, project: Project) {
-        when (eventType) {
-            "permission", "question" -> {
-                notification.addAction(NotificationAction.createSimpleExpiring("打开") {
-                    ToolWindowManager.getInstance(project).getToolWindow("OpenCodeWeb")?.activate(null)
-                })
-            }
-            else -> { /* 无操作 */ }
-        }
+        logger.debug("[OpenCodeNotificationService] M3-T4 no-op: eventType=$eventType (Edge --app handles UI)")
     }
 
     internal fun resolveType(eventType: String): NotificationType = when (eventType) {

@@ -17,6 +17,7 @@ import com.launchdarkly.eventsource.EventSource
 import com.launchdarkly.eventsource.MessageEvent
 import com.launchdarkly.eventsource.background.BackgroundEventHandler
 import com.launchdarkly.eventsource.background.BackgroundEventSource
+import java.net.Proxy
 import java.net.URI
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -128,6 +129,7 @@ class OpenCodeSSEConsumer(
         }
         val uri = URI.create("http://$OPENCODE_HOST:$OPENCODE_PORT/event?directory=" + URLEncoder.encode(normalizedPath, "UTF-8"))
         val connectStrategy = ConnectStrategy.http(uri)
+            .proxy(Proxy.NO_PROXY)
             .connectTimeout(SSE_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
         val esBuilder = EventSource.Builder(connectStrategy)
@@ -140,7 +142,7 @@ class OpenCodeSSEConsumer(
         bgEventSource.start()
         // 不再预设 lastEventAt —— bgEventSource.start() 异步,onOpen() 回调确认连接建立后才置 lastEventAt + connected=true。
         // 否则 checkAndLoadContent 立即调 isHealthy() 会假阳性返回 true,绕过 Start 按钮流程。
-        logger.debug("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, normalizedPath=$normalizedPath, uri=$uri")
+        logger.info("[OpenCodeSSEConsumer] SSE connection started, gen=$gen, normalizedPath=$normalizedPath, uri=$uri")
     }
 
     private fun reconnect() {
@@ -184,14 +186,17 @@ class OpenCodeSSEConsumer(
     override fun onOpen() {
         connected = true
         lastEventAt.set(System.currentTimeMillis())
-        logger.debug("[OpenCodeSSEConsumer] SSE connection opened")
+        logger.info("[OpenCodeSSEConsumer] SSE onOpen() called (background thread=${Thread.currentThread().name})")
         // 1.5s debounce 触发 onConnectionEstablished。
         // 对齐 LaunchDarkly 首次重试 ~1s + jitter(不放 1.0s 踩边缘,不放 2.0s 延迟感知)。
         // 防御 SSE 瞬时握手成功(被 server 立刻关闭),避免 UI 闪一下 Start 按钮。
         val now = System.currentTimeMillis()
         if (now - lastEstablishedAt.get() >= 1500L) {
             lastEstablishedAt.set(now)
+            logger.info("[OpenCodeSSEConsumer] SSE 1.5s debounce passed, firing onConnectionEstablished (wasConnected=$connected)")
             onConnectionEstablished()
+        } else {
+            logger.info("[OpenCodeSSEConsumer] SSE 1.5s debounce NOT passed (${now - lastEstablishedAt.get()}ms since last), suppressing onConnectionEstablished")
         }
     }
 
@@ -301,7 +306,7 @@ class OpenCodeSSEConsumer(
             logger.debug("[OpenCodeSSEConsumer] SSE onClosed for stale connection (gen=$currentGen, latest=$latestGen), skipping cleanup")
             return
         }
-        logger.debug("[OpenCodeSSEConsumer] SSE connection closed (gen=$currentGen)")
+        logger.info("[OpenCodeSSEConsumer] SSE onClosed() called (gen=$currentGen), connected set to false")
         SSEEventParser.clearCache()
         // [Fix ISSUE-2 一致性] 同步 stop() 的清理范围:per-instance 缓存
         // (之前在 companion object,跨实例共享,stop() 全局清即可;
@@ -323,14 +328,14 @@ class OpenCodeSSEConsumer(
         // - wasConnected=true + 任何 error(EOFException / StreamClosedByServerException / ConnectException 等)
         //   → server 之前在跑,现在挂了 → 立即调 onConnectionLost 跳过 15s debounce
         // - wasConnected=false + error → 从未连上(server 未启动/初次连接),不调 onConnectionLost
-        //   避免误报(showServerNotRunning 不会反复 disposeBrowser)
         // 这样无论是 web UI 干净关闭(StreamClosedByServerException)还是 kill -9(EOFException)都能覆盖。
+        val ctxLog = "[OpenCodeSSEConsumer] projectBasePath=$projectBasePath uri=http://$OPENCODE_HOST:$OPENCODE_PORT/event?directory=${projectBasePath?.let { java.net.URLEncoder.encode(it, "UTF-8") }}"
         if (wasConnected) {
             // 第二参数传 error 让日志框架附加堆栈(诊断 SSE 连接问题根因)
-            logger.info("[OpenCodeSSEConsumer] SSE connection lost (was connected): ${error.javaClass.simpleName}: ${error.message}", error)
+            logger.info("$ctxLog SSE connection lost (was connected): ${error.javaClass.simpleName}: ${error.message}", error)
             onConnectionLost()
         } else {
-            logger.warn("[OpenCodeSSEConsumer] SSE error (never connected): ${error.javaClass.simpleName}: ${error.message}", error)
+            logger.warn("$ctxLog SSE error (never connected): ${error.javaClass.simpleName}: ${error.message}", error)
         }
     }
 

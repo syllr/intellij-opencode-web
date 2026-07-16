@@ -9,23 +9,7 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <actions>
-        <!-- 已注释：第一层 Action 覆盖机制，测试简化方案，只保留 JcefKeyboardInterceptor -->
-        <!--
-        <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefSettings" 
-                class="com.shenyuanlaolarou.opencodewebui.actions.JcefShortcutPassthroughAction" 
-                text="Pass Settings to JCEF">
-            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta COMMA" replace-all="true"/>
-            <keyboard-shortcut keymap="$default" first-keystroke="ctrl COMMA" replace-all="true"/>
-        </action>
-        
-        <action id="com.shenyuanlaolarou.opencodewebui.PassToJcefCmdK" 
-                class="com.shenyuanlaolarou.opencodewebui.actions.JcefShortcutPassthroughAction" 
-                text="Pass Cmd+K to JCEF">
-            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta K" replace-all="true"/>
-            <keyboard-shortcut keymap="$default" first-keystroke="ctrl K" replace-all="true"/>
-        </action>
-        -->
-        
+
         <!-- Copy as Prompt - 在编辑器右键菜单添加选项 -->
         <action id="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"
                 class="com.shenyuanlaolarou.opencodewebui.actions.CopyAsPromptAction"
@@ -35,19 +19,9 @@
             <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="$Copy"/>
         </action>
 
-        <!-- Add to Prompt - 添加到 Prompt 编辑器 -->
-        <action id="com.shenyuanlaolarou.opencodewebui.AddToPrompt"
-                class="com.shenyuanlaolarou.opencodewebui.actions.AddToPromptAction"
-                text="Add to Prompt"
-                description="Add selected text to Prompt editor">
-            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"/>
-            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"/>
-        </action>
-
     </actions>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow factoryClass="com.shenyuanlaolarou.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
-        <notificationGroup id="OpenCodeWeb.notifications" displayType="TOOL_WINDOW" toolWindowId="OpenCodeWeb"/>
     </extensions>
 </idea-plugin>

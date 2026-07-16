@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "opencode-web-bootstrap",
+  "version": "1.0.0",
+  "description": "Bootstraps the OpenCode Web UI sidebar with the current IntelliJ project. Injected by the intellij-opencode-web plugin via Edge --load-extension; no user-facing UI.",
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:12396/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
