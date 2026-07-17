@@ -121,13 +121,15 @@ object OpenCodeApi {
         }
     }
 
-    fun getSessions(directory: String? = null): OpenCodeApiResult<List<SessionInfo>> {
-        val url = buildString {
-            append("http://$OPENCODE_HOST:$OPENCODE_PORT/session")
-            if (directory != null) {
-                append("?directory=").append(URLEncoder.encode(directory, StandardCharsets.UTF_8))
-            }
+    private fun buildSessionsUrl(directory: String?): String = buildString {
+        append("http://$OPENCODE_HOST:$OPENCODE_PORT/session")
+        if (directory != null) {
+            append("?directory=").append(URLEncoder.encode(directory, StandardCharsets.UTF_8))
         }
+    }
+
+    fun getSessions(directory: String? = null): OpenCodeApiResult<List<SessionInfo>> {
+        val url = buildSessionsUrl(directory)
         return httpGet(url) { body ->
             val array = JsonParser.parseString(body).asJsonArray
             array.mapNotNull { element ->
@@ -182,77 +184,41 @@ object OpenCodeApi {
         }
     }
 
+    fun deleteSession(sessionID: String): OpenCodeApiResult<Unit> =
+        httpDelete("http://$OPENCODE_HOST:$OPENCODE_PORT/session/$sessionID")
+
+    /**
+     * 不带显示过滤的 session 列表(不过滤掉 "New session -" 空 session),供清理/审计用。
+     * 仍过滤掉顶层 parentID != null 的子 session 和 title 为空的 session(显示无意义)。
+     */
+    fun getRawSessions(directory: String? = null): OpenCodeApiResult<List<SessionInfo>> {
+        val url = buildSessionsUrl(directory)
+        return httpGet(url) { body ->
+            val array = JsonParser.parseString(body).asJsonArray
+            array.mapNotNull { element ->
+                val obj = element.asJsonObject
+                if (obj.has("parentID") && !obj.get("parentID").isJsonNull) return@mapNotNull null
+                val title = obj.get("title")?.asString ?: return@mapNotNull null
+                if (title.isBlank()) return@mapNotNull null
+                val timeObj = obj.getAsJsonObject("time")
+                SessionInfo(
+                    id = obj.get("id")?.asString ?: "",
+                    title = title,
+                    parentID = null,
+                    timeCreated = timeObj?.get("created")?.asLong,
+                )
+            }
+        }
+    }
+
     private const val DISPOSE_TIMEOUT_MS = 2000L
 
     fun disposeServer(): OpenCodeApiResult<Unit> =
         httpPost("http://$OPENCODE_HOST:$OPENCODE_PORT/global/dispose", timeoutMs = DISPOSE_TIMEOUT_MS)
 
-    private fun <T> httpGet(url: String, parse: (String) -> T): OpenCodeApiResult<T> {
-        return try {
-            val conn = httpConn(url, "GET", connectTimeoutMs = HTTP_TIMEOUT_MS.toLong(), readTimeoutMs = HTTP_TIMEOUT_MS.toLong())
-            when (val code = conn.responseCode) {
-                in 200..299 -> try {
-                    OpenCodeApiResult.Success(parse(conn.readBodySafe()))
-                } catch (e: Exception) {
-                    thisLogger().warn("[OpenCodeApi] parse failed for $url: ${e.message}")
-                    OpenCodeApiResult.Failure(OpenCodeApiResult.CODE_PARSE_ERROR, "parse error: ${e.message}")
-                }
-                401 -> OpenCodeApiResult.Unauthorized
-                else -> OpenCodeApiResult.Failure(code, conn.readBodySafe().take(200))
-            }
-        } catch (e: IOException) {
-            OpenCodeApiResult.Unavailable
-        } catch (e: Exception) {
-            thisLogger().warn("[OpenCodeApi] HTTP GET failed: ${e.message}")
-            OpenCodeApiResult.Failure(OpenCodeApiResult.CODE_UNKNOWN_ERROR, e.message ?: "Unknown error")
-        }
-    }
+    private fun httpPost(url: String, timeoutMs: Long = HTTP_TIMEOUT_MS.toLong()): OpenCodeApiResult<Unit> =
+        httpRequest("POST", url, timeoutMs, includeBodyOnFailure = false)
 
-    private fun httpPost(url: String, timeoutMs: Long = HTTP_TIMEOUT_MS.toLong()): OpenCodeApiResult<Unit> {
-        return try {
-            val conn = httpConn(url, "POST", connectTimeoutMs = timeoutMs, readTimeoutMs = timeoutMs)
-            when (val code = conn.responseCode) {
-                in 200..299 -> OpenCodeApiResult.Success(Unit)
-                401 -> OpenCodeApiResult.Unauthorized
-                else -> OpenCodeApiResult.Failure(code, "<body discarded>")
-            }
-        } catch (e: IOException) {
-            OpenCodeApiResult.Unavailable
-        } catch (e: Exception) {
-            thisLogger().warn("[OpenCodeApi] HTTP POST failed: ${e.message}")
-            OpenCodeApiResult.Failure(OpenCodeApiResult.CODE_UNKNOWN_ERROR, e.message ?: "Unknown error")
-        }
-    }
-
-    private fun httpConn(
-        url: String,
-        method: String,
-        body: String? = null,
-        contentType: String? = null,
-        connectTimeoutMs: Long,
-        readTimeoutMs: Long,
-    ): HttpURLConnection {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.requestMethod = method
-        conn.connectTimeout = connectTimeoutMs.toInt()
-        conn.readTimeout = readTimeoutMs.toInt()
-        if (body != null) {
-            conn.doOutput = true
-            if (contentType != null) conn.setRequestProperty("Content-Type", contentType)
-            conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
-        }
-        return conn
-    }
-
-    private fun HttpURLConnection.readBodySafe(): String {
-        return try {
-            inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        } catch (_: Exception) {
-            try {
-                errorStream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
-            } catch (_: Exception) {
-                ""
-            }
-        }
-    }
+    private fun httpDelete(url: String, timeoutMs: Long = HTTP_TIMEOUT_MS.toLong()): OpenCodeApiResult<Unit> =
+        httpRequest("DELETE", url, timeoutMs, includeBodyOnFailure = true)
 }
