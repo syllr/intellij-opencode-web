@@ -23,6 +23,7 @@ import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -63,6 +64,7 @@ class MyToolWindow(
 
     private val stopButton = JButton("Stop").apply { isEnabled = false }
     private val restartButton = JButton("Restart").apply { isEnabled = true }
+    private val cleanNewSessionsButton = JButton("Clean Empty").apply { isEnabled = false }
 
     init {
         MyToolWindowFactory.myToolWindowInstances[project] = this
@@ -140,6 +142,7 @@ class MyToolWindow(
         val panel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
         panel.add(stopButton)
         panel.add(restartButton)
+        panel.add(cleanNewSessionsButton)
         return panel
     }
 
@@ -179,6 +182,59 @@ class MyToolWindow(
                 }
             })
         }
+        cleanNewSessionsButton.addActionListener {
+            val result = Messages.showDialog(
+                project,
+                "Delete all empty \"New session - ...\" sessions from OpenCode's database?\n" +
+                    "This frees DB space and removes clutter; sessions with custom titles and any session " +
+                    "with message content are kept.",
+                "Clean Empty Sessions",
+                arrayOf("Clean", "Cancel"),
+                1, // default = Cancel
+                null,
+            )
+            if (result != 0) return@addActionListener
+            cleanNewSessionsButton.isEnabled = false
+            ProgressManager.getInstance().run(object : Backgroundable(project, "Cleaning empty sessions", true) {
+                override fun run(indicator: ProgressIndicator) {
+                    val rawList = OpenCodeApi.getRawSessions(project.basePath)
+                    // 协议约定:OpenCode 自动生成的"未命名"session 标题前缀 = "New session - ",
+                    // 见 OpenCodeApi.kt:138 同步过滤。该字面值修改需同步。
+                    val emptyIds = when (rawList) {
+                        is OpenCodeApiResult.Success<List<SessionInfo>> -> rawList.data
+                            .filter { it.title.orEmpty().startsWith("New session - ", ignoreCase = true) }
+                            .map { it.id }
+                            .filter { it.isNotBlank() }
+                        else -> emptyList()
+                    }
+                    if (emptyIds.isEmpty()) {
+                        com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                            cleanNewSessionsButton.isEnabled = true
+                            Messages.showInfoMessage(project, "No empty sessions to clean.", "Clean Empty Sessions")
+                        }
+                        return
+                    }
+                    var deleted = 0
+                    var failed = 0
+                    for (id in emptyIds) {
+                        when (OpenCodeApi.deleteSession(id)) {
+                            is OpenCodeApiResult.Success -> deleted++
+                            else -> failed++
+                        }
+                    }
+                    log.info("[Dashboard] cleanEmptySessions: deleted=$deleted failed=$failed (of ${emptyIds.size})")
+                    com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                        cleanNewSessionsButton.isEnabled = true
+                        refreshSessions()
+                        Messages.showInfoMessage(
+                            project,
+                            "Cleaned $deleted session(s)" + if (failed > 0) ", $failed failed" else "",
+                            "Clean Empty Sessions",
+                        )
+                    }
+                }
+            })
+        }
     }
 
     private fun refreshStatus() {
@@ -193,33 +249,34 @@ class MyToolWindow(
                 statusText.text = "Server: stopped"
                 stopButton.isEnabled = false
                 restartButton.isEnabled = true
+                cleanNewSessionsButton.isEnabled = false
             }
             ServerStatus.Starting -> {
                 statusDot.foreground = JBColor.YELLOW
                 statusText.text = "Server: starting..."
                 stopButton.isEnabled = false
                 restartButton.isEnabled = false
+                cleanNewSessionsButton.isEnabled = false
             }
             ServerStatus.Running -> {
                 statusDot.foreground = JBColor.GREEN
                 statusText.text = "Server: running"
                 stopButton.isEnabled = true
                 restartButton.isEnabled = true
+                cleanNewSessionsButton.isEnabled = true
             }
             ServerStatus.Stopping -> {
                 statusDot.foreground = JBColor.YELLOW
                 statusText.text = "Server: stopping..."
                 stopButton.isEnabled = false
                 restartButton.isEnabled = false
+                cleanNewSessionsButton.isEnabled = false
             }
         }
     }
 
     internal enum class ServerStatus { Stopped, Starting, Running, Stopping }
 
-    /**
-     * 把 SSE 连接的 onConnectionLost / onConnectionEstablished 接到 refreshStatus。
-     */
     private fun wireSseStatusCallbacks() {
         log.info("[Dashboard] wireSseStatusCallbacks: registering SSE callbacks for project=${project.name}, projectBasePath=${project.basePath}")
         OpenCodeServerManager.getOrCreateConsumer(
@@ -227,19 +284,16 @@ class MyToolWindow(
             onConnectionLost = {
                 log.info("[Dashboard] SSE onConnectionLost callback fired (background thread=${Thread.currentThread().name})")
                 com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
-                    log.info("[Dashboard] SSE onConnectionLost -> invokeLater -> refreshStatus()")
                     refreshStatus()
                 }
             },
             onConnectionEstablished = {
                 log.info("[Dashboard] SSE onConnectionEstablished callback fired (background thread=${Thread.currentThread().name})")
                 com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
-                    log.info("[Dashboard] SSE onConnectionEstablished -> invokeLater -> refreshStatus()")
                     refreshStatus()
                 }
             }
         )
-        log.info("[Dashboard] wireSseStatusCallbacks: getOrCreateConsumer returned, consumer active")
     }
 
     private fun refreshSessions() {
@@ -395,7 +449,14 @@ class MyToolWindow(
         val extDir = runCatching { EdgeBootstrapExtension.prepare(project.basePath ?: "") }
             .onFailure { log.warn("[Dashboard] ext prepare failed: ${it.message}") }
             .getOrNull()
-        runCatching { OpenCodeBrowserLauncher.launch(url, extDir) }
+
+        val projectHash = EdgeBootstrapExtension.hash(project.basePath ?: "")
+        val profilesRoot = File(System.getProperty("user.home"), ".config/opencode-web-ui/edge-profiles")
+        val userDataDir = File(profilesRoot, "$projectHash/user-data")
+        runCatching { userDataDir.mkdirs() }
+            .onFailure { log.warn("[Dashboard] mkdirs failed for $userDataDir: ${it.message}") }
+
+        runCatching { OpenCodeBrowserLauncher.launch(url, extDir, userDataDir) }
             .onFailure { log.warn("[Dashboard] Edge launch failed: ${it.message}") }
     }
 
