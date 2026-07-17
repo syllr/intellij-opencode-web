@@ -11,7 +11,7 @@ import java.security.MessageDigest
  *
  * 设计:
  * - 资源文件跟随 plugin jar 走,build 后 classpath 里始终可读
- * - 每个 project 一个 ext 目录,按 project.basePath 哈希命名,避免同 project 重复 launch 时 Edge 看到不同 path 产生不同 ext id 引发"stale"提示
+ * - 每次调用创建新 ext 目录(目录名含时间戳后缀避免覆盖),旧目录依赖 macOS $TMPDIR 自动清理(3-7 天)
  * - macOS $TMPDIR 默认 /var/folders/.../T/,系统定期清理(3-7 天),plugin 不主动 dispose 时清理
  *
  * 写盘的 ext 内容是 plugin resource 的快照(纯静态),跟 plugin jar 同步;不会被运行时状态污染。
@@ -28,7 +28,7 @@ object EdgeBootstrapExtension {
     /**
      * 为指定 project 准备 ext 目录;返回已写好 manifest.json + content.js 的目录路径。
      *
-     * 幂等:同一 project 多次调用覆盖同一 ext 目录,不会累积 stale ext。
+     * 每次调用创建新目录(目录名含时间戳后缀避免覆盖),旧目录依赖 macOS TMPDIR 自动清理(3-7 天)。
      *
      * @param projectBasePath IDE 项目的绝对路径
      * @return ext 目录(File),失败返回 null
@@ -75,17 +75,6 @@ object EdgeBootstrapExtension {
         return targetDir
     }
 
-    /**
-     * 显式清理 ext 目录(plugin dispose 或用户主动清理时调用)。
-     * 平时不调用 — macOS 会自动清理 $TMPDIR。
-     */
-    fun cleanup(projectBasePath: String) {
-        val targetDir = File(tmpRoot(), "$TMP_PREFIX${hash(projectBasePath)}")
-        if (targetDir.exists()) {
-            runCatching { targetDir.deleteRecursively() }
-        }
-    }
-
     private fun readResource(path: String): String? {
         val stream = EdgeBootstrapExtension::class.java.classLoader.getResourceAsStream(path)
             ?: return null
@@ -95,7 +84,7 @@ object EdgeBootstrapExtension {
     private fun tmpRoot(): String =
         System.getProperty("java.io.tmpdir") ?: "/tmp"
 
-    private fun hash(input: String): String {
+    fun hash(input: String): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(StandardCharsets.UTF_8))
         val sb = StringBuilder(8)
         for (i in 0 until 4) {

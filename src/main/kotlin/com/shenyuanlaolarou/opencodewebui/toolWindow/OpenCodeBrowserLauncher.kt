@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit
  *   - `-a "Microsoft Edge"` 通过 LaunchServices 启动 Edge
  *   - `--args` 把 `--app` / `--load-extension` 透传 Edge
  * - 回退路径:直接 fork Edge binary 带 `--app=<url>`
- * - 两条路径都**不传 `--user-data-dir`** — 复用用户日常 Edge profile,保留 localStorage 缓存
+ * - 两条路径都**仅当 userDataDir != null 时传 --user-data-dir**;默认(null)复用用户日常 Edge profile,非默认(传入时)实现多项目 profile 隔离(SPEC §4.3)
  *
  * macOS-only;跨平台 TODO 已删除(SPEC §2 硬规则)。
  */
@@ -87,10 +87,21 @@ object OpenCodeBrowserLauncher {
      * - `--load-extension=<extDir>` (可选) 加载 plugin 写的 unpacked browser extension (Edge 接受的 MV3 格式),ext content script
      *   在 `document_start` 阶段写 `localStorage["opencode.global.dat:server"]` 把当前 IntelliJ 项目塞进
      *   OpenCode Web UI 侧栏的 client store,web app mount 时从 localStorage 还原,侧栏立即显示
-     * - 不传 `--user-data-dir` — 复用用户日常 Edge profile
+     * - `--user-data-dir=<dir>`(可选)项目隔离的 Edge profile 目录;为 null 时复用日常 profile
      */
-    internal fun buildOpenCommand(url: String, extensionDir: File? = null): List<String> {
-        val args = mutableListOf("open", "-na", "Microsoft Edge", "--args", "--app=$url")
+    internal fun buildOpenCommand(url: String, extensionDir: File? = null, userDataDir: File? = null): List<String> {
+        // --no-first-run 跳过新 profile 的 Edge 欢迎引导(否则新 project 首次启动会弹欢迎)
+        // --disable-sync 禁用 Chrome/Edge Sync 服务,阻止新 --user-data-dir profile 从云端
+        //   同步登录状态。SPEC §4.3 身份层隔离约束;若实测账号又被同步进来,这是唯一可动点。勿删。
+        val args = mutableListOf(
+            "open", "-na", "Microsoft Edge", "--args",
+            "--app=$url",
+            "--no-first-run",
+            "--disable-sync",
+        )
+        if (userDataDir != null) {
+            args += "--user-data-dir=${userDataDir.absolutePath}"
+        }
         if (extensionDir != null) {
             args += "--load-extension=${extensionDir.absolutePath}"
         }
@@ -104,13 +115,18 @@ object OpenCodeBrowserLauncher {
      * @param url OpenCode Web UI URL
      * @param extensionDir (可选) 加载 unpacked browser extension,把当前项目塞进 Web UI 侧栏
      */
-    internal fun buildProcessBuilderCommand(edge: String, url: String, extensionDir: File? = null): List<String> {
+    internal fun buildProcessBuilderCommand(edge: String, url: String, extensionDir: File? = null, userDataDir: File? = null): List<String> {
+        // --disable-sync 同 buildOpenCommand: 阻止新 profile 同步登录状态。勿删(见 buildOpenCommand 注释)。
         val args = mutableListOf(
             edge,
             "--app=$url",
             "--no-default-browser-check",
             "--no-first-run",
+            "--disable-sync",
         )
+        if (userDataDir != null) {
+            args += "--user-data-dir=${userDataDir.absolutePath}"
+        }
         if (extensionDir != null) {
             args += "--load-extension=${extensionDir.absolutePath}"
         }
@@ -126,7 +142,7 @@ object OpenCodeBrowserLauncher {
         if (pickBrowser() != null) return null
         return "Microsoft Edge is required but not found at:\n$EDGE_BINARY\n\n" +
                 "Plugin uses Edge's App Mode (`--app=<url>`) to render the OpenCode Web UI as " +
-                "a standalone window that reuses your daily Edge profile (localStorage, cookies).\n\n" +
+                "a standalone window that opens OpenCode Web UI in Edge's --app mode.\n\n" +
                 "Download from: https://www.microsoft.com/edge"
     }
 
@@ -139,7 +155,7 @@ object OpenCodeBrowserLauncher {
      * @return 使用回退路径时返回 Edge 进程 PID;主路径 `open` 不可追踪 PID 返回 null
      * @throws IllegalStateException Edge 未安装或 opencode CLI 缺失
      */
-    fun launch(url: String, extensionDir: File? = null): Long? {
+    fun launch(url: String, extensionDir: File? = null, userDataDir: File? = null): Long? {
         require(verifyOpenCodeOnPath()) {
             "opencode CLI not on PATH; install via `brew install opencode-ai`"
         }
@@ -157,20 +173,20 @@ object OpenCodeBrowserLauncher {
                 val manifest = File(extensionDir, "manifest.json")
                 if (!manifest.isFile) {
                     log.warn("[OpenCodeBrowserLauncher] extensionDir missing manifest.json, skipping --load-extension: ${extensionDir.absolutePath}")
-                    return launchWithoutExtension(url, edge)
+                    return launchWithoutExtension(url, edge, userDataDir)
                 }
             }
         }
 
         return try {
-            val openProc = ProcessBuilder(buildOpenCommand(url, extensionDir)).start()
+            val openProc = ProcessBuilder(buildOpenCommand(url, extensionDir, userDataDir)).start()
             openProc.waitFor(2, TimeUnit.SECONDS)
-            log.info("[OpenCodeBrowserLauncher] Launched Edge in --app mode via `open -na` (PID untrackable, daily profile reused, extension=${extensionDir?.absolutePath ?: "none"}): $url")
+            log.info("[OpenCodeBrowserLauncher] Launched Edge in --app mode via `open -na` (PID untrackable, daily profile reused, extension=${extensionDir?.absolutePath ?: "none"}, userDataDir=${userDataDir?.absolutePath ?: "none"}): $url")
             null
         } catch (_: Exception) {
             log.warn("[OpenCodeBrowserLauncher] `open -na Edge --app` failed, falling back to direct fork --app mode")
-            val proc = ProcessBuilder(buildProcessBuilderCommand(edge, url, extensionDir)).start()
-            log.info("[OpenCodeBrowserLauncher] Launched Edge via --app direct fork (PID=${proc.pid()}, daily profile, extension=${extensionDir?.absolutePath ?: "none"}): $url")
+            val proc = ProcessBuilder(buildProcessBuilderCommand(edge, url, extensionDir, userDataDir)).start()
+            log.info("[OpenCodeBrowserLauncher] Launched Edge via --app direct fork (PID=${proc.pid()}, daily profile, extension=${extensionDir?.absolutePath ?: "none"}, userDataDir=${userDataDir?.absolutePath ?: "none"}): $url")
             proc.pid()
         }
     }
@@ -178,14 +194,14 @@ object OpenCodeBrowserLauncher {
     /**
      * ext 不可用时的降级路径(直接调 launch 但传 null)。内部 helper 避免重复校验逻辑。
      */
-    private fun launchWithoutExtension(url: String, edge: String): Long? {
+    private fun launchWithoutExtension(url: String, edge: String, userDataDir: File? = null): Long? {
         return try {
-            val openProc = ProcessBuilder(buildOpenCommand(url, null)).start()
+            val openProc = ProcessBuilder(buildOpenCommand(url, null, userDataDir)).start()
             openProc.waitFor(2, TimeUnit.SECONDS)
             log.info("[OpenCodeBrowserLauncher] Launched Edge without extension (manifest missing): $url")
             null
         } catch (_: Exception) {
-            val proc = ProcessBuilder(buildProcessBuilderCommand(edge, url, null)).start()
+            val proc = ProcessBuilder(buildProcessBuilderCommand(edge, url, null, userDataDir)).start()
             log.info("[OpenCodeBrowserLauncher] Launched Edge without extension (manifest missing, fallback): $url")
             proc.pid()
         }
