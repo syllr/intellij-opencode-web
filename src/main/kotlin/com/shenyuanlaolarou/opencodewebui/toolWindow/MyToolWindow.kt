@@ -1,6 +1,9 @@
 package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
@@ -59,7 +62,7 @@ class MyToolWindow(
     private val sessionsPanel = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
 
     private val stopButton = JButton("Stop").apply { isEnabled = false }
-    private val restartButton = JButton("Restart").apply { isEnabled = false }
+    private val restartButton = JButton("Restart").apply { isEnabled = true }
 
     init {
         MyToolWindowFactory.myToolWindowInstances[project] = this
@@ -80,7 +83,9 @@ class MyToolWindow(
 
         root.add(buildHeaderPanel(), BorderLayout.NORTH)
         root.add(buildSessionsScrollPane(), BorderLayout.CENTER)
+        root.add(buildControlPanel(), BorderLayout.SOUTH)
 
+        wireActions()
         refreshStatus()
         refreshSessions()
         wireSseStatusCallbacks()
@@ -100,6 +105,9 @@ class MyToolWindow(
             },
             onFailed = { e ->
                 log.warn("[Dashboard] ensureServerRunning: server start failed: ${e.message}")
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                    applyStatus(ServerStatus.Stopped)
+                }
             }
         )
     }
@@ -137,25 +145,77 @@ class MyToolWindow(
 
     private fun wireActions() {
         stopButton.addActionListener {
-            runCatching { OpenCodeServerManager.shutdownServer() }
-                .onFailure { log.warn("[Dashboard] shutdownServer failed: ${it.message}") }
+            applyStatus(ServerStatus.Stopping)
+            ProgressManager.getInstance().run(object : Backgroundable(project, "Stopping OpenCode Server", true) {
+                override fun run(indicator: ProgressIndicator) {
+                    runCatching { OpenCodeServerManager.shutdownServer() }
+                        .onFailure { log.warn("[Dashboard] shutdownServer failed: ${it.message}") }
+                    com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                        refreshStatus()
+                    }
+                }
+            })
         }
         restartButton.addActionListener {
-            OpenCodeServerManager.startServer(
-                project = project,
-                onStarted = { },
-                onFailed = { e -> log.warn("[Dashboard] restart failed: ${e.message}") }
-            )
+            applyStatus(ServerStatus.Starting)
+            ProgressManager.getInstance().run(object : Backgroundable(project, "Starting OpenCode Server", true) {
+                override fun run(indicator: ProgressIndicator) {
+                    OpenCodeServerManager.startServer(
+                        project = project,
+                        onStarted = {
+                            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                                applyStatus(ServerStatus.Running)
+                                refreshSessions()
+                                wireSseStatusCallbacks()
+                            }
+                        },
+                        onFailed = { e ->
+                            log.warn("[Dashboard] restart failed: ${e.message}")
+                            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                                applyStatus(ServerStatus.Stopped)
+                            }
+                        }
+                    )
+                }
+            })
         }
     }
 
     private fun refreshStatus() {
         val portOpen = OpenCodeApi.isServerPortOpen()
-        statusDot.foreground = if (portOpen) JBColor.GREEN else JBColor.GRAY
-        statusText.text = if (portOpen) "Server: running" else "Server: stopped"
-        stopButton.isEnabled = portOpen
-        restartButton.isEnabled = portOpen
+        applyStatus(if (portOpen) ServerStatus.Running else ServerStatus.Stopped)
     }
+
+    private fun applyStatus(status: ServerStatus) {
+        when (status) {
+            ServerStatus.Stopped -> {
+                statusDot.foreground = JBColor.GRAY
+                statusText.text = "Server: stopped"
+                stopButton.isEnabled = false
+                restartButton.isEnabled = true
+            }
+            ServerStatus.Starting -> {
+                statusDot.foreground = JBColor.YELLOW
+                statusText.text = "Server: starting..."
+                stopButton.isEnabled = false
+                restartButton.isEnabled = false
+            }
+            ServerStatus.Running -> {
+                statusDot.foreground = JBColor.GREEN
+                statusText.text = "Server: running"
+                stopButton.isEnabled = true
+                restartButton.isEnabled = true
+            }
+            ServerStatus.Stopping -> {
+                statusDot.foreground = JBColor.YELLOW
+                statusText.text = "Server: stopping..."
+                stopButton.isEnabled = false
+                restartButton.isEnabled = false
+            }
+        }
+    }
+
+    internal enum class ServerStatus { Stopped, Starting, Running, Stopping }
 
     /**
      * 把 SSE 连接的 onConnectionLost / onConnectionEstablished 接到 refreshStatus。

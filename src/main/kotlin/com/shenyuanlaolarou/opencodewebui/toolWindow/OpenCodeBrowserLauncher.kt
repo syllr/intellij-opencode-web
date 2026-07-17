@@ -60,17 +60,22 @@ object OpenCodeBrowserLauncher {
     }
 
     /**
-     * 构建 OpenCode Web UI URL：`http://localhost:$port/?directory=<encoded>&session=<id>`
+     * 构建 OpenCode Web UI URL:`http://localhost:$port/<base64dir>` 或
+     * `http://localhost:$port/<base64dir>/session/<id>`(传 sessionId 时)。
+     *
+     * 目录必须用 base64 编码(URL-safe,无 padding)作为路径段;query 参数形式
+     * `?directory=...&session=...` 已被 Web UI 路由器忽略,会回退到默认首页。
      *
      * @param projectBasePath 绝对文件系统路径(例如 /Users/yutao/IdeaProjects/intellij-opencode-web)
      * @param port opencode server HTTP 端口(例如 12396)
-     * @param sessionId opencode session ID(例如 ses_xxx),空串则不带 session
+     * @param sessionId opencode session ID(例如 ses_xxx),空串则不带 /session/ 段
      * @return 完整的 OpenCode Web UI URL
      */
     fun buildUrl(projectBasePath: String, port: Int, sessionId: String): String {
-        val encoded = java.net.URLEncoder.encode(projectBasePath, StandardCharsets.UTF_8)
-        val base = "http://localhost:$port/?directory=$encoded"
-        return if (sessionId.isEmpty()) base else "$base&session=$sessionId"
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(projectBasePath.toByteArray(StandardCharsets.UTF_8))
+        val base = "http://localhost:$port/$encoded"
+        return if (sessionId.isEmpty()) base else "$base/session/$sessionId"
     }
 
     /**

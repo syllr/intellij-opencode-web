@@ -39,7 +39,7 @@ object EdgeBootstrapExtension {
             return null
         }
 
-        val targetDir = File(tmpRoot(), "$TMP_PREFIX${hash(projectBasePath)}")
+        val targetDir = File(tmpRoot(), "$TMP_PREFIX${hash(projectBasePath)}-${System.currentTimeMillis()}")
         try {
             if (targetDir.exists()) {
                 targetDir.deleteRecursively()
