@@ -16,13 +16,11 @@
 
 **IntelliJ OpenCode Web 插件**是一个 JetBrains IDE 插件(2026.1+),自启 opencode server 并通过外部 **Microsoft Edge --app 模式**展示 OpenCode Web UI。Dashboard 显示 server 状态 + 3 控制按钮(Stop / Restart / Reset),所有通知由 OpenCode Web UI 自身接管。点击 sessions 列表行直接用 Edge --app 打开对应 session URL。
 
-| 能力               | 路径                                   | 协议/机制                                                                     |
-| ------------------ | -------------------------------------- | ----------------------------------------------------------------------------- |
-| Edge --app 浏览器  | 系统 Microsoft Edge(日常 profile 复用) | 进程外 Edge binary + `--app=<url>`                                            |
-| Dashboard 工具窗口 | IDE 侧边栏                             | 纯 Swing,无浏览器控件                                                         |
-| 文件变更同步       | OpenCode ↔ IDE VFS                     | SSE 事件 → `FullRefreshCoordinator`                                           |
-| 子 agent 追踪      | OpenCode 事件流 ↔ 本地状态             | SSE + 本地 per-consumer 状态集合                                              |
-| in-IDE 通知        | **已砍掉**(v2.0.0)                     | `OpenCodeNotificationService.send()` no-op 桩;通知由 OpenCode Web UI 自己处理 |
+| 能力               | 路径                                   | 协议/机制                           |
+| ------------------ | -------------------------------------- | ----------------------------------- |
+| Edge --app 浏览器  | 系统 Microsoft Edge(日常 profile 复用) | 进程外 Edge binary + `--app=<url>`  |
+| Dashboard 工具窗口 | IDE 侧边栏                             | 纯 Swing,无浏览器控件               |
+| 文件变更同步       | OpenCode ↔ IDE VFS                     | SSE 事件 → `FullRefreshCoordinator` |
 
 **核心数据流**(详见 `DESIGN.md §0.3`):
 
@@ -48,17 +46,16 @@ Dashboard(MyToolWindow) ──[点击 session 行]──→ OpenCodeBrowserLaunc
 
 ### 1.1 事件处理时延
 
-| 阶段                         | 时延预算    | 来源                              |
-| ---------------------------- | ----------- | --------------------------------- |
-| SSE 事件到达 → JSON 解析     | < 5ms       | `SSEEventParser.parse()`          |
-| JSON 解析 → 通知路由分发     | < 2ms       | `OpenCodeSSEConsumer.onMessage()` |
-| 通知 Service `send()` 全链路 | < 50ms      | 含 `getSession` HTTP 缓存命中     |
-| 文件事件 → VFS 刷新          | 2s 防抖窗口 | `FullRefreshCoordinator`          |
+| 阶段                     | 时延预算    | 来源                              |
+| ------------------------ | ----------- | --------------------------------- |
+| SSE 事件到达 → JSON 解析 | < 5ms       | `SSEEventParser.parse()`          |
+| JSON 解析 → 业务路由分发 | < 2ms       | `OpenCodeSSEConsumer.onMessage()` |
+| 文件事件 → VFS 刷新      | 2s 防抖窗口 | `FullRefreshCoordinator`          |
 
 **Spec**:
 
 - 系统 MUST 在 SSE 事件高频突发(>100 事件/s)时,事件处理时延不显著增长
-- 系统 MUST 在 `session.status(idle)` / `session.idle` 事件间用 per-consumer `idleNotifiedSessions` 集合防重复通知(`OpenCodeSSEConsumer.kt:286`)
+- v2.0.0+ IDE 端无通知事件处理路径(`session.idle` / `session.status` / `permission.asked` / `question.asked` 均在白名单外,parser 早退)
 
 ### 1.2 HTTP API 调用时延
 
@@ -75,29 +72,28 @@ Dashboard(MyToolWindow) ──[点击 session 行]──→ OpenCodeBrowserLaunc
 
 ### 1.3 可用性目标
 
-| 指标                               | 目标      | 备注                                                           |
-| ---------------------------------- | --------- | -------------------------------------------------------------- |
-| OpenCodeSSEConsumer SSE 连接可用性 | ≥ 99%(日) | 30s watchdog 超时自动重连                                      |
-| OpenCodeServerManager 关闭成功率   | 100%      | 5s onExit → SIGTERM(2s) → SIGKILL 兜底                         |
-| 多项目 SSE consumer 隔离           | 100%      | 每个 Project 独立 `OpenCodeSSEConsumer` 实例,per-instance 状态 |
+| 指标                               | 目标      | 备注                                         |
+| ---------------------------------- | --------- | -------------------------------------------- |
+| OpenCodeSSEConsumer SSE 连接可用性 | ≥ 99%(日) | 30s watchdog 超时自动重连                    |
+| OpenCodeServerManager 关闭成功率   | 100%      | 5s onExit → SIGTERM(2s) → SIGKILL 兜底       |
+| 多项目 SSE consumer 隔离           | 100%      | 每个 Project 独立 `OpenCodeSSEConsumer` 实例 |
 
 **Spec**:
 
 - 系统 MUST 在 SSE 连接断开后 30s 内检测到并自动重连(`SSE_IDLE_TIMEOUT_MS`)
-- 系统 MUST 在重连(`onClosed()`)和 `stop()` 时清空 `sessionTitles` / `idleNotifiedSessions` 两个 per-instance 状态集合(`OpenCodeSSEConsumer.kt:115-116,308-309`)
+- v2.0.0+ 在-IDE 通知拆除后,per-instance 状态集合仅余 `SSEEventParser.dedupCache`(companion object,跨实例共享)
 
 ### 1.4 容量与并发
 
-| 维度             | 当前目标                                    | 备注                                |
-| ---------------- | ------------------------------------------- | ----------------------------------- |
-| 同时打开的项目数 | ≤ 10                                        | 受 `OpenCodeServerManager` 单例约束 |
-| SSE 事件频率     | 100-500 事件/s                              | 正常 agent 循环                     |
-| LRU 缓存容量     | dedupCache 1000 / idleNotifiedSessions 1000 | 防止无界增长;`sessionTitles` 无界   |
+| 维度             | 当前目标                         | 备注                                |
+| ---------------- | -------------------------------- | ----------------------------------- |
+| 同时打开的项目数 | ≤ 10                             | 受 `OpenCodeServerManager` 单例约束 |
+| SSE 事件频率     | 100-500 事件/s                   | 正常 agent 循环                     |
+| LRU 缓存容量     | `SSEEventParser.dedupCache` 1000 | 防止无界增长                        |
 
 **Spec**:
 
-- 所有 LRU 集合 MUST 是有界(最大容量固定);`sessionTitles` 例外(per-instance,典型场景 < 1000)
-- `idleNotifiedSessions` 容量 1000(LRU)/ `SSEEventParser.dedupCache` 容量 1000(LRU)
+- 所有 LRU 集合 MUST 是有界(最大容量固定);`dedupCache` MUST 限制为 `LRU_MAX_ENTRIES`(默认 1000)
 
 ---
 
@@ -126,14 +122,14 @@ Dashboard(MyToolWindow) ──[点击 session 行]──→ OpenCodeBrowserLaunc
 ### 2.4 静态全局状态(HARD RULE)
 
 - **MUST NOT** 在 `object` 里挂 `var` 或非常量的 `MutableMap`
-- 例外:`OpenCodeSSEConsumer.companion object` 的 `idleNotifiedSessions`(per-consumer 单例约束,已标注);`SSEEventParser.companion object` 的 `dedupCache` 与 `SUBAGENT_TITLE_REGEX`(SSE 事件级语义,与 Project 无关)
+- 例外:`SSEEventParser.companion object` 的 `dedupCache`(SSE 事件级去重,与 Project 无关,跨实例共享)
 - 任何新例外 MUST 标注 KDoc 说明**为什么**违反 HARD RULE
 
 ### 2.5 HTTP/JSON 解析(HARD RULE)
 
 - **MUST NOT** 用 Regex 解析 HTTP 响应体或 JSON
 - **MUST** 所有 HTTP 响应体走 Gson(或同等 JSON 解析器)
-- 例外:`BashCommandHandler.BASH_SPLIT_REGEX` / `WHITESPACE_REGEX`(切分 bash 命令,非 HTTP/JSON 解析);`OpenCodeSSEConsumer.SUBAGENT_TITLE_REGEX` / `OpenCodeNotificationService.SUBAGENT_REGEX`(title 文本模式匹配,非 HTTP/JSON 解析) — 这两类**不**是 HTTP/JSON 解析
+- 例外:`BashCommandHandler.BASH_SPLIT_REGEX` / `WHITESPACE_REGEX`(切分 bash 命令,非 HTTP/JSON 解析)— 这两类**不**是 HTTP/JSON 解析
 
 ### 2.6 CORS / 鉴权
 
@@ -145,28 +141,12 @@ Dashboard(MyToolWindow) ──[点击 session 行]──→ OpenCodeBrowserLaunc
 
 ### 3.1 SSE 状态机不变量
 
-#### 3.1.1 `sessionTitles` 不变量
+#### 3.1.1 `SSEEventParser.dedupCache` 不变量(v2.0.0+ in-IDE 通知拆除后仅剩此一个)
 
-- `sessionTitles: ConcurrentHashMap<String, String>` MUST 仅在 `session.created` / `session.updated` 事件携带 `properties.info.title` 时写入 `(sessionID, title)`(`OpenCodeSSEConsumer.kt:225-227`)
-- `sessionTitles` MUST **不**在 `session.deleted` 时移除(防竞态:防止 `session.deleted` 先于 `session.status(idle)` 到达时,子 agent 的 idle 事件被误判为父 session 的 complete)
-- `sessionTitles` MUST 在 SSE 重连时(`onClosed()`)和 `stop()` 时清空(`OpenCodeSSEConsumer.kt:115,308`)
-- 容量无硬性 LRU 上限(per-instance,项目生命周期内累计;典型场景 < 1000)
-
-#### 3.1.2 `idleNotifiedSessions` 不变量
-
-- `idleNotifiedSessions: MutableSet<String>`(LRU-backed,容量 1000) MUST 仅在成功发 `complete` 通知时通过 `add() return false` 原子操作添加 sessionID(`OpenCodeSSEConsumer.kt:92,286`)
-- `idleNotifiedSessions` MUST 在 `message.updated(role=user)` 时移除 sessionID(用户发新消息重置抑制,`OpenCodeSSEConsumer.kt:235`)
-- `idleNotifiedSessions` MUST **不**在 `session.status(busy)` 时移除(防误抑制)
-- `idleNotifiedSessions` MUST 在 SSE 重连时和 `stop()` 时清空
-- 集合本身防重复通知,无需时间窗
-
-#### 3.1.3 `SSEEventParser.dedupCache` 不变量
-
-- `dedupCache: Collections.synchronizedMap`(companion object,跨实例共享) MUST 仅做 eventID 去重(`SSEEventParser.kt:65,94`)
-- MUST **不**影响 `sessionTitles` 和 `idleNotifiedSessions` 的状态
-- 容量 MUST 限制为 1000(LRU)
-- MUST 在 `OpenCodeSSEConsumer.stop()` 时清空(SSE 主动关闭) `SSEEventParser.clearCache()` (`SSEEventParser.kt:98`)
-- **不**在 SSE 重连时清空(`onClosed()` 只清 `sessionTitles` / `idleNotifiedSessions`);`dedupCache` 仅由 `stop()` 清,与重连不耦合
+- `dedupCache: Caffeine-backed Cache<String, Boolean>`(companion object,跨实例共享) MUST 仅做 eventID 去重,防止 SSE 重发导致同一事件被双重文件刷新
+- 容量 MUST 限制为 `LRU_MAX_ENTRIES`(默认 1000)
+- MUST 在 `OpenCodeSSEConsumer.stop()` 时清空(SSE 主动关闭) `SSEEventParser.clearCache()`
+- **不**在 SSE 重连时清空(`onClosed()`);`dedupCache` 仅由 `stop()` 清,与重连不耦合
 
 ### 3.2 进程状态不变量(`OpenCodeServerManager`)
 
@@ -215,16 +195,15 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 
 #### 4.1.3 关键事件(Spec 应满足)
 
-| 事件                                                    | 触发条件                   | 处理                                                                           |
-| ------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------ |
-| `session.created` / `session.updated`                   | OpenCode 创建/更新 session | 缓存 `(sessionID, title)` 到 `sessionTitles`(`OpenCodeSSEConsumer.kt:225-227`) |
-| `session.status(type=idle)`                             | 父/子 session 完成         | `handleSessionIdle`(title 正则 → subagent 抑制;否则触发 `complete` 通知)       |
-| `session.idle`(deprecated)                              | 同上(旧格式)               | 同上                                                                           |
-| `permission.asked`                                      | OpenCode 申请权限          | 触发 `permission` 通知                                                         |
-| `question.asked`                                        | 询问用户                   | 触发 `question` 通知                                                           |
-| `message.updated(role=user)`                            | 用户发新消息               | 移除 `idleNotifiedSessions` 中的 sessionID(不触发通知)                         |
-| `message.part.updated`                                  | bash 工具完成              | `BashCommandHandler` 触发 VFS 刷新                                             |
-| `file.edited` / `session.diff` / `file.watcher.updated` | 文件变更                   | `FullRefreshCoordinator` 触发 VFS 刷新                                         |
+| 事件                                   | 触发条件             | 处理                                                  |
+| -------------------------------------- | -------------------- | ----------------------------------------------------- |
+| `message.part.updated`                 | bash 工具完成        | `BashCommandHandler` 触发 VFS 刷新                    |
+| `session.diff`                         | server ack diff 接受 | `FullRefreshCoordinator` 触发 VFS 刷新(绕过 debounce) |
+| `file.edited` / `file.watcher.updated` | 文件变更             | `FullRefreshCoordinator` 触发 VFS 刷新                |
+| `server.heartbeat`                     | 健康信号             | 更新 `lastHeartbeatAt`(`isHealthy()` 诊断用)          |
+
+> v2.0.0+ 白名单仅 5 事件,见 [SSEEventParser.ALLOW_PARSE_EVENT_TYPES](../src/main/kotlin/com/shenyuanlaolarou/opencodewebui/listeners/SSEEventParser.kt) KDoc。
+> `session.created` / `session.updated` / `session.status` / `session.idle` / `permission.asked` / `question.asked` / `message.updated` 等通知事件不消费,parser 早退。
 
 ### 4.2 IDE ↔ OpenCode CLI(HTTP API)
 
@@ -241,18 +220,19 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 - 点击 Dashboard session 列表行调 `OpenCodeBrowserLauncher.launch(url)`(M1-T2)启动外部 Edge 进程(v2.0.2 起改为只支持 Edge;v2.0.0-v2.0.1 期间为 Chrome,实测 Edge 对 `--load-extension=` 兼容性更好,故全量迁移)
 - 启动后系统 Edge 加载 OpenCode Web UI,后续所有用户交互(权限弹窗 / 工具调用 / 通知)均在 Edge 窗口内完成
 - **不**复用 JCEF(`BrowserPanel` 等 6 个 JCEF 文件已在 v2.0.0 整删,`sharedJBCefClient` 字段已移除)
-- **不**传 `--user-data-dir` — 复用用户日常 Edge profile,保留 localStorage / cookies 缓存(AGENTS.md 硬约束)
+- **传** `--user-data-dir=~/.config/opencode-web-ui/edge-profiles/$projectHash/user-data/` — 按项目隔离 Edge profile(非日常 profile,localStorage/cookies 存于项目专属路径,跨 IDE 升级不丢)。v2.0.x 阶段原设计用 `CleanBrowserLauncher` + `--user-data-dir=/tmp/...` 隔离但因 `/tmp` 不持久被废弃(AGENTS.md 反模式),现改为 `~/.config/` 持久化路径 + SHA-256 项目 hash
+- **传** `--disable-sync` — Edge Sync 服务会把"日常 Edge 已登录的微软账号"广播到新 `--user-data-dir` profile(实测触发的 dialog:"我们正在你的所有设备上同步你的浏览数据"),隔离被绕过。`--user-data-dir` 文件层阻止不了这一层 sync 同步。这是身份层隔离**唯一可动点**;实测若账号又被同步进来,这是唯一可减的 flag
 - 主路径 `open -na "Microsoft Edge" --args --app=<url>`;回退路径 `ProcessBuilder` 直接 fork Edge binary + `--app=<url>`
 - 关闭策略:Edge 进程独立于 IDE,关闭 IDE **不**自动 kill Edge 窗口(用户决定)
 - **Edge 未安装处理**:`OpenCodeBrowserLauncher.checkEdgeInstalled()` 在点击时检查,未安装弹 `Messages.showErrorDialog` 提示下载 https://www.microsoft.com/edge,不 throw 不 crash
 
-### 4.4 IDE ↔ IDE 内部(in-IDE 通知 — v2.0.0 已砍掉)
+### 4.4 IDE ↔ IDE 内部(in-IDE 通知 — 完全拆除)
 
-- v2.0.0 起 `OpenCodeNotificationService.send()` 是 **no-op 桩**(M3-T4):仅 `thisLogger().debug` 一行,**不**触发任何 IDE 通知 / macOS 系统通知
-- 所有通知由 Edge --app 模式下的 OpenCode Web UI 自身处理(浏览器原生 Notifications API)
-- `OpenCodeNotificationRouter` 保留为 10 行直通薄层(→ Service.send),SSE consumer 调用方不变
-- `OpenCodeNotificationService` 的纯函数 helper(`extractSessionID` / `replacePlaceholders` / `resolveType` / `htmlEscape` / `tryRecordAndCheckDedup`)+ `OpenCodeConfig` 4 个 settings 保留,供将来加 dashboard badge 等新通知渠道复用
-- 5 个单测(NotificationDedupTest / NotificationServiceExtractSessionIdTest / NotificationServiceSendLogicTest / OpenCodeNotificationReplacePlaceholdersTest / OpenCodeNotificationServiceOptimizationTest)继续覆盖纯函数,行为不变
+- v2.0.0+ 起 IDE 端**完全无通知 UI 代码**:
+  - `utils/OpenCodeNotificationService.kt` + `utils/OpenCodeNotificationRouter.kt` **已删除**
+  - SSE 白名单从 12 事件缩到 5 事件(`message.part.updated` / `session.diff` / `file.edited` / `file.watcher.updated` / `server.heartbeat`),`permission.asked` / `question.asked` / `session.idle` / `session.status` 等通知事件 parser 早退
+  - `OpenCodeSSEConsumer` 的 `dispatchNotification` / `handleSessionIdle` / `sessionTitles` / `idleNotifiedSessions` / `subagentSessionIds` 等通知抑制状态**全部删除**
+- 通知由 OpenCode server / OpenCode Web UI 自己处理(浏览器原生 Notifications API / 系统通知)
 
 ---
 
@@ -350,19 +330,14 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 
 ## 7. 系统级横切场景
 
-### 7.1 通知降噪决策(详见 `DESIGN.md §4.2`)
+### 7.1 ~~通知降噪决策~~(v2.0.0+ 已拆除,本节不适用)
 
-**Spec 满足**:
-
-- 系统 MUST 用 `OpenCodeSSEConsumer` 的两层去重(subagent title 正则 → 父 session 抑制)
-- 系统 MUST 用 `sessionTitles: ConcurrentHashMap<String, String>` 追踪子 agent session 的 title(非 HTTP API,避免竞态)
-- 系统 MUST 用 `idleNotifiedSessions` per-instance 集合防止 `session.idle` + `session.status(idle)` 双发
-- 系统 MUST 在 SSE 重连时清空所有 per-consumer 状态集合
+v2.0.0+ IDE 端无通知代码,通知由 OpenCode server / Web UI 接管,无任何降噪决策。
 
 ### 7.2 SSE 重连处理
 
 - **WHEN** SSE 连接断开(`onClosed()`)
-- **THEN** 系统 MUST 清空 `sessionTitles` / `idleNotifiedSessions`(`OpenCodeSSEConsumer.kt:308-309`);`SSEEventParser.dedupCache` **不**清空(只由 `stop()` 清)
+- **THEN** v2.0.0+ onClosed 不再清理 per-consumer 状态集合(已无 sessionTitles / idleNotifiedSessions);`SSEEventParser.dedupCache` **不**清空(只由 `stop()` 清)
 - **WHEN** watchdog 检测到 30s 内无事件(`SSE_IDLE_TIMEOUT_MS`)
 - **THEN** 系统 MUST 强制重连
 
@@ -412,13 +387,10 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 
 ## 附录 A:当前未满足项(Known Gaps)
 
-| ID    | 描述                                                                                                                                  | 严重性 | 建议                                              |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------- |
-| GAP-1 | `OpenCodeConfigurable` Settings UI 缺失(commit `a5eafc4` 1.0.20 整删);`OpenCodeConfig` 4 个通用设置当前无法通过 UI 配置               | ⚠️ 中  | 重新实现 Settings UI 并补 11 个事件开关/11 个模板 |
-| GAP-2 | `sessionTitles` 无硬性 LRU 上限,可能在超长会话中无界增长                                                                              | ℹ️ 低  | 典型场景 < 1000,可接受                            |
-| GAP-4 | `subagent_complete` 通知未实现(代码中无该分支)                                                                                        | ⚠️ 中  | 配合 GAP-1 Settings UI 补齐事件开关               |
-| GAP-5 | `OpenCodeSSEConsumer.sessionTitles` 注册只在 SSE consumer 启动路径中,**非**多保险                                                     | ℹ️ 低  | 实际场景下足够(每 Project 独立 consumer 已覆盖)   |
-| GAP-7 | v2.0.0 砍掉 in-IDE 通知 UI 后,`OpenCodeNotificationService.send()` 是 no-op 桩,纯函数 helper + 4 个 settings 当前**未**被任何 UI 消费 | ℹ️ 低  | 等需要 dashboard badge 等新通知渠道时复用         |
+| ID    | 描述                                                                                                                                                | 严重性 | 建议                                                     |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------- |
+| GAP-1 | `OpenCodeConfigurable` Settings UI 缺失(commit `a5eafc4` 1.0.20 整删);v2.0.0+ 通知完全拆除后 `OpenCodeConfig` 也已删除,无遗留 settings              | ℹ️ 低  | 不再适用(通知功能已永久由 OpenCode server / Web UI 接管) |
+| GAP-4 | in-IDE 通知 UI 完全拆除(v2.0.0+),`permission.asked` / `question.asked` / `session.idle` 等事件无 IDE 端消费者(由 OpenCode server / Web UI 自身接管) | ℹ️ 低  | 确认 OpenCode server / Web UI 通知覆盖完整               |
 
 ---
 
