@@ -4,7 +4,6 @@ import com.intellij.openapi.diagnostic.thisLogger
 
 object BashCommandHandler {
 
-    @Suppress("UNCHECKED_CAST")
     fun handleBashEvent(parsedMap: Map<*, *>?, projectDir: String?): Boolean {
         val logger = thisLogger()
 

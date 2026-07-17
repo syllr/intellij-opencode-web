@@ -8,7 +8,6 @@ import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApiResult
 import com.shenyuanlaolarou.opencodewebui.utils.SSEConsumerFactory
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -134,8 +133,7 @@ object OpenCodeServerManager {
 
     private fun acquirePortProcessHandle(): ProcessHandle? {
         thisLogger().debug("[OpenCodeServerManager] Graceful shutdown on port $PORT")
-        val handle = findProcessByPort()
-        return handle
+        return findProcessByPort()
     }
 
     /**

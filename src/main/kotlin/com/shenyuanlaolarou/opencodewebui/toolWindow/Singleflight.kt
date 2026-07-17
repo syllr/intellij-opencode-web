@@ -23,8 +23,6 @@ class Singleflight<T> {
     private val lock = Any()
     private var inflight: CompletableFuture<T>? = null
 
-    // ── Low-level API (for async callers) ──────────────────────────
-
     /**
      * Attempt to start or join an in-flight operation for [key].
      *
@@ -57,8 +55,6 @@ class Singleflight<T> {
         }
     }
 
-    // ── Convenience API (for synchronous callers) ───────────────────
-
     /**
      * Execute [fn] once for concurrent calls with the same [key].
      * Followers block until the leader completes.  Exceptions propagate to all.
@@ -85,8 +81,6 @@ class Singleflight<T> {
             release(future)
         }
     }
-
-    // ── Internal ────────────────────────────────────────────────────
 
     /**
      * Unwrap [ExecutionException] so followers receive the leader's original
