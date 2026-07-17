@@ -1,14 +1,5 @@
 package com.shenyuanlaolarou.opencodewebui.listeners
 
-import com.shenyuanlaolarou.opencodewebui.OPENCODE_HOST
-import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
-import com.shenyuanlaolarou.opencodewebui.SSE_CONNECT_TIMEOUT_SECONDS
-import com.shenyuanlaolarou.opencodewebui.SSE_IDLE_TIMEOUT_MS
-import com.shenyuanlaolarou.opencodewebui.SSE_WATCHDOG_INTERVAL_MS
-import com.shenyuanlaolarou.opencodewebui.listeners.SSEEventParser
-import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeApi
-import com.shenyuanlaolarou.opencodewebui.utils.OpenCodeNotificationRouter
-import com.shenyuanlaolarou.opencodewebui.utils.dataOrNull
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.launchdarkly.eventsource.ConnectStrategy
@@ -17,6 +8,11 @@ import com.launchdarkly.eventsource.EventSource
 import com.launchdarkly.eventsource.MessageEvent
 import com.launchdarkly.eventsource.background.BackgroundEventHandler
 import com.launchdarkly.eventsource.background.BackgroundEventSource
+import com.shenyuanlaolarou.opencodewebui.OPENCODE_HOST
+import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
+import com.shenyuanlaolarou.opencodewebui.SSE_CONNECT_TIMEOUT_SECONDS
+import com.shenyuanlaolarou.opencodewebui.SSE_IDLE_TIMEOUT_MS
+import com.shenyuanlaolarou.opencodewebui.SSE_WATCHDOG_INTERVAL_MS
 import java.net.Proxy
 import java.net.URI
 import java.net.URLEncoder
@@ -24,17 +20,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
-internal val SUBAGENT_TITLE_REGEX = Regex("""@[^\s)]+ subagent""")
-
-internal fun isSubagentTitle(title: String): Boolean =
-    SUBAGENT_TITLE_REGEX.containsMatchIn(title)
-
-internal fun ParsedSSEEvent.propertiesAsMap(): Map<*, *>? =
-    parsedMap?.get("properties") as? Map<*, *>
-
-internal fun Map<*, *>.getAsMap(key: String): Map<*, *>? =
-    get(key) as? Map<*, *>
-
+/**
+ * SSE 消费者。
+ *
+ * v2.0.0+ 职责窄化为:**文件刷新**(Bash 工具完成 + 文件 watcher 事件)+ **心跳健康信号**。
+ * in-IDE 通知已砍掉(由 OpenCode Web UI / server 端接管),`permission.asked` /
+ * `question.asked` / `session.idle` / `session.status` 等通知事件在 SSEEventParser 白名单外,
+ * parser 早退不走全量 Gson 反序列化,见 [SSEEventParser.ALLOW_PARSE_EVENT_TYPES]。
+ */
 class OpenCodeSSEConsumer(
     private val project: Project,
     /**
@@ -81,18 +74,6 @@ class OpenCodeSSEConsumer(
         return System.currentTimeMillis() - lastEvent <= maxIdleMs
     }
 
-    private val sessionTitles: java.util.concurrent.ConcurrentHashMap<String, String> = java.util.concurrent.ConcurrentHashMap()
-    private val idleNotifiedSessions: com.github.benmanes.caffeine.cache.Cache<String, Boolean> =
-        com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
-            .maximumSize(com.shenyuanlaolarou.opencodewebui.LRU_MAX_ENTRIES)
-            .build()
-
-    @Volatile
-    private var subagentSessionIds: com.github.benmanes.caffeine.cache.Cache<String, Boolean> =
-        com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
-            .maximumSize(com.shenyuanlaolarou.opencodewebui.LRU_MAX_ENTRIES)
-            .build()
-
     fun start() {
         logger.info("[OpenCodeSSEConsumer] Starting SSE consumer, projectBasePath='$projectBasePath'")
         FullRefreshCoordinator.start(projectBasePath ?: "")
@@ -111,13 +92,9 @@ class OpenCodeSSEConsumer(
         watchdogScheduler = null
         FullRefreshCoordinator.stop()
         eventSourceRef.getAndSet(null)?.close()
-        // [Fix #2] 清理静态集合，防止 stop() 后 companion object 集合继续增长
-        // onClosed() 只在 SSE 连接关闭时调用，stop() 主动关闭时也需要清理
+        // dedupCache 跨 instance 共享(stop() 全局清),与重连不耦合。
         SSEEventParser.clearCache()
-        sessionTitles.clear()
-        idleNotifiedSessions.invalidateAll()
-        subagentSessionIds.invalidateAll()
-        logger.info("[OpenCodeSSEConsumer] SSE consumer stopped, static collections cleared")
+        logger.info("[OpenCodeSSEConsumer] SSE consumer stopped")
     }
 
     private fun startSseConnection() {
@@ -206,7 +183,8 @@ class OpenCodeSSEConsumer(
         val parsed = SSEEventParser.parse(event, data)
         val parsedMap = parsed.parsedMap
 
-        // 非白名单事件：parser 已早退（parsedMap == null），直接丢弃
+        // 非白名单事件：parser 已早退(parsedMap == null),直接丢弃。
+        // v2.0.0+ 白名单见 SSEEventParser.ALLOW_PARSE_EVENT_TYPES 的 KDoc。
         if (parsedMap == null) return
 
         val type = parsed.type ?: return
@@ -225,42 +203,19 @@ class OpenCodeSSEConsumer(
         val eventId = parsedMap["id"] as? String
         if (eventId != null && SSEEventParser.isEventProcessed(eventId)) return
 
-        val sessionID = parsed.extractSessionID()
-
-        if (type == "session.created" || type == "session.updated") {
-            val title = parsed.extractTitle()
-            if (sessionID != null && title != null) {
-                sessionTitles[sessionID] = title
-                subagentSessionIds.put(sessionID, isSubagentTitle(title))
-            }
-        }
-
-        if (type == "message.updated") {
-            // [Fix #4] 用户发新消息时重置 idle 抑制,允许下次 idle 再次通知
-            val info = parsed.propertiesAsMap()?.getAsMap("info")
-            val role = info?.get("role") as? String
-            if (role == "user") {
-                sessionID?.let { idleNotifiedSessions.invalidate(it) }
-            }
-        }
-
-        // 通知事件分发（在文件事件过滤之前，确保通知事件不被丢）
-        when (type) {
-            "permission.asked" -> dispatchNotification("permission", parsedMap, project)
-            "session.status" -> {
-                val statusObj = parsed.propertiesAsMap()?.getAsMap("status")
-                if (statusObj?.get("type") == "idle") {
-                    handleSessionIdle(parsed, project)
-                }
-            }
-            "session.idle" -> handleSessionIdle(parsed, project)
-            "question.asked" -> dispatchNotification("question", parsedMap, project)
-        }
-
         // 文件事件处理
-        if (type == "message.part.updated") { BashCommandHandler.handleBashEvent(parsedMap, project.basePath); return }
+        // - message.part.updated: BashCommandHandler 通过解析消息内容检测 bash 完成 → FullRefreshCoordinator
+        // - file.edited / file.watcher.updated: SSE server 直推 → FullRefreshCoordinator 主路径
+        // - session.diff: 服务器 ack diff 接受 → FullRefreshCoordinator(绕过 debounce)
+        if (type == "message.part.updated") {
+            BashCommandHandler.handleBashEvent(parsedMap, project.basePath)
+            return
+        }
         if (type != "session.diff" && type != "file.edited" && type != "file.watcher.updated") return
-        if (project.basePath == null) { logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh"); return }
+        if (project.basePath == null) {
+            logger.warn("[OpenCodeSSEConsumer] project.basePath is null, skipping refresh")
+            return
+        }
 
         if (type == "session.diff") {
             try { FullRefreshCoordinator.request() }
@@ -268,34 +223,6 @@ class OpenCodeSSEConsumer(
             return
         }
         FullRefreshCoordinator.request()
-    }
-
-    private fun dispatchNotification(eventType: String, parsedMap: Map<*, *>?, project: Project) {
-        OpenCodeNotificationRouter.notify(eventType, parsedMap, project)
-    }
-
-    private fun handleSessionIdle(parsed: ParsedSSEEvent, project: Project) {
-        val parsedMap = parsed.parsedMap
-        val sessionID = parsed.extractSessionID() ?: return
-
-        val title = sessionTitles[sessionID]
-        if (title != null && (subagentSessionIds.getIfPresent(sessionID) ?: isSubagentTitle(title))) {
-            if (logger.isDebugEnabled) {
-                logger.debug("[OpenCodeSSEConsumer] Subagent idle suppressed by title: $sessionID (title=$title)")
-            }
-            return
-        }
-
-        // [Fix #4] Per-session idle 抑制:同一 session 第一次 idle 发通知,后续 idle 全抑制
-        // 直到用户发新消息(message.updated role=user)重置
-        if (idleNotifiedSessions.getIfPresent(sessionID) != null) {
-            if (logger.isDebugEnabled) {
-                logger.debug("[OpenCodeSSEConsumer] Idle already notified for session=$sessionID, suppressing")
-            }
-            return
-        }
-        idleNotifiedSessions.put(sessionID, true)
-        dispatchNotification("complete", parsedMap, project)
     }
 
     override fun onClosed() {
@@ -308,11 +235,6 @@ class OpenCodeSSEConsumer(
         }
         logger.info("[OpenCodeSSEConsumer] SSE onClosed() called (gen=$currentGen), connected set to false")
         SSEEventParser.clearCache()
-        // [Fix ISSUE-2 一致性] 同步 stop() 的清理范围:per-instance 缓存
-        // (之前在 companion object,跨实例共享,stop() 全局清即可;
-        // 现在是实例字段,onClosed 也应清——否则 onError 未触发 + watchdog 未重连的死角下泄漏)
-        sessionTitles.clear()
-        idleNotifiedSessions.invalidateAll()
     }
 
     override fun onComment(comment: String) {
@@ -338,5 +260,4 @@ class OpenCodeSSEConsumer(
             logger.warn("$ctxLog SSE error (never connected): ${error.javaClass.simpleName}: ${error.message}", error)
         }
     }
-
 }

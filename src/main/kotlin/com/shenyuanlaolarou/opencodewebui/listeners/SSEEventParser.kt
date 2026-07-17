@@ -2,7 +2,6 @@ package com.shenyuanlaolarou.opencodewebui.listeners
 
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
-import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -21,68 +20,28 @@ data class ParsedSSEEvent(
     val eventType: String,
     val parsedMap: Map<*, *>? = null
 ) {
-    /** 新 wire 格式 root 级别的 type 字段（如 "session.idle"、"file.edited"）。 */
+    /** 新 wire 格式 root 级别的 type 字段（如 "file.edited"、"session.diff"）。 */
     val type: String?
         get() = parsedMap?.get("type") as? String
 }
 
-/**
- * 从 ParsedSSEEvent 提取 sessionID，使用三级 fallback 适配新 wire 格式。
- *
- * 新 wire 格式：`{id, type, properties: {sessionID?, info?: {sessionID?, id?}}}`
- *
- * 提取优先级（高到低）:
- *  1. `properties.sessionID` —— 直接属性
- *  2. `properties.info.sessionID` —— 嵌套在 info 内
- *  3. `properties.info.id` —— 部分事件用 id 而非 sessionID
- */
-fun ParsedSSEEvent.extractSessionID(): String? {
-    val props = parsedMap?.get("properties") as? Map<*, *>
-    val info = props?.get("info") as? Map<*, *>
-    return props?.get("sessionID") as? String
-        ?: info?.get("sessionID") as? String
-        ?: info?.get("id") as? String
-}
-
-/**
- * 从 ParsedSSEEvent 提取 parentID（两级 fallback）。
- * 返回 `null` 表示该 session 不是 subagent（顶层 session 没有 parentID）。
- */
-fun ParsedSSEEvent.extractParentID(): String? {
-    val props = parsedMap?.get("properties") as? Map<*, *>
-    val info = props?.get("info") as? Map<*, *>
-    return props?.get("parentID") as? String
-        ?: info?.get("parentID") as? String
-}
-
-fun ParsedSSEEvent.extractTitle(): String? {
-    val info = (parsedMap?.get("properties") as? Map<*, *>)?.get("info") as? Map<*, *>
-    return info?.get("title") as? String
-}
-
 object SSEEventParser {
-    private var gson: Gson = Gson()
-
     internal val dedupCache: Cache<String, Boolean> = Caffeine.newBuilder()
         .maximumSize(LRU_MAX_ENTRIES)
         .build()
 
-    /** 12 个白名单事件类型：只有这些事件会被完整 Gson 解析，其他直接 close Reader 早退。 */
+    /**
+     * 5 个白名单事件:v2.0.0+ in-IDE 通知砍掉后,IDE 端仅消费:
+     * - 1 Bash 事件(message.part.updated → BashCommandHandler)
+     * - 3 文件刷新事件(session.diff 特殊 + file.edited/file.watcher.updated 主路径 → FullRefreshCoordinator)
+     * - 1 健康信号(server.heartbeat → lastHeartbeatAt, 仅作诊断)
+     * 其他事件 SSEEventParser 在 parse 阶段早退,不走 Gson 全量反序列化。
+     */
     private val ALLOW_PARSE_EVENT_TYPES = setOf(
-        // 4 通知
-        "session.idle",
-        "session.status",
-        "permission.asked",
-        "question.asked",
-        // 6 业务 (含 session.updated 缓存 title、message.updated 重置 idle 抑制)
-        "session.created",
-        "session.updated",
-        "message.updated",
         "message.part.updated",
+        "session.diff",
         "file.edited",
         "file.watcher.updated",
-        "session.diff",
-        // 1 健康信号 —— lastHeartbeatAt 记录,仅作诊断用,无业务逻辑
         "server.heartbeat",
     )
 
