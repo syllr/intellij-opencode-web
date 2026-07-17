@@ -87,4 +87,58 @@ console.log("[opencode-web-ext] FILE LOADED", new Date().toISOString(), "origin=
   };
 
   console.log("[opencode-web-ext] BOOTSTRAP + PATCH installed at", new Date().toISOString());
+
+  // === Edge 窗口 title 改为项目名(替代默认 "OpenCode")===
+  // Edge --app 模式缓存 initial <title> textContent 作为窗口 title,直接 document.title setter
+  // 修改不更新窗口。改方案:documentElement-level MutationObserver (覆盖任何位置/任何方式的
+  // title 修改) + setInterval 200ms 兜底(处理 Observer 漏掉的 React/Next.js 异步修改)。
+  function basenameOfPath(p) {
+    if (!p) return null;
+    const parts = p.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : null;
+  }
+  const projectBaseName = basenameOfPath(PROJECT_PATH) || "OpenCode";
+
+  function overrideTitle() {
+    const titleEl = document.querySelector("title");
+    if (titleEl && titleEl.textContent !== projectBaseName) {
+      titleEl.textContent = projectBaseName;
+    }
+  }
+
+  // childList: 新增 <title>; characterData: 现有 <title> textContent 变化; subtree: 嵌套位置也 catch
+  function startObserver() {
+    const root = document.documentElement || document;
+    if (!root) return false;
+    new MutationObserver(function (mutations) {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeName === "TITLE") node.textContent = projectBaseName;
+        }
+        if (m.type === "characterData" && m.target.nodeName === "TITLE") {
+          m.target.textContent = projectBaseName;
+        }
+      }
+    }).observe(root, { childList: true, characterData: true, subtree: true });
+    return true;
+  }
+
+  if (startObserver()) {
+    overrideTitle();
+  } else {
+    // document_start 时 documentElement 可能未创建
+    new MutationObserver(function (_, obs) {
+      if (startObserver()) {
+        obs.disconnect();
+        overrideTitle();
+      }
+    }).observe(document, { childList: true });
+  }
+
+  window.addEventListener("load", overrideTitle);
+  setTimeout(overrideTitle, 100);
+  setTimeout(overrideTitle, 500);
+  setTimeout(overrideTitle, 1500);
+  setTimeout(overrideTitle, 3000);
+  setInterval(overrideTitle, 200);
 })();
