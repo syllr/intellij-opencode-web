@@ -22,12 +22,18 @@ object EdgeBootstrapExtension {
     private const val RESOURCE_DIR = "edge-extension"
     private const val MANIFEST = "manifest.json"
     private const val CONTENT_JS = "content.js"
+    private const val BACKGROUND_JS = "background.js"
     private const val TMP_PREFIX = "opencode-web-ext-"
 
     /**
-     * 为指定 project 准备 ext 目录;返回已写好 manifest.json + content.js 的目录路径。
+     * 为指定 project 准备 ext 目录;返回已写好 manifest.json + content.js + background.js 的目录路径。
      *
      * 每次调用创建新目录(目录名含时间戳后缀避免覆盖),旧目录依赖 macOS TMPDIR 自动清理(3-7 天)。
+     *
+     * background.js 是 MV3 service worker,启动时主动调
+     * `chrome.contentSettings.notifications.set({setting: 'allow'})` 给 OpenCode server origin
+     * 预置 notification allow,绕过 Chromium 的 QuietNotificationPrompts 永久 block。
+     * 详见 `src/main/resources/edge-extension/background.js` 顶部注释。
      *
      * @param projectBasePath IDE 项目的绝对路径
      * @return ext 目录(File),失败返回 null
@@ -60,10 +66,15 @@ object EdgeBootstrapExtension {
             log.warn("[EdgeBootstrapExtension] missing resource $RESOURCE_DIR/$CONTENT_JS")
             return null
         }
+        val backgroundSrc = readResource("$RESOURCE_DIR/$BACKGROUND_JS") ?: run {
+            log.warn("[EdgeBootstrapExtension] missing resource $RESOURCE_DIR/$BACKGROUND_JS")
+            return null
+        }
 
         try {
             File(targetDir, MANIFEST).writeText(manifestSrc, StandardCharsets.UTF_8)
             File(targetDir, CONTENT_JS).writeText(contentSrc, StandardCharsets.UTF_8)
+            File(targetDir, BACKGROUND_JS).writeText(backgroundSrc, StandardCharsets.UTF_8)
         } catch (e: Exception) {
             log.warn("[EdgeBootstrapExtension] write ext files failed: ${e.message}")
             return null
