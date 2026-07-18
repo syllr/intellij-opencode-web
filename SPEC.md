@@ -233,6 +233,7 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
   - SSE 白名单从 12 事件缩到 5 事件(`message.part.updated` / `session.diff` / `file.edited` / `file.watcher.updated` / `server.heartbeat`),`permission.asked` / `question.asked` / `session.idle` / `session.status` 等通知事件 parser 早退
   - `OpenCodeSSEConsumer` 的 `dispatchNotification` / `handleSessionIdle` / `sessionTitles` / `idleNotifiedSessions` / `subagentSessionIds` 等通知抑制状态**全部删除**
 - 通知由 OpenCode server / OpenCode Web UI 自己处理(浏览器原生 Notifications API / 系统通知)
+- **Edge extension notification 预置 allow(v2.0.2+)**:`background.js`(MV3 service worker)在 Edge 启动时调 `chrome.contentSettings.notifications.set({primaryPattern: 'http://localhost:12396/*', scope: 'regular', setting: 'allow'})`,绕开 Chromium 的 QuietNotificationPrompts 永久 block(连续 3 次忽略后该 origin 的弹框被永久抑制,`requestPermission()` 直接返回 `denied`)。该机制是 `EdgeBootstrapExtension` 写盘 manifest.json + content.js + **background.js** 三件套的一部分(见 §4.3)
 
 ---
 
@@ -264,10 +265,10 @@ payload.properties   → properties(包含 sessionID / info.title / parentID / s
 
 ### 6.2 端口与协议
 
-| 服务                 | 端口/位置                      | 协议                                                                 |
-| -------------------- | ------------------------------ | -------------------------------------------------------------------- |
-| OpenCode CLI(server) | **12396**(冲突时升级)          | HTTP + SSE                                                           |
-| Edge 浏览器          | 系统 Microsoft Edge 进程(独立) | `open -na "Microsoft Edge" --args --app=<url>` 或 `--app=<url>` 回退 |
+| 服务                 | 端口/位置                          | 协议                                                                 |
+| -------------------- | ---------------------------------- | -------------------------------------------------------------------- |
+| OpenCode CLI(server) | **12396**(端口固定,冲突时直接报错) | HTTP + SSE                                                           |
+| Edge 浏览器          | 系统 Microsoft Edge 进程(独立)     | `open -na "Microsoft Edge" --args --app=<url>` 或 `--app=<url>` 回退 |
 
 ### 6.3 关闭策略(详见 `DESIGN.md §3.3`)
 

@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Edge extension background service worker(notification 预置 allow)**: 新增 `src/main/resources/edge-extension/background.js`(MV3 service worker),Edge 启动时主动调 `chrome.contentSettings.notifications.set({primaryPattern: 'http://localhost:12396/*', scope: 'regular', setting: 'allow'})`,绕开 Chromium 的 `QuietNotificationPrompts` 永久 block(连续 3 次忽略后该 origin 的弹框被永久抑制,`requestPermission()` 直接返回 `denied`)。`manifest.json` 加 `permissions: ["contentSettings"]` + `background.service_worker: "background.js"`;`EdgeBootstrapExtension.prepare()` 加 `BACKGROUND_JS` 写盘逻辑(镜像现有 MANIFEST / CONTENT_JS 模式)。
+
+### Changed
+
+- **端口固定 12396,不再升级(M2-T1 升级版)**: `ServerProcessLauncher.startServerSingleflight` 移除 `MAX_ESCALATION_DEPTH` 端口升级递归,health gate 检测到端口被其他 IDE 占用时改为 `killProcessTreeByHandle + onFailed`(不再递归升级)。原因: Edge extension 的 `background.js` / `manifest.json` + `MyToolWindow.buildOpenUrl()` 均硬编码 `http://localhost:12396`,端口升级会引入 notification 预置 allow 错位 + Edge 连不上 server 的新失败模式。`DESIGN.md §1.2` 决策表 / `SPEC.md §4.4` / `SPEC.md §6.2` / `AGENTS.md` UNIQUE STYLES 同步更新。
+
+## [2.0.1] - 2026-07-18
+
 ### Changed
 
 - **浏览器切换为 Microsoft Edge**:`OpenCodeBrowserLauncher` 移除 Google Chrome / Brave Browser fallback,只支持 Edge。`pickBrowser()` 检查 `/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge`;`launch()` 用 `open -na "Microsoft Edge" --args --app=<url> [--load-extension=<extDir>]`。**原因**:Chrome 150+ stable 静默忽略 `--load-extension=` flag(实测 `WARNING:chrome/browser/extensions/extension_service.cc:420] --load-extension is not allowed in Google Chrome, ignoring`),导致 plugin 端 Chrome extension 注入失效;Edge 150+ 接受该 flag 且对 unpacked extension 兼容性更好
@@ -35,6 +45,7 @@
 
 - Initial scaffold created from [IntelliJ Platform Plugin Template](https://github.com/JetBrains/intellij-platform-plugin-template)
 
-[Unreleased]: https://github.com/syllr/intellij-opencode-web/compare/2.0.0...HEAD
+[Unreleased]: https://github.com/syllr/intellij-opencode-web/compare/2.0.1...HEAD
+[2.0.1]: https://github.com/syllr/intellij-opencode-web/compare/2.0.0...2.0.1
 [2.0.0]: https://github.com/syllr/intellij-opencode-web/compare/1.0.0...2.0.0
 [1.0.0]: https://github.com/syllr/intellij-opencode-web/commits/1.0.0
