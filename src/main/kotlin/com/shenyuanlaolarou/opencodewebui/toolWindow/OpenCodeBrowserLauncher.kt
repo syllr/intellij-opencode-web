@@ -1,6 +1,7 @@
 package com.shenyuanlaolarou.opencodewebui.toolWindow
 
 import com.intellij.openapi.diagnostic.thisLogger
+import com.shenyuanlaolarou.opencodewebui.OPENCODE_PORT
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
@@ -41,22 +42,6 @@ object OpenCodeBrowserLauncher {
      */
     fun pickBrowser(): String? {
         return EDGE_BINARY.takeIf { File(it).canExecute() }
-    }
-
-    /**
-     * 验证 `opencode` CLI 在 PATH 中。
-     *
-     * @return 找到 opencode 返回 true,否则返回 false
-     */
-    fun verifyOpenCodeOnPath(): Boolean {
-        return try {
-            val proc = ProcessBuilder(listOf("which", "opencode"))
-                .redirectErrorStream(true)
-                .start()
-            proc.waitFor(2, TimeUnit.SECONDS) && proc.exitValue() == 0
-        } catch (_: Exception) {
-            false
-        }
     }
 
     /**
@@ -153,12 +138,9 @@ object OpenCodeBrowserLauncher {
      * @param extensionDir (可选) unpacked Edge extension 目录;为 null 时不加载 extension
      *   (侧栏 add project 功能降级,但 Edge 仍能打开)。`null` 不会 throw,只是 no-op。
      * @return 使用回退路径时返回 Edge 进程 PID;主路径 `open` 不可追踪 PID 返回 null
-     * @throws IllegalStateException Edge 未安装或 opencode CLI 缺失
+     * @throws IllegalStateException Edge 未安装
      */
     fun launch(url: String, extensionDir: File? = null, userDataDir: File? = null): Long? {
-        require(verifyOpenCodeOnPath()) {
-            "opencode CLI not on PATH; install via `brew install opencode-ai`"
-        }
         val edge = pickBrowser()
             ?: throw IllegalStateException(
                 "Microsoft Edge not found at $EDGE_BINARY. " +
@@ -204,6 +186,120 @@ object OpenCodeBrowserLauncher {
             val proc = ProcessBuilder(buildProcessBuilderCommand(edge, url, null, userDataDir)).start()
             log.info("[OpenCodeBrowserLauncher] Launched Edge without extension (manifest missing, fallback): $url")
             proc.pid()
+        }
+    }
+
+    /**
+     * 检查指定 Edge --app 主进程是否有 renderer 子进程。
+     *
+     * 这是区分"窗口活跃"vs"zombie 残留"的关键信号:
+     * - Chromium 在 window 关闭时会销毁 WebContents → 销毁 renderer 进程
+     * - 但主进程残留( macOS app lifecycle 不跟随 window 生命周期)
+     * - 所以 renderer 子进程数 > 0 = 真有可见窗口;= 0 = 窗口已关(僵尸)
+     *
+     * 设计决策(fail-safe):
+     * - 检测异常 → 返回 true(宁可"误报活跃"也不"漏报活跃"——漏报会导致开重复窗口)
+     *
+     * @return true 有 renderer 子进程(窗口活跃)或检测异常;false 无 renderer(僵尸)
+     */
+    private fun hasRendererChild(pid: Long): Boolean {
+        return try {
+            // 拿 Edge 主进程的所有子 PID
+            val pg = ProcessBuilder("pgrep", "-P", pid.toString()).start()
+            val childPids = pg.inputStream.bufferedReader().readLines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            if (!pg.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                pg.destroyForcibly()
+                log.warn("[OpenCodeBrowserLauncher] hasRendererChild: pgrep -P $pid timeout")
+                return true  // fail-safe
+            }
+
+            // 对每个子进程,查 args 是否含 --type=renderer
+            for (childPid in childPids) {
+                val ps = ProcessBuilder("ps", "-p", childPid, "-o", "args=").start()
+                val args = ps.inputStream.bufferedReader().readText()
+                if (!ps.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                    ps.destroyForcibly()
+                    log.warn("[OpenCodeBrowserLauncher] hasRendererChild: ps -p $childPid timeout")
+                    return true  // fail-safe
+                }
+                if (args.contains("--type=renderer")) return true
+            }
+            false
+        } catch (e: Exception) {
+            log.warn("[OpenCodeBrowserLauncher] hasRendererChild failed: ${e.message}")
+            true  // fail-safe: 宁可误报活跃,不开重复窗口
+        }
+    }
+
+    /**
+     * 检查 Edge 是否已开过指定项目路径的活跃窗口。
+     *
+     * 实现链路:
+     * 1. `pgrep -f "MacOS/Microsoft Edge .*--app=http"` → 找所有 Edge --app 主进程
+     * 2. `ps -p PID -o args=` → 提取 `--app=<URL>` → base64 decode 路径段 → 匹配 projectPath
+     * 3. [P5 zombie fix] `hasRendererChild()` 二次验证 → 区分活跃窗口 vs zombie 残留
+     *   - 没有 renderer 子进程 → zombie(用户关过窗口但主进程残留) → 跳过,允许重新打开
+     *   - 有 renderer 子进程 → 活跃窗口 → return true
+     *
+     * 设计决策(fail-safe):
+     * - 任何检测异常 → return false(宁可"误报无窗口"也不"误报有窗口"——
+     *   Edge 自己能处理重复 launch,用户体验是"多开一个窗口",比"永远开不了窗口"好)
+     *
+     * @return true 找到该项目活跃窗口;false 无活跃窗口或检测异常
+     */
+    internal fun hasEdgeWindowOpen(projectPath: String): Boolean {
+        if (projectPath.isBlank()) return false
+        return try {
+            val projectPathB64 = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(projectPath.toByteArray(StandardCharsets.UTF_8))
+
+            // 1. 找所有 Edge --app 主进程
+            val pg = ProcessBuilder("pgrep", "-f", "MacOS/Microsoft Edge .*--app=http").start()
+            val pids = pg.inputStream.bufferedReader().readLines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            if (!pg.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                pg.destroyForcibly()
+                log.warn("[OpenCodeBrowserLauncher] hasEdgeWindowOpen: pgrep timeout")
+                return false
+            }
+            if (pids.isEmpty()) return false
+
+            // 2. 对每个 PID 解析 --app URL,匹配 projectPath
+            for (pid in pids) {
+                val ps = ProcessBuilder("ps", "-p", pid, "-o", "args=").start()
+                val argsLine = ps.inputStream.bufferedReader().readText()
+                if (!ps.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                    ps.destroyForcibly()
+                    log.warn("[OpenCodeBrowserLauncher] hasEdgeWindowOpen: ps -p $pid timeout")
+                    continue
+                }
+
+                // 提取 --app=<URL>(到下一个空格)
+                val match = Regex("""--app=(\S+)""").find(argsLine) ?: continue
+                val url = match.groupValues[1]
+
+                // URL 格式:http://localhost:12396/<base64dir>[/session/<id>]
+                // <base64dir> 是 URL path 第二段(取到第一个 / 或字符串末尾)
+                val afterHost = url.substringAfter("localhost:$OPENCODE_PORT/")
+                val pathSegment = afterHost.substringBefore("/")
+                if (pathSegment != projectPathB64) continue
+
+                // 3. [P5 zombie fix] 二次验证 renderer 子进程
+                // pgrep 拿到的是字符串,需要转 Long
+                val pidLong = pid.toLongOrNull() ?: continue
+                if (!hasRendererChild(pidLong)) {
+                    log.info("[OpenCodeBrowserLauncher] hasEdgeWindowOpen: PID=$pid matches project but is zombie (no renderer), skipping")
+                    continue
+                }
+                return true
+            }
+            false
+        } catch (e: Exception) {
+            log.warn("[OpenCodeBrowserLauncher] hasEdgeWindowOpen failed: ${e.message}")
+            false  // fail-safe: 让用户尝试 launch
         }
     }
 }
