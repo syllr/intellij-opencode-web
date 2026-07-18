@@ -51,6 +51,7 @@ class CopyAsPromptAction : AnAction() {
 
         val clipboard = Toolkit.getDefaultToolkit().systemClipboard
         clipboard.setContents(StringSelection(formattedContent), null)
+        selectionModel.removeSelection()
     }
 
     override fun update(e: AnActionEvent) {
