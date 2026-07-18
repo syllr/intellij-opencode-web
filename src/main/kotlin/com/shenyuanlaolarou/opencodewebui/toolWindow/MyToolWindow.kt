@@ -1,5 +1,8 @@
 package com.shenyuanlaolarou.opencodewebui.toolWindow
 
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
+import com.intellij.notification.Notifications
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -65,6 +68,10 @@ class MyToolWindow(
     private val stopButton = JButton("Stop").apply { isEnabled = false }
     private val restartButton = JButton("Restart").apply { isEnabled = true }
     private val cleanNewSessionsButton = JButton("Clean Empty").apply { isEnabled = false }
+
+    // CAS 守卫:防止快速连点 session 导致多次 launch(Backgroundable 在后台线程执行 1.5s sleep,
+    // 期间用户可能再点 → 第二个 Backgroundable 也会 launch)
+    private val isLaunchingEdge = java.util.concurrent.atomic.AtomicBoolean(false)
 
     init {
         MyToolWindowFactory.myToolWindowInstances[project] = this
@@ -438,26 +445,71 @@ class MyToolWindow(
         return row
     }
 
-    private fun launchEdgeForSession(sessionId: String) {
+private fun launchEdgeForSession(sessionId: String) {
         val edgeMissing = OpenCodeBrowserLauncher.checkEdgeInstalled()
         if (edgeMissing != null) {
             log.warn("[Dashboard] Edge not installed, showing install dialog")
             Messages.showErrorDialog(project, edgeMissing, "Microsoft Edge Required")
             return
         }
+        val basePath = project.basePath ?: ""
+
+        // 复用检查:如果该项目 Edge --app 窗口已活跃(renderer > 0),弹通知告知用户,不重复创建
+        // 重要:不弹 dialog(阻塞用户),用 BALLOON 轻量通知
+        if (basePath.isNotEmpty() && OpenCodeBrowserLauncher.hasEdgeWindowOpen(basePath)) {
+            log.info("[Dashboard] Edge window already active for project=$basePath, showing notification (skip launch)")
+            val notification = NotificationGroupManager.getInstance()
+                .getNotificationGroup("com.shenyuanlaolarou.opencodewebui.OpenCodeWeb")
+                .createNotification(
+                    "OpenCode Window Already Open",
+                    "The OpenCode Web UI window for this project is already running. " +
+                            "Check your existing Edge window instead of opening a new one.",
+                    NotificationType.INFORMATION
+                )
+            Notifications.Bus.notify(notification, project)
+            return
+        }
+
+        // CAS 守卫:已经在 launch 中则跳过。Backgroundable 后台 sleep 1.5s 期间用户可能连点
+        if (!isLaunchingEdge.compareAndSet(false, true)) {
+            log.info("[Dashboard] Edge launch already in progress, skipping duplicate click")
+            return
+        }
+
         val url = buildOpenUrl(sessionId)
-        val extDir = runCatching { EdgeBootstrapExtension.prepare(project.basePath ?: "") }
+        val extDir = runCatching { EdgeBootstrapExtension.prepare(basePath) }
             .onFailure { log.warn("[Dashboard] ext prepare failed: ${it.message}") }
             .getOrNull()
 
-        val projectHash = EdgeBootstrapExtension.hash(project.basePath ?: "")
+        val projectHash = EdgeBootstrapExtension.hash(basePath)
         val profilesRoot = File(System.getProperty("user.home"), ".config/opencode-web-ui/edge-profiles")
         val userDataDir = File(profilesRoot, "$projectHash/user-data")
         runCatching { userDataDir.mkdirs() }
             .onFailure { log.warn("[Dashboard] mkdirs failed for $userDataDir: ${it.message}") }
 
-        runCatching { OpenCodeBrowserLauncher.launch(url, extDir, userDataDir) }
-            .onFailure { log.warn("[Dashboard] Edge launch failed: ${it.message}") }
+        // 包 Backgroundable 让用户看到 "Opening session..." 进度(和 stopButton / restartButton 同样的模式)
+        // 固定 sleep 1.5s 让进度条明显停留 — launch 本身 ~100ms,如果不主动停留用户感知不到任何反馈
+        ProgressManager.getInstance().run(object : Backgroundable(project, "Opening session in Edge", true) {
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                indicator.text = "Launching Microsoft Edge..."
+                try {
+                    runCatching { OpenCodeBrowserLauncher.launch(url, extDir, userDataDir) }
+                        .onFailure {
+                            log.warn("[Dashboard] Edge launch failed: ${it.message}")
+                        }
+                    // 固定停留 1.5s — 让进度条明显可见,同时 Edge --app 窗口正在创建
+                    try {
+                        Thread.sleep(1500)
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    }
+                } finally {
+                    // 释放 CAS 锁,允许下次 launch
+                    isLaunchingEdge.set(false)
+                }
+            }
+        })
     }
 
     private fun timeAgo(epochMillis: Long?): String {
