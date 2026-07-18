@@ -10,7 +10,7 @@ import java.lang.reflect.Method
 object IdeaVimIntegration {
     private val logger = thisLogger()
 
-    // 每次 AddToPromptAction.actionPerformed 触发 ~10 次 Class.forName + getMethod;
+    // 每次 CopyAsPromptAction.actionPerformed 触发 ~10 次 Class.forName + getMethod;
     // 用 lazy + runCatching 缓存 Method/Field/Constructor 引用,首次解析后命中。
     // "动态卸载" caveat:IdeaVim 运行时卸载会拿到 stale handle → 抛异常被外层 catch,
     // 安全降级为 null/false,符合现有契约。
