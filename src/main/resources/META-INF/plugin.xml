@@ -23,5 +23,9 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow factoryClass="com.shenyuanlaolarou.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
+        <notificationGroup id="com.shenyuanlaolarou.opencodewebui.OpenCodeWeb"
+                           displayType="BALLOON"
+                           bundle="messages.MyBundle"
+                           key="notification.OpenCodeWindowAlreadyOpen"/>
     </extensions>
 </idea-plugin>
