@@ -134,6 +134,10 @@ object OpenCodeBrowserLauncher {
     /**
      * 用 Microsoft Edge App Mode (`--app=<url>`) 启动 OpenCode Web UI,复用用户日常 profile。
      *
+     * `verifyOpenCodeOnPath()` 故意不调用 — opencode CLI 可用性由 `OpenCodeServerManager.startServer`
+     * 在启动 server 时独立验证(若 CLI 缺失会直接报错),浏览器 launch 是独立的"开窗口"操作,
+     * 不应耦合 CLI 检查。否则 launch 会被一个本可由 server manager 处理的预检阻塞。
+     *
      * @param url OpenCode Web UI URL(来自 [buildUrl])
      * @param extensionDir (可选) unpacked Edge extension 目录;为 null 时不加载 extension
      *   (侧栏 add project 功能降级,但 Edge 仍能打开)。`null` 不会 throw,只是 no-op。
@@ -214,19 +218,17 @@ object OpenCodeBrowserLauncher {
                 log.warn("[OpenCodeBrowserLauncher] hasRendererChild: pgrep -P $pid timeout")
                 return true  // fail-safe
             }
+            if (childPids.isEmpty()) return false  // 无子进程 → 无 renderer → zombie
 
-            // 对每个子进程,查 args 是否含 --type=renderer
-            for (childPid in childPids) {
-                val ps = ProcessBuilder("ps", "-p", childPid, "-o", "args=").start()
-                val args = ps.inputStream.bufferedReader().readText()
-                if (!ps.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
-                    ps.destroyForcibly()
-                    log.warn("[OpenCodeBrowserLauncher] hasRendererChild: ps -p $childPid timeout")
-                    return true  // fail-safe
-                }
-                if (args.contains("--type=renderer")) return true
+            // 批量 ps -p 一次拿所有子进程的 args(O(1) 进程启动 vs O(N))
+            val ps = ProcessBuilder("ps", "-p", childPids.joinToString(","), "-o", "pid,args=").start()
+            val output = ps.inputStream.bufferedReader().readText()
+            if (!ps.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                ps.destroyForcibly()
+                log.warn("[OpenCodeBrowserLauncher] hasRendererChild: ps -p batch timeout")
+                return true  // fail-safe
             }
-            false
+            output.contains("--type=renderer")
         } catch (e: Exception) {
             log.warn("[OpenCodeBrowserLauncher] hasRendererChild failed: ${e.message}")
             true  // fail-safe: 宁可误报活跃,不开重复窗口
