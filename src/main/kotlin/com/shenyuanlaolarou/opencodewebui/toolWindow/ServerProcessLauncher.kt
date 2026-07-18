@@ -10,8 +10,6 @@ import com.intellij.openapi.progress.Task.Backgroundable
 import com.intellij.openapi.project.Project
 import java.util.concurrent.CompletableFuture
 
-private const val MAX_ESCALATION_DEPTH = 5
-
 /**
  * singleflight:同一时刻只允许一个 Backgroundable 任务真启进程。
  * 后续调用 follower 用 [CompletableFuture.whenComplete] 异步等待 leader 结果。
@@ -19,12 +17,16 @@ private const val MAX_ESCALATION_DEPTH = 5
  * 关键不变量:
  * - leader 一定在 [Backgroundable.run] 内部 complete future + release 槽位
  * - leader panic 也会被 try-catch 捕获走 onFailed,finally 块保证 release
+ *
+ * **端口固定 12396,不支持升级** — Edge extension(`background.js` / `manifest.json`)
+ * + `MyToolWindow.buildOpenUrl()` 均硬编码 `http://localhost:12396`(URL path 通配符),
+ * 端口升级会引入 notification 预置 allow 错位 + Edge 连不上 server 的新失败模式。
+ * M2-T1 health gate 改为只检测 + 报错(冲突时让用户先关其他 IDE 实例),不递归升级。详见 SPEC §6.2。
  */
 internal fun OpenCodeServerManager.startServerSingleflight(
     project: Project,
     onStarted: () -> Unit,
     onFailed: (Exception) -> Unit,
-    depth: Int = 0,
     port: Int = PORT
 ) {
     val mgr = this
@@ -62,27 +64,19 @@ internal fun OpenCodeServerManager.startServerSingleflight(
                 val healthy = OpenCodeApi.waitForServerHealthy(SERVER_START_TIMEOUT_MS)
 
                 if (healthy) {
-                    // M2-T1 health gate:验证 server 是否服务于当前项目
-                    // 多 IDE 同端口碰撞检测（HIGH D race 防御）
+                    // M2-T1 health gate: 端口被占且服务于不同项目时直接 onFailed(不升级端口)
                     val dirResult = OpenCodeApi.getHealthDirectory(port)
                     val serverDir = dirResult.dataOrNull()
                     if (serverDir != null && serverDir != project.basePath) {
-                        // 端口上的 server 属于不同项目 → 清理并自动升级端口重试
                         mgr.killProcessTreeByHandle(process)
                         mgr.serverProcess.set(null)
-                        if (depth < MAX_ESCALATION_DEPTH) {
-                            thisLogger().warn(
-                                "[OpenCodeServerManager] Port $port serves dir '$serverDir'," +
-                                    " expected '${project.basePath}'." +
-                                    " Escalating to port ${port + 1} (depth=$depth)."
-                            )
-                            startServerSingleflight(project, onStarted, onFailed, depth + 1, port + 1)
-                            return
-                        }
                         val e = Exception(
-                            "OpenCode server on port $port is serving $serverDir," +
-                                " not ${project.basePath}. Max escalation depth reached."
+                            "OpenCode server on port $port is serving '$serverDir'," +
+                                " not '${project.basePath}'." +
+                                " Port 12396 is fixed (Edge extension hardcodes localhost:12396);" +
+                                " close the other OpenCode instance or stop its server first."
                         )
+                        thisLogger().warn("[OpenCodeServerManager] $e")
                         onFailed(e)
                         future.completeExceptionally(e)
                         return
