@@ -88,21 +88,18 @@ console.log("[opencode-web-ext] FILE LOADED", new Date().toISOString(), "origin=
 
   console.log("[opencode-web-ext] BOOTSTRAP + PATCH installed at", new Date().toISOString());
 
-  // === Edge 窗口 title 改为项目名(替代默认 "OpenCode")===
+  // === Edge 窗口 title 改为当前 IntelliJ 项目的绝对路径(替代默认 "OpenCode")===
+  // 用全路径而非 basename:不同项目 base name 可能撞名(例如两个项目都叫 "helloworld"),
+  // 用户在多窗口间切换时全路径能唯一区分哪个窗口对应哪个项目。
   // Edge --app 模式缓存 initial <title> textContent 作为窗口 title,直接 document.title setter
   // 修改不更新窗口。改方案:documentElement-level MutationObserver (覆盖任何位置/任何方式的
   // title 修改) + setInterval 200ms 兜底(处理 Observer 漏掉的 React/Next.js 异步修改)。
-  function basenameOfPath(p) {
-    if (!p) return null;
-    const parts = p.split("/").filter(Boolean);
-    return parts.length ? parts[parts.length - 1] : null;
-  }
-  const projectBaseName = basenameOfPath(PROJECT_PATH) || "OpenCode";
+  const projectTitle = PROJECT_PATH || "OpenCode";
 
   function overrideTitle() {
     const titleEl = document.querySelector("title");
-    if (titleEl && titleEl.textContent !== projectBaseName) {
-      titleEl.textContent = projectBaseName;
+    if (titleEl && titleEl.textContent !== projectTitle) {
+      titleEl.textContent = projectTitle;
     }
   }
 
@@ -113,10 +110,10 @@ console.log("[opencode-web-ext] FILE LOADED", new Date().toISOString(), "origin=
     new MutationObserver(function (mutations) {
       for (const m of mutations) {
         for (const node of m.addedNodes) {
-          if (node.nodeName === "TITLE") node.textContent = projectBaseName;
+          if (node.nodeName === "TITLE") node.textContent = projectTitle;
         }
         if (m.type === "characterData" && m.target.nodeName === "TITLE") {
-          m.target.textContent = projectBaseName;
+          m.target.textContent = projectTitle;
         }
       }
     }).observe(root, { childList: true, characterData: true, subtree: true });
