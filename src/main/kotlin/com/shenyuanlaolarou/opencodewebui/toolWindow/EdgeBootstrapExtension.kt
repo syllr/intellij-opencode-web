@@ -22,7 +22,6 @@ object EdgeBootstrapExtension {
     private const val RESOURCE_DIR = "edge-extension"
     private const val MANIFEST = "manifest.json"
     private const val CONTENT_JS = "content.js"
-    private const val PLACEHOLDER = "__PROJECT_BASE_PATH__"
     private const val TMP_PREFIX = "opencode-web-ext-"
 
     /**
@@ -64,8 +63,7 @@ object EdgeBootstrapExtension {
 
         try {
             File(targetDir, MANIFEST).writeText(manifestSrc, StandardCharsets.UTF_8)
-            val replaced = contentSrc.replace(PLACEHOLDER, escapeForJsStringLiteral(projectBasePath))
-            File(targetDir, CONTENT_JS).writeText(replaced, StandardCharsets.UTF_8)
+            File(targetDir, CONTENT_JS).writeText(contentSrc, StandardCharsets.UTF_8)
         } catch (e: Exception) {
             log.warn("[EdgeBootstrapExtension] write ext files failed: ${e.message}")
             return null
@@ -89,30 +87,6 @@ object EdgeBootstrapExtension {
         val sb = StringBuilder(8)
         for (i in 0 until 4) {
             sb.append(String.format("%02x", bytes[i]))
-        }
-        return sb.toString()
-    }
-
-    /**
-     * 把 path 字符串安全嵌入 JS 单引号字符串字面量。
-     * - 反斜杠 -> \\
-     * - 单引号 -> \\'
-     * - 换行 -> \\n (path 不该有但防意外)
-     * - 控制字符 -> \\xHH
-     */
-    private fun escapeForJsStringLiteral(input: String): String {
-        val sb = StringBuilder(input.length + 8)
-        for (ch in input) {
-            when {
-                ch == '\\' -> sb.append("\\\\")
-                ch == '\'' -> sb.append("\\'")
-                ch == '"' -> sb.append("\\\"")
-                ch == '\n' -> sb.append("\\n")
-                ch == '\r' -> sb.append("\\r")
-                ch == '\t' -> sb.append("\\t")
-                ch.code < 0x20 -> sb.append(String.format("\\x%02x", ch.code))
-                else -> sb.append(ch)
-            }
         }
         return sb.toString()
     }
