@@ -493,9 +493,9 @@ class MyToolWindow(
         runCatching { userDataDir.mkdirs() }
             .onFailure { log.warn("[Dashboard] mkdirs failed for $userDataDir: ${it.message}") }
 
-        // 包 Backgroundable 让用户看到 "Opening session..." 进度(和 stopButton / restartButton 同样的模式)
+        // 包 Backgroundable 让用户看到 "Opening OpenCode Web" 进度(和 stopButton / restartButton 同样的模式)
         // 固定 sleep 1.5s 让进度条明显停留 — launch 本身 ~100ms,如果不主动停留用户感知不到任何反馈
-        ProgressManager.getInstance().run(object : Backgroundable(project, "Opening session in Edge", true) {
+        ProgressManager.getInstance().run(object : Backgroundable(project, "Opening OpenCode Web", true) {
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 indicator.text = "Launching Microsoft Edge..."
