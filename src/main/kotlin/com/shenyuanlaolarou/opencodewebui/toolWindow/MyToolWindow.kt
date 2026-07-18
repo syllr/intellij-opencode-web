@@ -445,7 +445,7 @@ class MyToolWindow(
         return row
     }
 
-private fun launchEdgeForSession(sessionId: String) {
+    private fun launchEdgeForSession(sessionId: String) {
         val edgeMissing = OpenCodeBrowserLauncher.checkEdgeInstalled()
         if (edgeMissing != null) {
             log.warn("[Dashboard] Edge not installed, showing install dialog")
@@ -454,25 +454,31 @@ private fun launchEdgeForSession(sessionId: String) {
         }
         val basePath = project.basePath ?: ""
 
+        // CAS 守卫必须放在 hasEdgeWindowOpen 之前 — 否则两次快速点击都会各自跑完 pgrep+ps 扫描
+        // (每次 ~200ms),只靠 finally 释放锁时已经开了第二个窗口。CAS 提前 → 第二次点击直接走 false 分支
+        if (!isLaunchingEdge.compareAndSet(false, true)) {
+            log.info("[Dashboard] Edge launch already in progress, skipping duplicate click")
+            return
+        }
+
         // 复用检查:如果该项目 Edge --app 窗口已活跃(renderer > 0),弹通知告知用户,不重复创建
         // 重要:不弹 dialog(阻塞用户),用 BALLOON 轻量通知
         if (basePath.isNotEmpty() && OpenCodeBrowserLauncher.hasEdgeWindowOpen(basePath)) {
             log.info("[Dashboard] Edge window already active for project=$basePath, showing notification (skip launch)")
-            val notification = NotificationGroupManager.getInstance()
-                .getNotificationGroup("com.shenyuanlaolarou.opencodewebui.OpenCodeWeb")
-                .createNotification(
-                    "OpenCode Window Already Open",
-                    "The OpenCode Web UI window for this project is already running. " +
-                            "Check your existing Edge window instead of opening a new one.",
-                    NotificationType.INFORMATION
-                )
-            Notifications.Bus.notify(notification, project)
-            return
-        }
-
-        // CAS 守卫:已经在 launch 中则跳过。Backgroundable 后台 sleep 1.5s 期间用户可能连点
-        if (!isLaunchingEdge.compareAndSet(false, true)) {
-            log.info("[Dashboard] Edge launch already in progress, skipping duplicate click")
+            try {
+                val notification = NotificationGroupManager.getInstance()
+                    .getNotificationGroup("com.shenyuanlaolarou.opencodewebui.OpenCodeWeb")
+                    .createNotification(
+                        "OpenCode Window Already Open",
+                        "The OpenCode Web UI window for this project is already running. " +
+                                "Check your existing Edge window instead of opening a new one.",
+                        NotificationType.INFORMATION
+                    )
+                Notifications.Bus.notify(notification, project)
+            } finally {
+                // 命中活跃窗口时也要释放锁(后续 launch 流程不再跑)
+                isLaunchingEdge.set(false)
+            }
             return
         }
 
@@ -498,11 +504,21 @@ private fun launchEdgeForSession(sessionId: String) {
                         .onFailure {
                             log.warn("[Dashboard] Edge launch failed: ${it.message}")
                         }
-                    // 固定停留 1.5s — 让进度条明显可见,同时 Edge --app 窗口正在创建
-                    try {
-                        Thread.sleep(1500)
-                    } catch (e: InterruptedException) {
-                        Thread.currentThread().interrupt()
+                    // 1.5s 进度条停留 — 拆成 100ms 切片,期间检查 isCanceled 提前释放 CAS 锁
+                    var remaining = 1500L
+                    while (remaining > 0) {
+                        if (indicator.isCanceled) {
+                            log.info("[Dashboard] Edge launch cancelled by user")
+                            return
+                        }
+                        val slice = minOf(100L, remaining)
+                        try {
+                            Thread.sleep(slice)
+                        } catch (e: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            return
+                        }
+                        remaining -= slice
                     }
                 } finally {
                     // 释放 CAS 锁,允许下次 launch
