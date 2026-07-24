@@ -167,6 +167,7 @@ object OpenCodeBrowserLauncher {
         return try {
             val openProc = ProcessBuilder(buildOpenCommand(url, extensionDir, userDataDir)).start()
             openProc.waitFor(2, TimeUnit.SECONDS)
+            activateEdgeWindow()
             log.info("[OpenCodeBrowserLauncher] Launched Edge in --app mode via `open -na` (PID untrackable, daily profile reused, extension=${extensionDir?.absolutePath ?: "none"}, userDataDir=${userDataDir?.absolutePath ?: "none"}): $url")
             null
         } catch (_: Exception) {
@@ -178,12 +179,30 @@ object OpenCodeBrowserLauncher {
     }
 
     /**
+     * 把 Edge --app 窗口拉前台,保证 web 内容接收键盘焦点(Cmd+T/N 路由到 web 而非主 Edge 窗口)。
+     * 用 `osascript` 调 NSApplication activate,比 launchctl 之类的方法轻量。
+     * 失败不抛 — 激活失败最多回到原来的行为。
+     */
+    private fun activateEdgeWindow() {
+        try {
+            val r = ProcessBuilder(
+                "osascript",
+                "-e",
+                "tell application \"Microsoft Edge\" to activate",
+            ).redirectErrorStream(true).start()
+            r.waitFor(1, TimeUnit.SECONDS)
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
      * ext 不可用时的降级路径(直接调 launch 但传 null)。内部 helper 避免重复校验逻辑。
      */
     private fun launchWithoutExtension(url: String, edge: String, userDataDir: File? = null): Long? {
         return try {
             val openProc = ProcessBuilder(buildOpenCommand(url, null, userDataDir)).start()
             openProc.waitFor(2, TimeUnit.SECONDS)
+            activateEdgeWindow()
             log.info("[OpenCodeBrowserLauncher] Launched Edge without extension (manifest missing): $url")
             null
         } catch (_: Exception) {
