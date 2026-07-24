@@ -18,7 +18,9 @@ data class SessionInfo(
     val id: String,
     val title: String?,
     val parentID: String?,
-    val timeCreated: Long?
+    val timeCreated: Long?,
+    val summaryAdditions: Int? = null,
+    val summaryDeletions: Int? = null,
 )
 
 object OpenCodeApi {
@@ -112,11 +114,14 @@ object OpenCodeApi {
         return httpGet(url) { body ->
             val obj = JsonParser.parseString(body).asJsonObject
             val time = obj.getAsJsonObject("time")
+            val summary = obj.get("summary")?.takeIf { it.isJsonObject }?.asJsonObject
             SessionInfo(
                 id = obj.get("id")?.asString ?: sessionID,
                 title = obj.get("title")?.asString,
                 parentID = obj.get("parentID")?.asString,
                 timeCreated = time?.get("created")?.asLong,
+                summaryAdditions = summary?.get("additions")?.asInt,
+                summaryDeletions = summary?.get("deletions")?.asInt,
             )
         }
     }
@@ -139,11 +144,14 @@ object OpenCodeApi {
                 if (title.isBlank()) return@mapNotNull null
                 if (title.startsWith("New session - ", ignoreCase = true)) return@mapNotNull null
                 val timeObj = obj.getAsJsonObject("time")
+                val summary = obj.get("summary")?.takeIf { it.isJsonObject }?.asJsonObject
                 SessionInfo(
                     id = obj.get("id")?.asString ?: "",
                     title = title,
                     parentID = null,
                     timeCreated = timeObj?.get("created")?.asLong,
+                    summaryAdditions = summary?.get("additions")?.asInt,
+                    summaryDeletions = summary?.get("deletions")?.asInt,
                 )
             }
         }
@@ -199,13 +207,15 @@ object OpenCodeApi {
                 val obj = element.asJsonObject
                 if (obj.has("parentID") && !obj.get("parentID").isJsonNull) return@mapNotNull null
                 val title = obj.get("title")?.asString ?: return@mapNotNull null
-                if (title.isBlank()) return@mapNotNull null
                 val timeObj = obj.getAsJsonObject("time")
+                val summary = obj.get("summary")?.takeIf { it.isJsonObject }?.asJsonObject
                 SessionInfo(
                     id = obj.get("id")?.asString ?: "",
                     title = title,
                     parentID = null,
                     timeCreated = timeObj?.get("created")?.asLong,
+                    summaryAdditions = summary?.get("additions")?.asInt,
+                    summaryDeletions = summary?.get("deletions")?.asInt,
                 )
             }
         }
