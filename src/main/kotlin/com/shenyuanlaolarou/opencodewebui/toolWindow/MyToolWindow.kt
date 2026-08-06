@@ -67,6 +67,7 @@ class MyToolWindow(
 
     private val stopButton = JButton("Stop").apply { isEnabled = false }
     private val restartButton = JButton("Restart").apply { isEnabled = true }
+    private val cliButton = JButton("CLI").apply { toolTipText = "Configure opencode CLI absolute path" }
 
     // CAS 守卫:防止快速连点 session 导致多次 launch(Backgroundable 在后台线程执行 1.5s sleep,
     // 期间用户可能再点 → 第二个 Backgroundable 也会 launch)
@@ -94,6 +95,7 @@ class MyToolWindow(
         root.add(buildControlPanel(), BorderLayout.SOUTH)
 
         wireActions()
+        updateCliTooltip()
         refreshStatus()
         refreshSessions()
         wireSseStatusCallbacks()
@@ -146,12 +148,56 @@ class MyToolWindow(
 
     private fun buildControlPanel(): JPanel {
         val panel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        panel.add(cliButton)
         panel.add(stopButton)
         panel.add(restartButton)
         return panel
     }
 
+    /** 让 CLI 按钮的 tooltip 反映当前是否已配置路径（配置了则显示路径值） */
+    private fun updateCliTooltip() {
+        val configured = OpenCodeCliPathConfig.get()
+        cliButton.toolTipText = if (configured.isBlank()) {
+            "Configure opencode CLI absolute path"
+        } else {
+            "Configure opencode CLI absolute path (current: $configured)"
+        }
+    }
+
+    /** 保存成功后的轻量通知：提示新路径需 Restart 才生效 */
+    private fun notifyCliPathSaved(newPath: String) {
+        val display = newPath.ifBlank { "default (PATH lookup)" }
+        val notification = NotificationGroupManager.getInstance()
+            .getNotificationGroup("com.shenyuanlaolarou.opencodewebui.OpenCodeWeb")
+            .createNotification(
+                "OpenCode CLI Path Saved",
+                "CLI path set to: $display.\nClick Restart to apply the change to the running server.",
+                NotificationType.INFORMATION
+            )
+        Notifications.Bus.notify(notification, project)
+    }
+
     private fun wireActions() {
+        cliButton.addActionListener {
+            val dialog = CliPathDialog(project, OpenCodeCliPathConfig.get())
+            if (dialog.showAndGet()) {
+                val newPath = dialog.cliPath
+                val saveResult = runCatching { OpenCodeCliPathConfig.set(newPath) }
+                if (saveResult.isSuccess) {
+                    updateCliTooltip()
+                    log.info("[Dashboard] OpenCode CLI path configured: ${newPath.ifBlank { "<use PATH>" }}")
+                    notifyCliPathSaved(newPath)
+                } else {
+                    log.warn("[Dashboard] Failed to save OpenCode CLI path: ${saveResult.exceptionOrNull()?.message}")
+                    Messages.showErrorDialog(
+                        project,
+                        "Failed to save the CLI path. Check write permission for " +
+                                "~/.config/opencode-web-ui/config.json.",
+                        "OpenCode CLI Path"
+                    )
+                }
+            }
+        }
         stopButton.addActionListener {
             applyStatus(ServerStatus.Stopping)
             ProgressManager.getInstance().run(object : Backgroundable(project, "Stopping OpenCode Server", true) {

@@ -151,7 +151,14 @@ internal fun OpenCodeServerManager.pipeToLogger(process: Process, prefix: String
 }
 
 internal fun OpenCodeServerManager.getOpenCodeCommand(port: Int = PORT): List<String> {
-    // 使用 zsh login mode (-l) 启动 opencode
+    // 用户通过 Dashboard 的 CLI 按钮配置了绝对路径 → 直接执行该二进制
+    // 不走 shell：绝对路径无需 PATH，也避免路径拼接进命令串的注入风险
+    val configured = OpenCodeCliPathConfig.get()
+    if (configured.isNotBlank()) {
+        thisLogger().debug("[OpenCodeServerManager] Using configured CLI path: $configured")
+        return listOf(configured, "serve", "--hostname", HOST, "--port", port.toString())
+    }
+    // 默认：使用 zsh login mode (-l) 启动 opencode
     // -l 会加载用户的 .zshrc，确保 PATH 包含 Homebrew/NVM 等路径
     // 这样 opencode 命令才能被正确找到
     // source ~/.zshrc 确保 $PATH 包含 nvm/volta 等环境管理器的路径
