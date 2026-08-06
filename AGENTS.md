@@ -74,6 +74,8 @@ IntelliJ Platform 插件 (Kotlin)，为 OpenCode Web UI 提供 JetBrains IDE 集
 | IdeaVim visual 模式选区(反射缓存)                  | `utils/IdeaVimIntegration.kt`                                                                                   |
 | 复制为 Prompt 格式                                 | `actions/CopyAsPromptAction.kt`(M1-T5 合并 `AddToPromptAction` 后)                                              |
 | 端口/超时/间隔常量(端口 12396)                     | `OpenCodeConstants.kt`(M2-T1 加 `HEALTH_VERIFY_TIMEOUT_MS = 500L`)                                              |
+| CLI 路径配置读写 + 校验(应用级全局 config.json)    | `toolWindow/OpenCodeCliPathConfig.kt`(存储 `~/.config/opencode-web-ui/config.json` 的 `cliPath` key)            |
+| CLI 路径配置对话框(文本框 + Browse + 校验)         | `toolWindow/CliPathDialog.kt`(DialogWrapper;`doValidate` 阻止非法路径保存)                                      |
 
 ## HARD RULES
 

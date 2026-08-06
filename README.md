@@ -118,6 +118,12 @@ OpenCodeWeb 是一款 JetBrains IDE（IntelliJ IDEA、PyCharm、WebStorm 等）�
 
 如需修改，请确保 OpenCode CLI 使用相同的端口和主机启动。
 
+**配置 OpenCode CLI 绝对路径**：Dashboard 底部控制区（Stop / Restart 旁）的 `CLI` 按钮可配置 opencode 可执行文件的绝对路径（支持 `Browse…` 文件选择器，输入时校验必须是存在的可执行文件）。配置保存在 `~/.config/opencode-web-ui/config.json`（应用级全局，所有项目共享）：
+
+- 配置了路径 → 启动 server 时直接执行该绝对路径（不依赖 PATH）
+- 留空保存 → 清除配置，恢复默认 PATH 查找
+- 修改配置后需点击 **Restart** 重启 server 才会生效
+
 ## 故障排除
 
 **问题：插件无法找到 opencode 命令**
@@ -125,6 +131,7 @@ OpenCodeWeb 是一款 JetBrains IDE（IntelliJ IDEA、PyCharm、WebStorm 等）�
 - 确保 OpenCode CLI 已正确安装
 - 确保 opencode 可执行文件在系统的 PATH 环境变量中
 - 在终端中运行 `opencode --version` 验证安装
+- 或点击 Dashboard 的 `CLI` 按钮，直接配置 opencode 可执行文件的绝对路径（不依赖 PATH）
 
 **问题：服务启动失败**
 
