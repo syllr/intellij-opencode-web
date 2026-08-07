@@ -151,17 +151,17 @@ internal fun OpenCodeServerManager.pipeToLogger(process: Process, prefix: String
 }
 
 internal fun OpenCodeServerManager.getOpenCodeCommand(port: Int = PORT): List<String> {
-    // 用户通过 Dashboard 的 CLI 按钮配置了绝对路径 → 直接执行该二进制
-    // 不走 shell：绝对路径无需 PATH，也避免路径拼接进命令串的注入风险
     val configured = OpenCodeCliPathConfig.get()
-    if (configured.isNotBlank()) {
+    val binary = if (configured.isNotBlank()) {
         thisLogger().debug("[OpenCodeServerManager] Using configured CLI path: $configured")
-        return listOf(configured, "serve", "--hostname", HOST, "--port", port.toString())
+        // 单引号包裹 + 内部单引号用 '\'' 转义,消除 shell 拼接注入面
+        "'" + configured.replace("'", "'\\''") + "'"
+    } else {
+        "opencode"
     }
-    // 默认：使用 zsh login mode (-l) 启动 opencode
-    // -l 会加载用户的 .zshrc，确保 PATH 包含 Homebrew/NVM 等路径
-    // 这样 opencode 命令才能被正确找到
+    // 统一走 zsh login shell:加载 ~/.zshrc 的环境变量(PATH 含 nvm/node 等)。
+    // 即使配置了绝对路径也必须加载环境 — opencode 内部用 npx 启动 MCP 时
+    // 依赖 PATH 里的 node/npx,macOS GUI 应用的受限 PATH 会导致其启动失败。
     // source ~/.zshrc 确保 $PATH 包含 nvm/volta 等环境管理器的路径
-    // macOS app 环境下 zsh -l 加载的 PATH 可能不完整
-    return listOf("/bin/zsh", "-l", "-c", "source ~/.zshrc && opencode serve --hostname $HOST --port $port")
+    return listOf("/bin/zsh", "-l", "-c", "source ~/.zshrc && $binary serve --hostname $HOST --port $port")
 }
