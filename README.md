@@ -120,7 +120,7 @@ OpenCodeWeb 是一款 JetBrains IDE（IntelliJ IDEA、PyCharm、WebStorm 等）�
 
 **配置 OpenCode CLI 绝对路径**：Dashboard 底部控制区（Stop / Restart 旁）的 `CLI` 按钮可配置 opencode 可执行文件的绝对路径（支持 `Browse…` 文件选择器，输入时校验必须是存在的可执行文件）。配置保存在 `~/.config/opencode-web-ui/config.json`（应用级全局，所有项目共享）：
 
-- 配置了路径 → 启动 server 时直接执行该绝对路径（不依赖 PATH）
+- 配置了路径 → 启动 server 时使用该绝对路径（不再依赖 PATH 查找 opencode，环境变量仍按 login shell 完整加载，MCP 的 npx 依赖不受影响）
 - 留空保存 → 清除配置，恢复默认 PATH 查找
 - 修改配置后需点击 **Restart** 重启 server 才会生效
 
