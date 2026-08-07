@@ -37,6 +37,7 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.SwingUtilities
 import javax.swing.SwingWorker
 import javax.swing.border.EmptyBorder
 
@@ -69,6 +70,9 @@ class MyToolWindow(
     private val restartButton = JButton("Restart").apply { isEnabled = true }
     private val cliButton = JButton("CLI").apply { toolTipText = "Configure opencode CLI absolute path" }
 
+    /** Dashboard 根面板:CLI 配置对话框关闭后收回键盘焦点 */
+    private lateinit var rootPanel: JPanel
+
     // CAS 守卫:防止快速连点 session 导致多次 launch(Backgroundable 在后台线程执行 1.5s sleep,
     // 期间用户可能再点 → 第二个 Backgroundable 也会 launch)
     private val isLaunchingEdge = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -88,6 +92,9 @@ class MyToolWindow(
 
     private fun buildPanel(): JPanel {
         val root = JPanel(BorderLayout(0, 8))
+        rootPanel = root
+        // 设为可聚焦:CLI 配置对话框关闭后用于收回键盘焦点(默认 JPanel 不可聚焦)
+        root.isFocusable = true
         root.border = EmptyBorder(12, 12, 12, 12)
 
         root.add(buildHeaderPanel(), BorderLayout.NORTH)
@@ -197,6 +204,8 @@ class MyToolWindow(
                     )
                 }
             }
+            // 模态对话框关闭后焦点会返还给 CLI 按钮;主动移回 Dashboard 主面板,避免焦点卡在按钮
+            SwingUtilities.invokeLater { rootPanel.requestFocusInWindow() }
         }
         stopButton.addActionListener {
             applyStatus(ServerStatus.Stopping)
