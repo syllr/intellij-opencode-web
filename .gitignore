@@ -12,7 +12,6 @@ local.properties
 .opencode.json
 .playwright-mcp/
 .sisyphus/
-.github/
 .omo/
 
 # JVM fatal error logs (HS_ERR_* generated when JVM crashes)

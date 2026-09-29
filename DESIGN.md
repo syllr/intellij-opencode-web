@@ -1,521 +1,213 @@
-# DESIGN.md — IntelliJ OpenCode Web 插件设计文档
+# DESIGN.md — Copy as Prompt 设计文档
 
-> **本文档定位**:项目级**架构设计**文档,描述当前生产系统的设计决策、关键机制与组件关系。
+> **本文档定位**:项目级**架构设计文档**。定义"如何实现"，不重复"必须满足什么"（那在 `SPEC.md`）。
 >
-> **三元组关系**:
->
-> - `AGENTS.md` — **How to develop**(开发宪法、流程规则、踩坑经验)
-> - `DESIGN.md` — **How it's built**(架构设计、组件关系、关键决策)—— 本文档
-> - `SPEC.md` — **What it must do**(系统级行为规范、SLA、安全契约、数据不变量)
->
-> **范围**:聚焦**插件整体架构**,包括 SSE 消费、通知路由、subagent 追踪、进程管理。
+> **阅读顺序**:`AGENTS.md` → `SPEC.md` → `DESIGN.md`
 
 ---
 
-## 0. 项目背景与子系统地图
+## 0. 项目概述
 
-### 0.1 项目概述
+一个约 350 行的 JetBrains IDE 插件（2 个 action），把 IDE 信息格式化成 prompt 文本写入剪贴板。
 
-**IntelliJ OpenCode Web 插件**是 JetBrains IDE(2026.1+)的插件,**自启** opencode 子进程并通过外部 **Microsoft Edge --app 模式**展示 OpenCode Web UI。Dashboard 显示 server 状态 + 3 控制按钮(Stop / Restart / Reset)+ sessions 列表(点击行直接 Edge 打开),所有通知由 OpenCode Web UI 自身接管。v2.0.2 起只支持 Edge(原 Chrome 路径移除)。
+**设计目标**（按优先级）：
 
-核心能力(v2.0.0 起):
+1. **零外部依赖** — 不联网、不起进程、不读配置文件
+2. **零打扰** — 复制是同步动作，不弹通知 / dialog / 进度条
+3. **格式可被完整测试** — 输出格式是纯函数，单测直接断言字符串
+4. **诊断来源必须是"用户看到的那一份"** — 不额外触发一次分析，采集 daemon 已有结果
 
-- 工具窗口(右侧边栏)显示 **Swing Dashboard**(server 状态 / 项目路径 / 端口+SSE 健康 / 4 控制按钮 / sessions 列表 / +New Session)
-- 点击 Dashboard session 列表行调 `OpenCodeBrowserLauncher`(M1-T2)在外部 Microsoft Edge 窗口展示 OpenCode Web UI(v2.0.2 起只支持 Edge)
-- Plugin **自启** opencode 子进程(M0-T1 cwd 热修复:`ProcessBuilder.directory = project.basePath`)
-- 多 IDE 同端口冲突时 health gate 验证 `directory` 字段(M2-T1),**冲突时直接 onFailed**(端口固定 12396 不再升级 — Edge extension `background.js` / `manifest.json` + `MyToolWindow.buildOpenUrl()` 硬编码 12396,升级会引入 notification 预置 allow 错位 + Edge 连不上 server 的新失败模式)
-- SSE 消费 opencode server 事件,驱动 file/refresh + bash 工具检测
-- 文件变更检测同步 IDE VFS 刷新(`FullRefreshCoordinator`)
-- Bash 工具执行检测,决定是否触发 VFS 刷新
-- IdeaVim visual 模式选区支持(`IdeaVimIntegration`)
-- Copy as Prompt(选中代码 → 系统剪贴板)
-- Go-style Singleflight 防抖,合并重复点击的服务器启动请求
-- **v2.0.0+ 完全拆除**:JCEF 浏览器(`BrowserPanel` 等 6 文件)、in-IDE 通知 UI(`OpenCodeNotificationService.kt` + `OpenCodeNotificationRouter.kt` 整删,SSE 通知事件从白名单移除)、JCEF 键盘拦截、AddToPrompt action
+---
 
-### 0.2 子系统清单
-
-| 子系统         | 路径                                 | 角色                                                                                                |
-| -------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| **toolWindow** | `toolWindow/`                        | 工具窗口(Dashboard) + 服务器进程启停 + Singleflight + Edge --app 启动器(6 文件)                     |
-| **listeners**  | `listeners/`                         | SSE 事件消费 + 文件刷新协调(4 文件)                                                                 |
-| **actions**    | `actions/`                           | IDE Actions:Copy as Prompt(1 文件)                                                                  |
-| **utils**      | `utils/`                             | HTTP API、IdeaVim 集成、SSE consumer 工厂(4 文件;v2.0.0+ 通知 service/router/OpenCodeConfig 已整删) |
-| **根**         | `OpenCodeConstants.kt` `MyBundle.kt` | 端口/超时/间隔常量 + i18n                                                                           |
-
-> **历史**: v2.0.0 起 6 个 JCEF 源文件整删(`BrowserPanel` / `JcefKeyboardInterceptor` / `EmacsKeyHandler` / `LinkContextMenuHandler` / `JcefJsInjector` / `ResizeObserverThrottler`)+ 1 个 action(`AddToPromptAction`)+ 1 个偏离 launcher(`CleanBrowserLauncher`)+ 1 个偏离 action(`OpenInBrowserAction`)。`HealthMonitor.kt` 已在 commit `2e7b302`(Part D)整删;`settings/OpenCodeConfigurable.kt` + `OpenCodeProjectActivity.kt` 分别在 commit `a5eafc4`(1.0.20)和 `95d7faf`(HEAD 之前)整删。
-
-### 0.3 部署拓扑
+## 1. 分两层
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│                      JetBrains IDE(单进程)                          │
-│                                                                    │
-│  ┌──────────────┐    ┌──────────────────┐                            │
-│  │  ToolWindow  │───▶│ OpenCodeSSECons- │──┬─▶ FullRefreshCoord(文件) │
-│  │  (Dashboard, │    │ umer(每 Project   │  └─▶ BashCommandHandler   │
-│  │   纯 Swing)  │    │  一个实例)        │                            │
-│  │              │    └──────────────────┘                            │
-│  │  ┌────────┐  │              │                                      │
-│  │  │Open   │  │              │ (dashboard 状态由 SSE 回调驱动)     │
-│  │  │in Edge│  │              ▼                                      │
-│  │  │(sessions 列表行)│  ┌──────────────────┐                        │
-│  │  └────────┘  │    │ OpenCodeNotifi-  │ (no-op 桩)                  │
-│  └──────────────┘    │ cationRouter →  │                              │
-│         │             │ Service.send() │                              │
-│         ▼             └──────────────────┘                              │
-│  OpenCodeBrowserLauncher                                                 │
-│         │                                                                 │
-│         │  spawn 外部 Edge 进程                                          │
-│         ▼                                                                 │
-│  ┌──────────────────┐                                                    │
-│  │  Edge --app=URL │ (复用用户日常 profile,无 --user-data-dir)            │
-│  │  - OpenCode Web UI │                                                  │
-│  │  - 浏览器原生通知  │                                                    │
-│  └──────────────────┘                                                    │
-│         │                                                                 │
-│         ▼                                                                 │
-│         用户                                                              │
-│                                                                    │
-│         IDE 进程内(单 JBR 运行时)                                   │
-└──────────────┬─────────────────────────────────────────────────────┘
-                │ HTTP + SSE  (127.0.0.1:12396/event?directory=<path>)
-                ▼
-┌────────────────────────────────────────┐
-│      OpenCode CLI 进程(PLUGIN 自启)    │
-│      - cwd = project.basePath (M0-T1)  │
-│      - HTTP /global/health             │
-│      - SSE  /event?directory=...        │
-│      - POST /global/dispose            │
-│      - GET  /session/:id               │
-└────────────────────────────────────────┘
+src/main/kotlin/com/shenyuanlaolarou/copyasprompt/
+├── format/
+│   └── PromptFormat.kt        ← 纯函数：格式化规则（唯一实现处）
+└── actions/
+    ├── CopyAsPromptAction.kt      ← 平台接线：选区
+    ├── CopyDiagnosticsAction.kt   ← 平台接线：诊断
+    └── EditorPromptContext.kt     ← 平台 API → 纯数据的转换
 ```
 
-**关键事实**:
+| 层        | 允许                                          | 禁止                          | 测试方式                       |
+| --------- | --------------------------------------------- | ----------------------------- | ------------------------------ |
+| `format/` | 字符串操作                                    | 平台 import、IO、环境变量     | 纯 JUnit 4（秒级）             |
+| `actions/`| 平台 API（PSI、Editor、MarkupModel、剪贴板）  | 字符串格式化                  | `BasePlatformTestCase`（慢）   |
 
-- IDE 进程、OpenCode CLI 进程、Edge 浏览器进程是**三个独立进程**
-- IDE ↔ CLI 通过 localhost:12396 通信(端口固定,冲突时直接报错 — 见 §1.2 决策表)
-- CLI ↔ Edge 通过 `http://localhost:12396/<base64path>/session/...` URL
-- Edge 进程与 IDE 进程**生命周期独立** — 关闭 IDE **不**自动 kill Edge 窗口
-- 每 Project 一个 `OpenCodeSSEConsumer` 实例(`SSEConsumerFactory.create(project)`),v2.0.0+ in-IDE 通知拆除后,per-instance 状态仅余 `eventSourceRef` / `connectionGen` / `lastEventAt` / `lastHeartbeatAt`
-- OpenCode CLI 启动方式: `/bin/zsh -l -c "source ~/.zshrc && opencode serve --hostname 127.0.0.1 --port 12396"`(M0-T1 修 cwd = `project.basePath`,为加载用户 `.zshrc` 中的 PATH;用户可通过 Dashboard 的 `CLI` 按钮配置绝对路径覆盖此启动方式,见 §1.2 决策表)
+**为什么这层边界最重要**: 输出格式是本插件唯一的对外契约（用户会把它贴进既有对话上下文，格式突变会让历史 prompt 不一致）。把格式做成纯函数，意味着**改格式的成本 = 改一个函数 + 改断言**，不需要启动 IDE、不需要构造 `AnActionEvent`。
 
 ---
 
-## 1. 架构核心决策
+## 2. 关键决策
 
-### 1.1 核心矛盾(已解决)
+### 决策 1:诊断来源用 document 级 markup model(不是重跑 inspection)
 
-| 矛盾                                        | 解决方案                                                                                |
-| ------------------------------------------- | --------------------------------------------------------------------------------------- |
-| 单 IDE 实例多 Project 打开,SSE 事件如何隔离 | 每 Project 独立 `OpenCodeSSEConsumer` 实例,经 `SSEConsumerFactory.create(project)` 获取 |
-| OpenCode 进程可能崩溃,IDE 必须能清理        | `OpenCodeServerManager` 4 阶段关闭策略(§3.2)                                            |
-| HTTP 调用阻塞 SSE 事件分发                  | 1h TTL `SessionInfoCache` + 3 级 fallback 字段提取                                      |
+**问题**: 怎么拿到"当前文件的错误/警告"？
 
-### 1.2 关键决策
+候选方案：
 
-| 决策                        | 方案                                                                                                                                                                                                                                                                                                                                                                       | 收益                                                                                                        |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **三进程隔离**              | IDE / OpenCode CLI / Edge 三个独立进程,通过 localhost + URL 通信                                                                                                                                                                                                                                                                                                           | 故障隔离 + 利用 OpenCode + 利用系统 Edge(无 JCEF OSR 性能问题)                                              |
-| **Edge --app 模式**         | `OpenCodeBrowserLauncher` 用 `open -na "Microsoft Edge" --args --app=<url>` 启动(回退 `ProcessBuilder --app=<url>`),窗口只剩 page content,无 tab/address/menu                                                                                                                                                                                                              | 60Hz+ 原生渲染 + 不丢 localStorage 缓存 + 不污染用户日常 Edge                                               |
-| **项目隔离 Edge profile**   | 启动参数含 `--user-data-dir=~/.config/opencode-web-ui/edge-profiles/$projectHash/user-data/`(SHA-256 项目 hash 前 8 字符),与日常 Edge profile 隔离(commit `327c6c2` 由"日常 profile 复用"改为"项目隔离 profile";`--disable-sync` 必传防 Edge Sync 把已登录账号广播到新 profile,见 AGENTS.md 硬约束)                                                                        | 跨 project 上下文不串 + localStorage 持久化 + 跨 IDE 升级不丢                                               |
-| **SSE 复用**                | 复用单个 `/event?directory=<path>` SSE 连接消费所有事件(文件 + bash),连接按 project 路径分流                                                                                                                                                                                                                                                                               | 一个连接处理所有事件类型                                                                                    |
-| **每 Project 一 consumer**  | 通过 `SSEConsumerFactory.create(project)` 单例工厂创建独立 consumer(全局 SSE 连接由 `OpenCodeApi.createEventSource(directory)` 按目录路径建立)                                                                                                                                                                                                                             | 多项目状态隔离 + 简化协调                                                                                   |
-| **Dashboard 替代 JCEF**     | `MyToolWindow` 重写为纯 Swing 6 区面板(server 状态 / 项目路径 / 端口+SSE 健康 / 3 控制按钮 / sessions 列表)                                                                                                                                                                                                                                                                | 避免 JCEF OSR 卡顿(物理限制无法配置)+ headless / 无 Edge 环境仍能跑                                         |
-| **手动启动 + Singleflight** | Go-style `Singleflight.kt` leader/follower 模式 + `MyToolWindow.isServerReadyHandled` CAS 守卫拦截重复 `onServerReady` 回调                                                                                                                                                                                                                                                | 并发/重复点击合并为单次进程启动                                                                             |
-| **in-IDE 通知 UI 砍掉**     | v2.0.0+ `OpenCodeNotificationService.kt` + `OpenCodeNotificationRouter.kt` 整删,SSE 通知事件从白名单移除,OpenCodeSSEConsumer 的 `dispatchNotification` / `handleSessionIdle` / `sessionTitles` / `idleNotifiedSessions` / `subagentSessionIds` 通知抑制代码全部删除,通知由 OpenCode server / Web UI 自身接管                                                               | 减少 IDE 端维护负担 + 通知 UI 与 Web UI 自然一致                                                            |
-| **自启 opencode server**    | Dashboard Start 按钮触发 `OpenCodeServerManager.startServer()`,`ServerProcessLauncher.startOpenCodeProcess(project)` cwd = `project.basePath`                                                                                                                                                                                                                              | 端到端用户体验:点 Start → 几秒后 OpenCode Web UI 可用                                                       |
-| **Port 冲突直接报错**       | health gate 验证 `/global/health.directory == project.basePath`,不匹配时 kill 进程 + `onFailed` 让用户关其他 IDE 实例(M2-T1 升级版)。端口固定 12396 不再升级 — Edge extension `background.js` / `manifest.json` 硬编码 `http://localhost:12396/*`,`MyToolWindow.buildOpenUrl()` 同样硬编码 12396,升级会引入 notification 预置 allow 错位 + Edge 连不上 server 的新失败模式 | 多 IDE 端口冲突时给用户明确错误,而不是"默默错位"                                                            |
-| **配置存储**                | 统一 JSON 配置文件 `~/.config/opencode-web-ui/config.json`(Gson 读写,`OpenCodeCliPathConfig`)。**推翻**早期 `PropertiesComponent` 决策(原方案从未落地,代码库零 PropertiesComponent 使用):CLI 路径需跨项目共享且生命周期独立于 IDE(与 Edge profile `edge-profiles/` 同目录),JSON 文件直观可读、无 IDE 状态依赖。当前仅 `cliPath` 一个 key,写走「读-改-写」保留其他 key      | 跨项目共享 + 不依赖 IDE 生命周期 + 用户可手动查看/编辑                                                      |
-| **进程启动**                | 统一 zsh login shell(`-l -c "source ~/.zshrc && <binary> serve..."`)。`config.json` 配置了 `cliPath` 时 `<binary>` 为**单引号转义**的绝对路径,否则为 `opencode`。**必须**走 shell 加载 login 环境 — opencode 内部用 npx 启动 MCP 依赖 PATH 中的 node/npx,macOS GUI 应用的受限 PATH 会导致 MCP 启动失败(实测踩坑,见 AGENTS.md 反模式)                                       | 加载用户 `.zshrc` 中的 PATH 确保 opencode 与 MCP(npx/node)均可找到;配置路径时不依赖 PATH 查找 opencode 本身 |
-| **HTTP 客户端**             | `java.net.http.HttpClient` by lazy 共享(无 OkHttp 依赖)                                                                                                                                                                                                                                                                                                                    | JDK 内置,自动 keep-alive 连接池                                                                             |
-| **工厂解耦**                | `SSEConsumerFactory.create(project)` 单例工厂                                                                                                                                                                                                                                                                                                                              | 工具类 `toolWindow` → `listeners` 依赖单向,无循环引用                                                       |
+| 方案                                              | 结论                                                                    |
+| ------------------------------------------------- | ----------------------------------------------------------------------- |
+| `DaemonCodeAnalyzerImpl.getHighlights(...)`       | ❌ 带 **`@TestOnly`** 注解，生产代码不可用                              |
+| 自己跑一遍 `InspectionManager` 的 inspection      | ❌ 慢（秒级）、会重复 daemon 的工作、还会引入"跑全项目分析"的对话框      |
+| 读 editor 的 `editor.markupModel`                 | ❌ **读不到**——daemon 不往这里放（实测得到空列表，且不报错，静默失败）   |
+| 读 document 级 `DocumentMarkupModel`              | ✅ 采用                                                                 |
 
-### 1.3 设计原则
-
-1. **职责单一**:每个类只做一件事(消费 / 路由 / 发送 / 存储)
-2. **副作用最小化**:SSE 事件处理纯函数化,只在需要时触发副作用
-3. **可降级**:HTTP 调用失败 → 占位符模板;SSE 断开 → 自动重连;进程崩溃 → 4 阶段关闭
-4. **可观测**:所有关键路径都有 `thisLogger()` 日志(INFO/WARN/ERROR/DEBUG),DEBUG 日志在生产关闭时零开销(`isDebugEnabled` 守卫)
-
----
-
-## 2. 关键子系统
-
-### 2.1 `OpenCodeServerManager`(全局单例 `object`)
-
-**职责**:opencode 子进程的生命周期管理 + SSE consumer 单例管理。
-
-**状态字段**(全部用 `AtomicReference` / `AtomicBoolean` / `@Volatile` ):
+采用路径：
 
 ```kotlin
-object OpenCodeServerManager {
-    private val serverProcess: AtomicReference<Process?>
-    @Volatile private var sseConsumer: OpenCodeSSEConsumer?
-    private val consumerProjectRef: AtomicReference<WeakReference<Project>?>
-    private val shutdownInProgress: AtomicBoolean
+val markup = DocumentMarkupModel.forDocument(document, project, false) as? MarkupModelEx
+markup.processRangeHighlightersOverlappingWith(0, document.textLength) { highlighter ->
+    val info = HighlightInfo.fromRangeHighlighter(highlighter) // 内部读 getErrorStripeTooltip()
+    if (info != null && info.severity >= HighlightSeverity.WARNING) infos += info
+    true
 }
 ```
 
-**关键方法**:
+这条路径是**平台自己用的**：`HighlightInfoUpdaterImpl` 里的 `getInfosFromMarkup` 就是遍历 document 级模型 + `HighlightInfo.fromRangeHighlighter`。我们与平台保持一致。
 
-- `startServer(project, onStarted, onFailed)`:异步启 opencode + 等健康 + 创建 SSE consumer
-- `ensureSSEConsumer(project)`:获取或创建 SSE consumer(单例),处理多项目
-- `disposeForProject(project)`:项目关闭时清理(只在属于该 project 时停止)
-- `stopServer()`:IDE 退出时关闭(`serverProcess` 引用路径)
-- `shutdownServer()`:用户手动 Shutdown(`findProcessByPort` 路径)
-- 共享 `gracefulShutdown(acquireHandle, killFallback, errorTag)`:两个关闭路径共享
+三个实践约束：
 
-### 2.2 `OpenCodeSSEConsumer`(BackgroundEventHandler)
+1. `processRangeHighlightersOverlappingWith` 的 processor **在 MarkupModel 锁内执行**：只允许"过滤 + 入列"，禁止格式化 / IO / 改模型。所以先收集 `HighlightInfo`，出了 processor 再做行号、消息、排序等计算。
+2. `HighlightInfo.fromRangeHighlighter` 读的是 `getErrorStripeTooltip()`，因此**只有 daemon 生成的高亮能被还原**；编辑器里其它高亮（搜索命中、引用高亮、symbol type 提示）自动被排除，不需要额外过滤。
+3. `forDocument(..., create = false)`：只读已存在的容器，不为只读操作创建平台对象。
 
-**职责(v2.0.0+)**:消费 SSE 事件流,按事件类型分发给:**文件刷新**(Bash 工具完成 + 文件 watcher 事件)+ **心跳健康信号**。**每 Project 一个实例**,per-instance 状态仅余 `eventSourceRef` / `connectionGen` / `lastEventAt` / `lastHeartbeatAt`(in-IDE 通知 v2.0.0+ 完全拆除)。
+### 决策 2:严重级别用 `>= WARNING` 阈值而不是枚举白名单
 
-**事件分发架构**(v2.0.0+ 在 `onMessage()` 中,白名单 5 事件):
+平台上同一位置会注册多种高亮：诊断（ERROR/WARNING）+ 非诊断（`SYMBOL_TYPE_SEVERITY` 等）。用 `severity >= HighlightSeverity.WARNING` 一个条件就同时完成"过滤非诊断"和"分级映射"：
 
 ```
-onMessage(event, messageEvent)
-    │
-    ├── 1. SSEEventParser.parse() → ParsedSSEEvent
-    │      (非白名单事件 parser 早退,parsedMap=null,直接丢弃)
-    │
-    ├── 2. dedup 检查 (payload.id)
-    │
-    ├── 3. eventType = payload.type ?: return
-    │
-    ├── 4. server.heartbeat → lastHeartbeatAt = now (健康信号)
-    │
-    ├── 5. 文件事件处理
-    │      message.part.updated              → BashCommandHandler
-    │      session.diff                      → FullRefreshCoordinator(绕过 debounce)
-    │      file.edited / file.watcher.updated → FullRefreshCoordinator
-    │
-    └── 6. project.basePath == null 跳过刷新
+>= ERROR   → ERROR
+>= WARNING → WARNING
+其余        → 丢弃
 ```
 
-> v2.0.0+ 白名单: `message.part.updated` / `session.diff` / `file.edited` / `file.watcher.updated` / `server.heartbeat`(`session.idle` / `session.status` / `permission.asked` / `question.asked` / `session.created` / `session.updated` / `message.updated` 等通知事件在白名单外,parser 早退)。
+好处：插件自定义 severity（第三方 inspection 注册的 ERROR 级 severity）也能被正确分类，不需要维护白名单。
 
-### 2.3 `SSEEventParser`(object)
+### 决策 3:诊断范围是整个文件,不跟随选区
 
-**职责**:解析 SSE 事件 JSON,统一为 `ParsedSSEEvent`。v2.0.0+ 白名单仅 5 事件(`message.part.updated` / `session.diff` / `file.edited` / `file.watcher.updated` / `server.heartbeat`),其他事件在 `parse()` 早退,不走全量 Gson 反序列化;`extractSessionID()` / `extractParentID()` / `extractTitle()` 扩展函数(in-IDE 通知相关)已删除。
+诊断天然是文件级信息。按选区裁剪会出现"我明明选中有错误的这段，为什么只列了 1 条"的困惑，而**少给信息**比**多给信息**在这个场景下代价更高（用户看到多余的一条会自己忽略，看不到需要的一条则会得出错误结论）。
 
-新 wire 格式(`/event?directory=...` 端点)直出 `{id, type, properties}` 三键,无外层包装,故只需在 `properties.*` 路径内做 3 级 fallback。**已废弃**:旧 wire 格式的 `data.*` / `syncEvent.aggregateID` 路径不再使用(代码 grep 0 命中)。
+### 决策 4:路径优先相对项目根
 
-完整字段位置解释见 `SSEEventParser.kt:21-43` 的 KDoc。
+绝对路径（`/Users/xxx/IdeaProjects/foo/src/Bar.kt`）把本机目录结构带进 prompt，分享出去是噪音；相对路径（`src/Bar.kt`）更短且对 agent 同样无歧义（工作目录就是项目根）。文件不在项目内时（如外部库、scratch 文件）回退绝对路径——此时相对路径无意义。
 
-**`parse()` 高频事件快速路径**(`message.part.delta` 跳过 Map 转换):节省每事件 ~2-5KB 对象分配。
+### 决策 5:代码围栏带语言标识
 
-### 2.4 ~ 2.6 ~~in-IDE 通知模块~~(v2.0.0+ 完全拆除)
+` ```kotlin ` 让渲染端做语法高亮，也让 agent 少一次猜测。取自 PSI 语言 id 并转小写（平台的 id 多为首字母大写，如 `JAVA`）。
 
-`OpenCodeNotificationRouter` / `OpenCodeNotificationService` / `OpenCodeConfig.notificationEnabled` 等 IDE 端通知代码已**完全删除**:
+### 决策 6:剪贴板直接用 AWT,不用平台 `CopyPasteManager`
 
-- `utils/OpenCodeNotificationRouter.kt` + `utils/OpenCodeNotificationService.kt` 整文件删除
-- `OpenCodeSSEConsumer.onMessage()` 的通知事件分发(`permission.asked` / `question.asked` / `session.idle` / `session.status`)和 idle 抑制逻辑(`sessionTitles` / `idleNotifiedSessions` / `subagentSessionIds`)全部删除
-- SSE 事件白名单从 12 缩到 5(`message.part.updated` / `session.diff` / `file.edited` / `file.watcher.updated` / `server.heartbeat`),通知事件在 parser 早退
-- 通知由 OpenCode server / Web UI 自己处理(浏览器原生 Notifications API / 系统通知)
+与系统其它应用行为一致（纯文本 `StringSelection`）。`CopyPasteManager` 会带上平台的内部/富文本剪贴板语义，粘贴到浏览器输入框时可能带格式。
 
-### 2.7 `MyToolWindowFactory`(ToolWindowFactory)
+### 决策 7:不用 `object` 单例,不引入 i18n
 
-**职责(v2.0.0 起)**:工具窗口入口,创建纯 Swing **Dashboard 面板**(`MyToolWindow.getContent()`),不再持有 JCEF 浏览器。
+两个 action 都无状态（每次调用从 `AnActionEvent` 取数据），不需要单例。文案硬编码在 `plugin.xml`：只有 2 个菜单项，为两个字符串维护 bundle 文件 + `DynamicBundle` 不划算。
 
-**Dashboard 6 区**(详见 `MyToolWindow.kt`):
+### 决策 8:版本从 0.1.0 起步,插件 id 与包名一致
 
-1. Server 状态指示(running/stopped/error + 颜色)
-2. 项目路径 + git branch
-3. 端口 + SSE 健康标签(`$OPENCODE_PORT ($OPENCODE_HOST)  正常  SSE 已连接`)
-4. 3 控制按钮:Stop / Restart / Reset(不再有"Open in Edge"按钮,点击 sessions 列表行直接 Edge 打开)
-5. Recent sessions 列表
-6. - New Session 按钮
-
-**手动焦点恢复**:`createToolWindowContent()` 不注册任何自动焦点监听(从 v1.x `FocusAdapter` + `ToolWindowManagerListener` 全部移除,见 `commits 95d7faf + 9a959ea`)。JCEF 焦点卡死问题因 v2.0.0 砍掉 JCEF 已**自动消解**。`resetToolWindow()` 仍保留为 public/internal 工具方法,供 Dashboard 的 Reset 按钮或将来扩展触发(目前 Dashboard 的 Reset 按钮只重置 UI 状态,未走 hide+activate 路径)。
+这是**新插件**（新 Marketplace 页面、新仓库），不是老 `opencode-web-ui` 的续作，因此版本线与 id 都另起：`com.shenyuanlaolarou.copyasprompt` / `0.1.0`。
 
 ---
 
-## 3. 关键时序
+## 3. 关键流程
 
-### 3.1 启动时序
-
-```
-用户点击 IDE 侧边栏 OpenCode 图标
-    │
-    ▼
-MyToolWindowFactory.createToolWindowContent()
-    │  - 创建 MyToolWindow (Dashboard, 纯 Swing 6 区面板)
-    │  - addContent 到 ToolWindow
-    │
-    ▼
-Dashboard "Start OpenCode Server" 按钮(或 onCreated 触发 — 当前 Dashboard 启动不自动启)
-    │
-    ▼
-OpenCodeServerManager.startServer(project, onStarted, onFailed)
-    │
-    ├─ health gate (M2-T1,只检测不升级)
-    │   OpenCodeApi.getHealthDirectory(port) → directory == project.basePath?
-    │   ├─ yes → reuse existing server on this port
-    │   └─ no  → kill process + onFailed(让用户关其他 IDE 实例;端口固定 12396)
-    │
-    ├─ Backgroundable task:
-    │   │
-    │   ├─ OpenCodeApi.isServerHealthySync() on the chosen port
-    │   │   ├─ true  → reuse running server → ensureSSEConsumer
-    │   │   └─ false → startOpenCodeProcess(project)  (M0-T1 cwd = project.basePath)
-    │   │             │
-    │   │             └─ /bin/zsh -l -c "source ~/.zshrc && opencode serve --hostname 127.0.0.1 --port $PORT"
-    │   │
-    │   ├─ OpenCodeApi.waitForServerHealthy(30s) (轮询 2s)
-    │   │   ├─ healthy → ensureSSEConsumer → onStarted
-    │   │   └─ timeout → killProcessTreeByHandle → onFailed
-    │   │
-    │   └─ onStarted() 回调 → Dashboard 状态更新
-    │
-    └─ Dashboard 显示 ● Server: running
-    ↓
-用户点击 sessions 列表行
-    │
-    ▼
-OpenCodeBrowserLauncher.launch(url)  →  spawn Edge --app=URL
-    └─ OpenCode Web UI 加载,后续所有用户交互在 Edge 窗口内完成
-```
-
-### 3.2 SSE 事件流时序(v2.0.0+:文件刷新 + 心跳,通知事件已不在白名单内)
+### 3.1 `Copy as Prompt`
 
 ```
-OpenCode CLI
-    │
-    ├─ [agent 工作流 ... file.edited, message.part.delta ...]
-    │
-    ├─ message.part.updated ───→ OpenCodeSSEConsumer
-    │                                  │
-    │                                  ├─ BashCommandHandler 检测 bash 工具完成
-    │                                  └─ FullRefreshCoordinator.request()
-    │
-    ├─ file.edited / file.watcher.updated ──→ FullRefreshCoordinator.request()
-    │
-    ├─ session.diff ──→ FullRefreshCoordinator.request()(绕过 debounce)
-    │
-    └─ server.heartbeat ──→ lastHeartbeatAt = now
+右键菜单渲染 → update(e)
+    editor == null || !hasSelection || selectedText 全空白 → enabled = false
+
+点击 → actionPerformed(e)
+    project ?: return / editor ?: return / selectedText 全空白 → return
+    psiFile = PsiDocumentManager.getPsiFile(editor.document) ?: return
+    filePath = promptFilePath(project, psiFile) ?: return           ← 相对项目根优先
+    startLine = document.getLineNumber(selectionStart) + 1
+    endLine   = document.getLineNumber(lastSelectedOffset) + 1      ← 见下
+    formatAsPrompt(filePath, startLine, endLine, selectedText, languageTagOf(psiFile))
+        └→ 系统剪贴板
+    selectionModel.removeSelection()
 ```
 
-> v2.0.0+ `session.idle` / `session.status(idle)` / `permission.asked` / `question.asked` / `session.created` / `session.updated` / `message.updated` 事件均在 SSE 白名单外,parser 早退,IDE 端不消费。
+`lastSelectedOffset = if (endOffset > startOffset) endOffset - 1 else startOffset`
 
-### 3.3 关闭时序(IDE 退出)
+**为什么 `-1`**：选区恰好结束在某行行首时（例如从第 10 行选到第 12 行行首），`endOffset` 指向第 12 行的第一个字符——它并没有被选中。用 `endOffset - 1` 反查末行才能得到真实覆盖的末行（第 11 行）。直接取 `endOffset` 会把未选中的那一行算进行号范围。
+
+### 3.2 `Copy Diagnostics as Prompt`
 
 ```
-IDE 退出触发 OpenCodeServerManager.stopServer()
-    │
-    ├─ shutdownInProgress CAS (true) → 防重入
-    │
-    ├─ 停止 SSE consumer
-    │   synchronized(this) { sseConsumer?.stop(); sseConsumer = null }
-    │
-    ├─ serverProcess.getAndSet(null) → Process
-    │   if null → return (server was externally started)
-    │
-    ├─ startDisposeThread() 异步发 POST /global/dispose (2s 客户端超时,不等)
-    │
-    ├─ handle.onExit().get(5s)  ← 真实退出时间
-    │   ├─ 成功 → return
-    │   └─ TimeoutException / InterruptedException → 继续
-    │
-    ├─ handle.destroy() (SIGTERM)
-    │   handle.onExit().get(2s)
-    │   ├─ 成功 → return
-    │   └─ TimeoutException / InterruptedException → 继续
-    │
-    └─ killProcessTreeByPort() (SIGKILL)  ← 兜底
+右键菜单渲染 → update(e)
+    project == null || editor == null → enabled = false
+    hasDiagnostics(project, document)   ← 命中第一条 ERROR/WARNING 即短路返回
+    → enabled
+
+点击 → actionPerformed(e)
+    project ?: return / editor ?: return
+    psiFile / filePath 取不到 → return
+    diagnostics = collectDiagnostics(project, editor.document)
+        1) 读 document 级 markup model，遍历高亮 → List<HighlightInfo>（锁内只入列）
+        2) 每条 → Diagnostic(severity, line, message, codeLine)
+           · line    = document.getLineNumber(startOffset) + 1
+           · message = stripHtml(description) → 单行纯文本
+           · codeLine= 该行原文 trim
+        3) distinct()（注入片段可能与宿主重复）
+        4) sortedForPrompt()（行号 → severity → 消息）
+    diagnostics.isEmpty() → return
+    formatDiagnostics(filePath, diagnostics) → 系统剪贴板
 ```
+
+**消息净化**（`plainMessage`）：inspection 的描述可能带 HTML（`<code>` 等）与换行，直接塞进 prompt 会破坏 Markdown 列表结构。因此 `StringUtil.stripHtml(description, convertBreaks = true)` 把 `<br>` 转成换行，再按行 trim + 用空格拼成单行，最后把 `&nbsp;` 换成普通空格。刻意不使用正则——只需要字符替换。
 
 ---
 
-## 4. 核心机制
+## 4. 验证策略
 
-### 4.1 ~~Subagent 本地追踪 + 通知两层去重~~(v2.0.0+ 完全拆除)
+| 层次             | 测试                            | 覆盖                                                                |
+| ---------------- | ------------------------------- | ------------------------------------------------------------------- |
+| 格式契约（纯）   | `format/PromptFormatTest`（11 例） | 两个契约的完整形态、语言标识大小写、缺失语言标识、出错行为空、排序稳定性 |
+| 平台集成（真环境）| `actions/EditorDiagnosticsTest`（4 例） | Java 文件里的编译错误能被采集到；干净文件采集为空；结果按行号有序     |
 
-v2.0.0+ 通知代码已完全拆除,无 `sessionTitles` / `SUBAGENT_TITLE_REGEX` / `handleSessionIdle` / `idleNotifiedSessions` 等子 agent 追踪与去重机制。`session.deleted` 竞态防御不再需要,通知事件(`session.created` / `session.updated` / `session.deleted` / `session.idle` 等)在 SSE 白名单外,parser 早退。
+平台集成测试存在的唯一理由：**decision 1 选错了不会报错**。如果哪天平台把 daemon 高亮搬到别处，`collectDiagnostics` 会静静地返回空列表——用户看到的是"菜单灰着，点不了"。这个测试会先失败。
 
-### 4.2 ~~通知两层去重~~(v2.0.0+ 不适用)
+**测试环境注意**：测试沙箱默认只加载平台，必须有 `platformBundledPlugins = com.intellij.java` 才能在测试里得到一个"能产生诊断"的 `.java` 文件；否则 `.java` 会被当成 PLAIN_TEXT，测试会**假通过**（0 条诊断 vs 期望 0 条）。`EditorDiagnosticsTest` 里显式断言"至少一条诊断"，就是为了堵住这个假通过。
 
-参考已被 `SPEC.md §7.1` 标记为不适用。
-
-### 4.3 SSE Watchdog + 自动重连
-
-```
-watchdogThread (daemon)
-    │
-    └─ while (!interrupted) {
-         Thread.sleep(SSE_WATCHDOG_INTERVAL_MS = 5s)
-         if (now - lastEventAt > SSE_IDLE_TIMEOUT_MS = 30s) reconnect()
-       }
-```
-
-**重连流程**:
-
-1. `eventSourceRef.getAndSet(null)`
-2. `startSseConnection()` 新连接
-3. `old?.close()` 旧连接
-4. `connectionGen.incrementAndGet()` 旧 consumer 的 `onClosed` 自动短路(generation 不匹配)
-
-**重连后清理**(在 `onClosed()`,v2.0.0+ 通知拆除后无 per-instance 状态集合需清空):
-
-- v2.0.0+ `onClosed()` 仅记录 `connected = false` 与 `SSEEventParser.clearCache()`(`dedupCache` 是 companion object 跨实例共享,本实例无 per-instance 状态需清理)
-- 历史:曾清理 `sessionTitles` / `idleNotifiedSessions` / `subagentSessionIds` 等 per-consumer 状态,通知完全拆除后不再需要
-
-**`SSEEventParser.dedupCache` 不在 `onClosed()` 清空**,仅由 `stop()` 清空(`SSEEventParser.clearCache()`,`SSEEventParser.kt:98`)。
-
-### 4.5 ProcessHandle 进程树清理
-
-`OpenCodeServerManager.killProcessTreeByHandle(process)`(用于 `startServer` 启动 30s 超时):
-
-```kotlin
-val descendants = process.toHandle().descendants().toList()
-descendants.reversed().forEach { it.destroyForcibly() }  // 叶子到根
-process.toHandle().destroyForcibly()
-handle.onExit().get(3s)  // 等待确认
-```
-
-**只杀目标进程的后代**,不会误杀同 PGID 的无关进程。
-
-`OpenCodeServerManager.killProcessTreeByPort()`(用于 `gracefulShutdown` 兜底):
-
-通过 `lsof -tiTCP:$PORT` 找主进程 PID,递归调用 `pgrep -P $pid` 找所有子进程,按从叶到根顺序发 SIGKILL,sh 脚本整体超时 5s。
+**测试方法命名**：`BasePlatformTestCase` 继承 JUnit 3 的 `TestCase`，JUnit 4 会用 `JUnit38ClassRunner` 运行它，`@Test` 注解不生效。方法名必须是 `testXxx`，否则被静默跳过。
 
 ---
 
-## 5. SSE 事件协议详解
+## 5. 文件清单
 
-### 5.1 当前 wire 格式(`/event?directory=...` 端点)
-
-```json
-{
-  "id": "evt_e208271300012MZGbu2gNc47xU",
-  "type": "session.status",
-  "properties": {
-    "sessionID": "ses_xxx",
-    "info": {
-      "id": "ses_xxx",
-      "parentID": "ses_parent",
-      "title": "@code-reviewer subagent: review foo"
-    },
-    "status": { "type": "idle" }
-  }
-}
-```
-
-- `id` 用于去重(`SSEEventParser.dedupCache`)
-- `type` 用于直接路由(无 SyncEvent 嵌套)
-- `properties` 包含 sessionID / info.title / parentID / status.type
-- **已废弃**:旧 SyncEvent V2 格式(`payload.type == "sync"` + `syncEvent.aggregateID`)不再使用
-
-### 5.2 ~~完整事件 → 通知映射~~(v2.0.0+ 完全拆除)
-
-v2.0.0+ 通知代码完全拆除,无 `OpenCodeNotificationService` / `OpenCodeNotificationRouter`,无 `sessionTitles` / `idleNotifiedSessions` 等状态集合,无 `handleSessionIdle` 抑制逻辑。SSE 白名单仅 5 事件(文件刷新 + 心跳),通知事件(`permission.asked` / `question.asked` / `session.idle` / `session.status` / `session.created` / `session.updated` / `message.updated`)在 parser 早退。
-
-通知由 OpenCode server / Web UI 自身处理。
-
-### 5.3 SSE 事件白名单(文件刷新 + 心跳)
-
-| SSE 事件                               | IDE 端处理                                                         |
-| -------------------------------------- | ------------------------------------------------------------------ |
-| `message.part.updated`                 | `BashCommandHandler` 检测 bash 工具完成 → `FullRefreshCoordinator` |
-| `session.diff`                         | `FullRefreshCoordinator`(绕过 debounce)                            |
-| `file.edited` / `file.watcher.updated` | `FullRefreshCoordinator` 主路径                                    |
-| `server.heartbeat`                     | `lastHeartbeatAt = now`(`isHealthy()` 诊断用)                      |
+| 文件                                                       | 层   | 说明                                                        |
+| ---------------------------------------------------------- | ---- | ----------------------------------------------------------- |
+| `src/main/kotlin/.../format/PromptFormat.kt`               | 纯   | `formatAsPrompt` / `formatDiagnostics` / `Diagnostic` / `sortedForPrompt` / `TRAILING_BLANK` |
+| `src/main/kotlin/.../actions/EditorPromptContext.kt`        | 平台 | `copyToClipboard` / `promptFilePath` / `languageTagOf` / `hasDiagnostics` / `collectDiagnostics` |
+| `src/main/kotlin/.../actions/CopyAsPromptAction.kt`         | 平台 | 选区 action                                                  |
+| `src/main/kotlin/.../actions/CopyDiagnosticsAction.kt`      | 平台 | 诊断 action                                                  |
+| `src/main/resources/META-INF/plugin.xml`                    | —    | 插件描述 + 2 个 action 注册                                  |
+| `src/main/resources/META-INF/EULA.txt` / `PRIVACY_POLICY.txt` | —  | Marketplace 法务文本（未在 plugin.xml 引用）                 |
+| `src/test/kotlin/.../format/PromptFormatTest.kt`            | 纯   | 格式契约                                                     |
+| `src/test/kotlin/.../actions/EditorDiagnosticsTest.kt`      | 平台 | 诊断采集                                                     |
+| `.github/workflows/build.yml`                               | —    | CI：test / build / verify / publish(tag)                     |
 
 ---
 
-## 6. ~~通知路由与去重~~(v2.0.0+ 完全拆除)
+## 6. 资源管理
 
-v2.0.0+ 通知代码已完全拆除(详见 §2.4 ~ §2.6、§4.1、§4.2、§5.2)。`OpenCodeSSEConsumer` 不再调用 `OpenCodeNotificationRouter.notify` / `OpenCodeNotificationService.send`,无 `idleNotifiedSessions` / `subagentSessionIds` / `handleSessionIdle` 等去重与抑制逻辑。事件去重仅余 `SSEEventParser.dedupCache`(按 payload.id 拦截 SSE 重发,与通知无关)。
+无长期持有的资源：无进程、无连接、无线程、无缓存、无 `Disposable`。
 
----
-
-## 7. 资源管理
-
-### 7.1 Process 资源
-
-| 资源                                            | 释放方式                                                                         |
-| ----------------------------------------------- | -------------------------------------------------------------------------------- |
-| `OpenCodeServerManager.serverProcess`           | `gracefulShutdown` 4 阶段(§3.3) + `killProcessTreeByPort` 兜底                   |
-| `OpenCodeServerManager.startDisposeThread`      | daemon Thread,`isDaemon = true`                                                  |
-| `OpenCodeServerManager.pipeToLogger` (×2)       | daemon Thread 读 stdout/stderr,`IOException` 静默退出,其他异常 warn 日志         |
-| `OpenCodeServerManager.findProcessByPort`       | `try-finally` 关闭 Process + `waitFor(3s)`,超时 `destroyForcibly`                |
-| `OpenCodeServerManager.killProcessTreeByHandle` | `try` 内递归杀后代 + 根,`onExit(3s)` 等待;`catch` 兜底走 `killProcessTreeByPort` |
-| `OpenCodeServerManager.killProcessTreeByPort`   | `try-finally` 关闭 shell 进程 + `waitFor(5s)`,超时 `destroyForcibly`             |
-
-### 7.2 SSE / HTTP 资源
-
-| 资源                                            | 释放方式                                              |
-| ----------------------------------------------- | ----------------------------------------------------- |
-| `okhttp-eventsource` SSE 连接(`eventSourceRef`) | `eventSourceRef.getAndSet(null)?.close()` in `stop()` |
-| `OpenCodeApi.sharedHttpClient`(`by lazy`)       | IDE 退出时 JVM 关闭                                   |
-| `BufferedReader` in `findProcessByPort`         | `try-finally` 关闭(实测短命进程,GC 兜底)              |
-
-### 7.3 LRU 缓存
-
-| 集合                        | 容量 | 线程安全                                |
-| --------------------------- | ---- | --------------------------------------- |
-| `SSEEventParser.dedupCache` | 1000 | `Caffeine Cache` (Caffeine 库,原子操作) |
-
-> v2.0.0+ 通知代码完全拆除后,`OpenCodeSSEConsumer.sessionTitles` / `idleNotifiedSessions` / `OpenCodeNotificationService.SessionInfoCache` 等 LRU 集合已删除;`dedupCache` 仍由 `stop()` 清空,按 payload.id 去重 SSE 重发。
-
-### 7.4 Thread 管理
-
-| Thread                                     | 类型                       | 清理                        |
-| ------------------------------------------ | -------------------------- | --------------------------- |
-| `OpenCodeSSEConsumer.watchdogThread`       | daemon                     | `interrupt()` in `stop()`   |
-| `OpenCodeServerManager.startDisposeThread` | daemon (one-shot)          | 自然结束                    |
-| `OpenCodeServerManager.pipeToLogger` (×2)  | daemon                     | 进程退出时 IOException 退出 |
-| `FullRefreshCoordinator.scheduler`         | `ScheduledExecutorService` | `shutdownNow()` in `stop()` |
-
-### 7.5 AppLifecycleListener / MessageBusConnection
-
-| 资源                                                   | 释放方式                                                                  |
-| ------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `MyToolWindowFactory.init` 块的 `MessageBusConnection` | 无 parent disposable,跟随 application 生命周期                            |
-| `MyToolWindowFactory.contentManagerListeners`          | 项目关闭时移除(配对 `try-catch IllegalStateException` 防御项目已 dispose) |
-
-v2.0.0 砍掉的资源(JCEF 全部移除,无需清理):
-
-- ~~`JcefJsInjector` 注入 JS 的重试 `Alarm`~~ — 类已删
-- ~~`BrowserPanel.disposeBrowser()` 释放 3 个 JCEF handler~~ — 类已删
-- ~~`MyToolWindowFactory.sharedJBCefClient`~~ — 字段已删
-- ~~`MyToolWindow` `focusListenerWindow` + `focusListener`~~ — 字段已删
-- ~~`ResizeObserverThrottler.THROTTLE_SCRIPT`~~ — 类已删,Edge --app 模式无 OSR 性能问题
-
-Dashboard 模式下不涉及 JCEF 浏览器重建,`resetToolWindow()` 仍保留供将来扩展触发(目前 Dashboard 的 Reset 按钮只重置 UI 状态文本)。
+每次调用新建的临时对象（`StringSelection`、字符串、`Diagnostic` 列表）由 GC 回收；剪贴板内容的所有权交给系统剪贴板服务。markup model 的遍历只读，不注册监听器，因此**不需要**注销。
 
 ---
 
-## 8. 关键文件路径速查
+## 附录 A:已知限制与权衡
 
-| 想做的事                              | 改哪里                                                                                                                                                                                                     |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 工具窗口入口 + Dashboard 内容         | `toolWindow/MyToolWindowFactory.kt` + `toolWindow/MyToolWindow.kt`(纯 Swing 6 区)                                                                                                                          |
-| 服务器进程启停(4 阶段关闭)            | `toolWindow/OpenCodeServerManager.kt`                                                                                                                                                                      |
-| Singleflight 防抖(手动启动去重)       | `toolWindow/Singleflight.kt`                                                                                                                                                                               |
-| 进程启动 + cwd = project.basePath     | `toolWindow/ServerProcessLauncher.kt`(M0-T1;`startServerSingleflight` 端口固定 12396 + health gate 检测冲突时 kill+onFailed)                                                                               |
-| Edge --app 启动器(项目隔离 profile)   | `toolWindow/OpenCodeBrowserLauncher.kt`(M1-T2;`pickBrowser` / `buildUrl` / `checkEdgeInstalled` / `launch` / `hasEdgeWindowOpen` / `hasRendererChild` / `buildOpenCommand` / `buildProcessBuilderCommand`) |
-| SSE 消费、自动重连(文件刷新 + 心跳)   | `listeners/OpenCodeSSEConsumer.kt`(v2.0.0+ 仅消费 5 白名单事件)                                                                                                                                            |
-| SSE 解析(5 事件白名单)                | `listeners/SSEEventParser.kt`                                                                                                                                                                              |
-| Bash 工具事件检测                     | `listeners/BashCommandHandler.kt`                                                                                                                                                                          |
-| 文件刷新(生产者-消费者)               | `listeners/FullRefreshCoordinator.kt`                                                                                                                                                                      |
-| HTTP API(健康/session 等)             | `utils/OpenCodeApi.kt` + `OpenCodeApiResult.kt`                                                                                                                                                            |
-| SSE consumer 单例工厂                 | `utils/SSEConsumerFactory.kt`                                                                                                                                                                              |
-| IdeaVim visual 模式选区(反射缓存)     | `utils/IdeaVimIntegration.kt`                                                                                                                                                                              |
-| 复制为 Prompt 格式(选中代码 → 剪贴板) | `actions/CopyAsPromptAction.kt`(M1-T5 合并 `AddToPromptAction` 后)                                                                                                                                         |
-| 端口/超时/间隔常量(端口 12396)        | `OpenCodeConstants.kt`(M2-T1 加 `HEALTH_VERIFY_TIMEOUT_MS = 500L`)                                                                                                                                         |
-
-> **v2.0.0 整删的文件**(9 个源文件 + 6 个测试):`BrowserPanel.kt` / `JcefKeyboardInterceptor.kt` / `EmacsKeyHandler.kt` / `LinkContextMenuHandler.kt` / `JcefJsInjector.kt` / `ResizeObserverThrottler.kt` / `AddToPromptAction.kt` / `OpenInBrowserAction.kt` / `CleanBrowserLauncher.kt` + 对应 6 个测试。
-
----
-
-## 附录 A:已知的设计权衡
-
-| 决策                                                                                                                  | 权衡                                                                                                                                   |
-| --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| v2.0.0 砍掉 JCEF 浏览器 + 改用 Edge --app 模式(v2.0.2 移除 Chrome 路径)                                               | 失去 JCEF 内嵌(无 JCEF 焦点卡顿问题),获得原生 60Hz+ 渲染;代价是 IDE 不再是 OpenCode Web UI 的唯一宿主,需用户点击 sessions 列表行打开   |
-| v2.0.0 自启 opencode server(从"用户手动启"改为"plugin 启")                                                            | 用户少做一步操作;代价是 plugin 多管一个进程生命周期 + port 冲突处理(M2-T1 health gate 只检测不升级)                                    |
-| 每 Project 一个 `OpenCodeSSEConsumer` 实例                                                                            | 多项目状态天然隔离,无需 directory → Project 注册表                                                                                     |
-| 静态 `companion object` 集合(`SSEEventParser.dedupCache`)                                                             | 违反 AGENTS.md "禁止静态全局可变状态" HARD RULE,但 dedupCache 是 SSE 事件级语义(与 Project 无关,跨实例共享),已加 NOTE                  |
-| `zsh -l` 启动 opencode                                                                                                | 必须 login shell 加载 `.zshrc` 中的 PATH,代价是启动慢 0.5-2s(原 `logDiagnosticEnvironment` 调试代码已删除)                             |
-| Edge --app 模式 + 项目隔离 profile(`--user-data-dir=~/.config/opencode-web-ui/edge-profiles/$projectHash/user-data/`) | localStorage / cookies 跨 IDE 升级不丢,跨 project 不串;代价是无法跨用户/跨设备同步,且需 macOS Edge 已装 + `--disable-sync` 防账号广播  |
-| 多进程架构(IDE / opencode / Edge 三独立进程)                                                                          | 关闭 IDE 不 kill Edge(用户决定);Edge crash 不影响 IDE;opencode crash 走 SSE watchdog → Dashboard 状态切换                              |
-| v2.0.0+ 通知完全拆除(in-IDE 通知 UI 由 OpenCode server / Web UI 自身接管)                                             | 减少 IDE 端维护负担 + 通知 UI 与 Web UI 自然一致;代价是 IDE 端无法在 `permission.asked` 等事件时弹 IDE 内通知,需用户在 Edge 窗口内响应 |
+| 项                                  | 现状                                                     | 说明 / 未来                                                        |
+| ----------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------ |
+| 诊断只到文件级                      | 不做选区裁剪                                             | 有意为之（决策 3）                                                 |
+| 不含 inspection 的 quick-fix 建议   | 只输出消息 + 出错行                                      | `HighlightInfo` 有 quick fix 列表，但平台 API 偏 internal；有真实需求再评估 |
+| 注入片段（如 Java 里的 SQL）诊断    | 一并采集 + 去重，可能与宿主文件产生同类条目              | 去重兜底已够用；若要精确区分需读 `isFromInjection()`               |
+| 依赖 `HighlightInfo`（impl 包）     | 已确认非 `@Internal`，且无公开替代                       | 若未来被废弃，改 `collectDiagnostics` 一处即可                     |
+| 无 `.properties`/`.json` 之类的翻译 | 文案硬编码在 `plugin.xml`                                | 决策 7                                                             |
+| 未启用 UI 测试                      | 只做单测 + 平台集成测试                                  | 菜单项 enabled 行为靠 `update()` 单测（暂缺）+ 手动 `runIde` 验证   |

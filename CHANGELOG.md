@@ -1,51 +1,20 @@
 <!-- Keep a Changelog guide -> https://keepachangelog.com -->
 
-# opencode-web-ui Changelog
+# Copy as Prompt Changelog
 
 ## [Unreleased]
 
-### Added
-
-- **Edge extension background service worker(notification 预置 allow)**: 新增 `src/main/resources/edge-extension/background.js`(MV3 service worker),Edge 启动时主动调 `chrome.contentSettings.notifications.set({primaryPattern: 'http://localhost:12396/*', scope: 'regular', setting: 'allow'})`,绕开 Chromium 的 `QuietNotificationPrompts` 永久 block(连续 3 次忽略后该 origin 的弹框被永久抑制,`requestPermission()` 直接返回 `denied`)。`manifest.json` 加 `permissions: ["contentSettings"]` + `background.service_worker: "background.js"`;`EdgeBootstrapExtension.prepare()` 加 `BACKGROUND_JS` 写盘逻辑(镜像现有 MANIFEST / CONTENT_JS 模式)。
-
-### Changed
-
-- **端口固定 12396,不再升级(M2-T1 升级版)**: `ServerProcessLauncher.startServerSingleflight` 移除 `MAX_ESCALATION_DEPTH` 端口升级递归,health gate 检测到端口被其他 IDE 占用时改为 `killProcessTreeByHandle + onFailed`(不再递归升级)。原因: Edge extension 的 `background.js` / `manifest.json` + `MyToolWindow.buildOpenUrl()` 均硬编码 `http://localhost:12396`,端口升级会引入 notification 预置 allow 错位 + Edge 连不上 server 的新失败模式。`DESIGN.md §1.2` 决策表 / `SPEC.md §4.4` / `SPEC.md §6.2` / `AGENTS.md` UNIQUE STYLES 同步更新。
-
-## [2.0.1] - 2026-07-18
-
-### Changed
-
-- **浏览器切换为 Microsoft Edge**:`OpenCodeBrowserLauncher` 移除 Google Chrome / Brave Browser fallback,只支持 Edge。`pickBrowser()` 检查 `/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge`;`launch()` 用 `open -na "Microsoft Edge" --args --app=<url> [--load-extension=<extDir>]`。**原因**:Chrome 150+ stable 静默忽略 `--load-extension=` flag(实测 `WARNING:chrome/browser/extensions/extension_service.cc:420] --load-extension is not allowed in Google Chrome, ignoring`),导致 plugin 端 Chrome extension 注入失效;Edge 150+ 接受该 flag 且对 unpacked extension 兼容性更好
-- **Edge 未安装处理**:新增 `OpenCodeBrowserLauncher.checkEdgeInstalled()` — 在 `MyToolWindow.launchEdgeForSession()` 点击 sessions 列表行时调用;未安装时弹 `Messages.showErrorDialog` 提示下载 `https://www.microsoft.com/edge`,不 throw 不 crash
-- **Dashboard UI 微调**:移除"Open in Edge"按钮(v2.0.1 有),改为"点击 sessions 列表行直接 Edge 打开"——更符合 web app 原生交互模式
-
-## [2.0.0] - 2026-07-14
-
-### Changed
-
-- **架构大改:丢掉 JCEF 浏览器**(`BrowserPanel` / `JcefJsInjector` / `ResizeObserverThrottler` / `LinkContextMenuHandler` / `JcefKeyboardInterceptor` / `EmacsKeyHandler` 整删)。OpenCode Web UI 改在外部 **Chrome --app 模式 + 日常 profile 复用**(无 `--user-data-dir`,防止 localStorage 缓存丢失),通过 `OpenCodeBrowserLauncher` 启动
-- **Dashboard 模式**:`MyToolWindow` 重写为纯 Swing 6 区面板(server 状态 / 项目路径 / 端口+SSE 健康 / 4 控制按钮 / sessions 列表 / +New Session),不再持有 JCEF 控件
-- **in-IDE 通知 UI 砍掉**:`OpenCodeNotificationService.send()` 改为 no-op(Chrome --app 由 OpenCode Web UI 自带通知接管)
-- **Plugin 自启 opencode server**(M0-T1 修 cwd = `project.basePath`;M2-T1 health gate 验证 `directory` 字段;端口冲突自动升级 12397-12400)
-- **合并 `AddToPromptAction` 进 `CopyAsPromptAction`**(M1-T5),共享 `Toolkit.getDefaultToolkit().systemClipboard` 路径
+## [0.1.0] - 2026-09-29
 
 ### Added
 
-- `OpenCodeBrowserLauncher`(`toolWindow/`):Chrome --app + 日常 profile 启动器。macOS-only。探测 Google Chrome > Edge > Brave,回退到 `ProcessBuilder --app` 路径
-- 6 个新单测:`MyToolWindowTest` / `MyToolWindowFactoryTest` / `OpenCodeBrowserLauncherTest` / `ServerProcessLauncherTest` / `OpenCodeApiHealthDirectoryTest` / `CopyAsPromptMergeTest`
+- **Copy as Prompt** — 把编辑器选中的代码复制为 prompt 文本：`location:<路径>:<行号或起止行号>` + 带语言标识的代码围栏 + 选中内容原样。路径优先使用相对项目根的写法；选区恰好结束在某行行首时按真实覆盖的末行输出行号，不把未选中的行算进去。
+- **Copy Diagnostics as Prompt** — 把当前文件全部的 ERROR / WARNING 复制为 prompt 文本：`location:<路径>` + 诊断列表（`[严重级别] line <行号>: <消息>` 与缩进的出错行原文）。诊断按行号 → 严重级别 → 消息稳定排序，相同诊断去重，inspection 描述里的 HTML 与换行会被净化成单行纯文本。
+- 两个 action 的输出都以「换行 + 两个空格」结尾，使目标输入框（contenteditable 类实现）渲染出可见空行，避免粘贴后的后续输入被吞进代码块。
+- 诊断采集走 document 级 `DocumentMarkupModel` + `HighlightInfo.fromRangeHighlighter`（与平台内部实现一致），只读 daemon 已经算好的高亮，不额外触发全量 inspection 分析；只保留 `HighlightSeverity >= WARNING` 的诊断，符号类型提示等非诊断高亮被排除。
+- 测试：`PromptFormatTest`（11 例，纯函数格式契约）+ `EditorDiagnosticsTest`（4 例，`BasePlatformTestCase` 验证诊断真的能从 markup model 采集到）。
+- GitHub Actions CI（`.github/workflows/build.yml`）：`test` / `build` / `verify`，以及打 `v*` tag 时的 `publish`。
+- 项目元文档：`AGENTS.md`（开发约束与平台 API 踩坑）、`SPEC.md`（两个输出格式契约）、`DESIGN.md`（分层与关键决策）。
 
-### Removed
-
-- 6 个 JCEF 源文件 + 6 个相关测试 + 2 个偏离方案文件(`OpenInBrowserAction` / `CleanBrowserLauncher`,违反 `--user-data-dir` 硬约束)
-
-## [1.0.0] - 2026-02-26
-
-### Added
-
-- Initial scaffold created from [IntelliJ Platform Plugin Template](https://github.com/JetBrains/intellij-platform-plugin-template)
-
-[Unreleased]: https://github.com/syllr/intellij-opencode-web/compare/2.0.1...HEAD
-[2.0.1]: https://github.com/syllr/intellij-opencode-web/compare/2.0.0...2.0.1
-[2.0.0]: https://github.com/syllr/intellij-opencode-web/compare/1.0.0...2.0.0
-[1.0.0]: https://github.com/syllr/intellij-opencode-web/commits/1.0.0
+[Unreleased]: https://github.com/syllr/copy-as-prompt/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/syllr/copy-as-prompt/commits/0.1.0

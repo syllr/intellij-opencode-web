@@ -1,405 +1,234 @@
-# SPEC.md — IntelliJ OpenCode Web 插件规格
+# SPEC.md — Copy as Prompt 规格
 
-> **本文档定位**:项目级**系统行为规范**。定义"插件必须满足什么",不描述"插件如何实现"。
+> **本文档定位**:项目级**行为规范**。定义"插件必须满足什么"，不描述"如何实现"（那在 `DESIGN.md`）。
 >
-> **三元组关系**(项目根元文档):
->
-> - `AGENTS.md` — **How to develop**(开发宪法、流程规则、踩坑经验)
-> - `DESIGN.md` — **How it's built**(架构设计、组件关系、关键决策)
-> - `SPEC.md` — **What it must do**(系统级行为规范、SLA、安全契约、数据不变量)—— 本文档
->
-> **阅读顺序**:`AGENTS.md` → `SPEC.md` → `DESIGN.md`
+> **三元组关系**:`AGENTS.md`（怎么开发）→ `SPEC.md`（必须满足什么，本文档）→ `DESIGN.md`（怎么实现）
 
 ---
 
 ## 0. 系统概览
 
-**IntelliJ OpenCode Web 插件**是一个 JetBrains IDE 插件(2026.1+),自启 opencode server 并通过外部 **Microsoft Edge --app 模式**展示 OpenCode Web UI。Dashboard 显示 server 状态 + 3 控制按钮(Stop / Restart / Reset),所有通知由 OpenCode Web UI 自身接管。点击 sessions 列表行直接用 Edge --app 打开对应 session URL。
+本插件把 IDE 里的信息格式化成 prompt 文本写入系统剪贴板，供用户粘贴到任意 LLM 对话界面。
 
-| 能力               | 路径                                   | 协议/机制                           |
-| ------------------ | -------------------------------------- | ----------------------------------- |
-| Edge --app 浏览器  | 系统 Microsoft Edge(日常 profile 复用) | 进程外 Edge binary + `--app=<url>`  |
-| Dashboard 工具窗口 | IDE 侧边栏                             | 纯 Swing,无浏览器控件               |
-| 文件变更同步       | OpenCode ↔ IDE VFS                     | SSE 事件 → `FullRefreshCoordinator` |
+| Action                       | 输入                     | 输出                                        |
+| ---------------------------- | ------------------------ | ------------------------------------------- |
+| `Copy as Prompt`             | 编辑器选中代码           | 文件路径 + 行号 + 代码块                    |
+| `Copy Diagnostics as Prompt` | 当前文件的 ERROR/WARNING | 文件路径 + 诊断列表（行号 + 消息 + 出错行） |
 
-**核心数据流**(详见 `DESIGN.md §0.3`):
+**明确的非目标**（不要"顺手加回来"）：
+
+- 不启动 / 不管理任何进程（无 opencode server、无浏览器）
+- 不连接任何服务（无 HTTP / SSE / WebSocket）
+- 不读写配置文件与环境变量
+- 不与特定 agent 耦合：产物是纯文本，任何对话界面都能消费
+
+**数据流**（两个 action 同构）：
 
 ```
-OpenCode CLI (port 12396, plugin 自启)
-    │  SSE /event?directory=<path>
+IDE 数据（选区 / 诊断）
+    │  actions/：平台 API 取数据，转成纯数据
     ▼
-IntelliJ Plugin
-    │
-    ├── OpenCodeSSEConsumer(每 Project 一个实例)
-    │              │
-    │              ├─ 文件事件 → VFS 刷新
-    │              └─ bash 事件 → BashCommandHandler
-    │
-    └── HTTP API (/session/:id) ──→ SessionInfo 查询
-
-Dashboard(MyToolWindow) ──[点击 session 行]──→ OpenCodeBrowserLauncher ──→ Edge --app=URL
+format/：纯函数 → 字符串
+    ▼
+Toolkit 系统剪贴板
 ```
 
 ---
 
-## 1. 系统级 SLA(性能 + 可用性)
+## 1. 契约 A：选区 → prompt（`Copy as Prompt`）
 
-### 1.1 事件处理时延
+### 1.1 输出格式(HARD CONTRACT)
 
-| 阶段                     | 时延预算    | 来源                              |
-| ------------------------ | ----------- | --------------------------------- |
-| SSE 事件到达 → JSON 解析 | < 5ms       | `SSEEventParser.parse()`          |
-| JSON 解析 → 业务路由分发 | < 2ms       | `OpenCodeSSEConsumer.onMessage()` |
-| 文件事件 → VFS 刷新      | 2s 防抖窗口 | `FullRefreshCoordinator`          |
+```text
+location:<文件路径>:<行号或起止行号>
+content:
+```
 
-**Spec**:
+<语言标识>
+<选中代码>
 
-- 系统 MUST 在 SSE 事件高频突发(>100 事件/s)时,事件处理时延不显著增长
-- v2.0.0+ IDE 端无通知事件处理路径(`session.idle` / `session.status` / `permission.asked` / `question.asked` 均在白名单外,parser 早退)
+```
+␠␠
+```
 
-### 1.2 HTTP API 调用时延
+（最后一行是**两个空格**，见 §1.3）
 
-| 端点                                 | P99 时延目标    | 备注                                                       |
-| ------------------------------------ | --------------- | ---------------------------------------------------------- |
-| `GET /global/health`(健康检查)       | < 100ms         | HEAD 请求;**实际超时上限由 `HTTP_TIMEOUT_MS=8000ms` 决定** |
-| `GET /session/:id`(SessionInfo 查询) | < 200ms         | 1h LRU 缓存命中后零开销                                    |
-| `POST /global/dispose`(优雅关闭)     | < 2s 客户端超时 | 异步 fire-and-forget, 不阻塞主线程                         |
-
-**Spec**:
-
-- 系统 MUST 用 `SessionInfoCache`(1h TTL)消除通知路径上的同步 HTTP 调用
-- 系统 MUST 在 `getSession` 失败时降级为不带标题的占位符模板,不抛异常中断通知
-
-### 1.3 可用性目标
-
-| 指标                               | 目标      | 备注                                         |
-| ---------------------------------- | --------- | -------------------------------------------- |
-| OpenCodeSSEConsumer SSE 连接可用性 | ≥ 99%(日) | 30s watchdog 超时自动重连                    |
-| OpenCodeServerManager 关闭成功率   | 100%      | 5s onExit → SIGTERM(2s) → SIGKILL 兜底       |
-| 多项目 SSE consumer 隔离           | 100%      | 每个 Project 独立 `OpenCodeSSEConsumer` 实例 |
+| 项       | 规则                                                                                   |
+| -------- | -------------------------------------------------------------------------------------- |
+| 路径     | 优先**相对项目根**的路径（`src/Foo.kt`）；文件不在项目内时回退为绝对路径               |
+| 行号     | 1-based，与编辑器状态栏一致。单行 → `10`；跨行 → `10-20`（首尾行均包含）               |
+| 行号边界 | 选区恰好结束在某行行首时，末行取**最后一个被选中的字符**所在行（不把未选中的行算进去） |
+| 语言标识 | 取自 PSI 语言 id 并**转小写**（`JAVA` → `java`）；取不到时输出裸围栏                   |
+| 选中代码 | **原样**：不 trim、不重排缩进、不转义                                                  |
+| 换行符   | `\n`                                                                                   |
 
 **Spec**:
 
-- 系统 MUST 在 SSE 连接断开后 30s 内检测到并自动重连(`SSE_IDLE_TIMEOUT_MS`)
-- v2.0.0+ 在-IDE 通知拆除后,per-instance 状态集合仅余 `SSEEventParser.dedupCache`(companion object,跨实例共享)
+- 系统 MUST 由纯函数 `formatAsPrompt` 一次性生成该字符串，调用方不做后处理
+- 系统 MUST 由 `PromptFormatTest` 覆盖：单行 / 跨行 / 大小写语言标识 / 缺失语言标识 / 代码含反引号 / 结尾形态
 
-### 1.4 容量与并发
+### 1.2 触发与启用条件
 
-| 维度             | 当前目标                         | 备注                                |
-| ---------------- | -------------------------------- | ----------------------------------- |
-| 同时打开的项目数 | ≤ 10                             | 受 `OpenCodeServerManager` 单例约束 |
-| SSE 事件频率     | 100-500 事件/s                   | 正常 agent 循环                     |
-| LRU 缓存容量     | `SSEEventParser.dedupCache` 1000 | 防止无界增长                        |
+- **WHEN** 编辑器存在且选中非空白文本 → enabled，点击后写剪贴板并**清空选区**
+- **WHEN** 无编辑器 / 无选区 / 选区全空白 → disabled；`actionPerformed` MUST 静默 return
+- **WHEN** `project` / `Editor` / `PsiFile` / `virtualFile` 任一为 null → MUST 静默 return
+- 系统 MUST NOT 在复制成功时弹通知或 dialog
 
-**Spec**:
+### 1.3 结尾空行机制(HARD CONTRACT)
 
-- 所有 LRU 集合 MUST 是有界(最大容量固定);`dedupCache` MUST 限制为 `LRU_MAX_ENTRIES`(默认 1000)
+输出 MUST 以 `\n` + **两个空格** 结尾（`TRAILING_BLANK`）。
+
+**原因**: 目标输入框是 contenteditable 类实现，只渲染"有内容的行"。纯 `\n` 结尾不产生可见空行，用户粘贴后光标紧贴代码块末尾，继续输入会被吞进代码块。两个空格让末行"有内容"从而渲染出可见空行，视觉上不可见。
+
+**MUST NOT** 省略、改成单个换行、或"清理尾随空格"。
 
 ---
 
-## 2. 安全规范
+## 2. 契约 B：诊断 → prompt（`Copy Diagnostics as Prompt`）
 
-### 2.1 包名隔离(HARD RULE)
+### 2.1 输出格式(HARD CONTRACT)
 
-- **MUST** 使用 `com.shenyuanlaolarou.opencodewebui` 包名(也是 `pluginGroup` / plugin id / vendor 命名空间)
+```text
+location:<文件路径>
+diagnostics:
+- [ERROR] line 12: <消息>
+  <出错行原文>
+- [WARNING] line 14: <消息>
+  <出错行原文>
+␠␠
+```
+
+| 项       | 规则                                                                                          |
+| -------- | --------------------------------------------------------------------------------------------- |
+| 路径     | 同 §1.1                                                                                       |
+| 严重级别 | 只有 `ERROR` / `WARNING` 两档（映射规则见 §2.3）                                              |
+| 行号     | 1-based；诊断起点所在行                                                                       |
+| 消息     | **单行纯文本**：HTML 已剥离（`<br>` 转空格），换行折叠为空格，首尾 trim                       |
+| 出错行   | 该行原文（trim 后），以**两个空格缩进**（使其归属 Markdown 列表项）；该行无可见文本时整行省略 |
+| 排序     | 行号升序 → 同行 ERROR 在前 → 消息字典序（保证输出可复现）                                     |
+| 结尾     | 同 §1.3 的 `TRAILING_BLANK`                                                                   |
+| 空诊断   | MUST NOT 产生输出（action 为 disabled）                                                       |
+
+**Spec**:
+
+- 系统 MUST 由纯函数 `formatDiagnostics` 生成列表部分，排序由 `sortedForPrompt()` 保证稳定
+- 系统 MUST 由 `PromptFormatTest` 覆盖：多档混合 / 出错行为空 / 结尾形态 / 排序稳定性
+
+### 2.2 采集范围与内容
+
+- 范围是**整个文件**（不是选区）：诊断本身是文件级信息，按选区裁剪会让用户困惑"为什么少了几条"
+- 采集来源 MUST 是 daemon 已生成的诊断（即用户在编辑器里看到的红/黄波浪线），MUST NOT 触发一次额外的 inspection 全量分析
+- 完全相同的诊断 MUST 去重（注入片段可能与其宿主文件产生重复项）
+
+### 2.3 严重级别映射
+
+| 平台 `HighlightSeverity`                                           | 输出           |
+| ------------------------------------------------------------------ | -------------- |
+| `>= ERROR`                                                         | `ERROR`        |
+| `>= WARNING` 且 `< ERROR`                                          | `WARNING`      |
+| `< WARNING`（`INFO` / `WEAK_WARNING` / `SYMBOL_TYPE_SEVERITY` 等） | 过滤掉，不输出 |
+
+**Spec**: 系统 MUST NOT 把非诊断类高亮（符号类型提示、搜索命中、引用高亮等）计入输出。
+
+### 2.4 启用条件
+
+- **WHEN** 编辑器存在且**文件内至少有一条 ERROR/WARNING** → enabled
+- **WHEN** 无编辑器，或没有任何诊断 → disabled（同时也是"告诉用户这个文件没问题"的信号）
+- 判定 MUST 在命中第一条诊断时立即短路，避免菜单渲染时遍历全部高亮
+
+---
+
+## 3. 安全与代码规范(HARD RULES)
+
+### 3.1 包名与标识
+
+- **MUST** 使用 `com.shenyuanlaolarou.copyasprompt` 包名（也是 `pluginGroup` / plugin id 命名空间）
 - **MUST NOT** 使用其他包名
-- **MUST NOT** 引入旧 fork 残留的 `com.github.xausky.opencodewebui`(AGENTS.md "anti-patterns" 已记录)
 
-### 2.2 自动化约束(HARD RULE)
+### 3.2 分层(HARD RULE)
 
-| 规则                                  | 说明                                                           |
-| ------------------------------------- | -------------------------------------------------------------- |
-| AI 禁止自动 `git commit` / `git push` | 必须用户显式授权(`/git-commit` 或 prompt 中 `commit` / `push`) |
-| AI 禁止自动 `publishPlugin`           | 必须用户显式授权                                               |
-| AI 禁止修改 `local.properties` 凭证   | PUBLISH_TOKEN / 私钥等**绝对**不能进 git                       |
+- **MUST** 把输出格式逻辑放在 `format/` 且实现为**纯函数**（无平台依赖、无 IO、不读环境）
+- **MUST NOT** 在 `actions/` 里做字符串格式化；`actions/` 只负责"平台数据 → 纯数据"的转换
 
-### 2.3 Type 安全(HARD RULE)
+### 3.3 平台 API 使用
+
+- **MUST NOT** 使用 `@TestOnly` 标注的平台 API（典型：`DaemonCodeAnalyzerImpl.getHighlights()`）
+- 读取 daemon 诊断 MUST 走 document 级 markup model（见 `DESIGN.md §3`）
+
+### 3.4 自动化约束
+
+| 规则                                  | 说明                                                             |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| AI 禁止自动 `git commit` / `git push` | 必须用户显式授权（`/git-commit` 或 prompt 中 `commit` / `push`） |
+| AI 禁止自动 `publishPlugin`           | 必须用户显式授权                                                 |
+| AI 禁止修改 `local.properties` 凭证   | 发布令牌 / 私钥等**绝对**不能进 git                              |
+
+### 3.5 Type 安全
 
 - **MUST NOT** 使用 `as Any` / Kotlin 等价的 type erase 绕过 / 滥用 `!!`
-- **MUST** 正确处理 nullable(用 `?.` / `?: return` / `lateinit` 视情况)
-- **MUST** 用 IntelliJ Platform 的 `thisLogger().info/warn/error()` 记录日志,不用 `println` 或 `e.printStackTrace()`
+- **MUST** 用 `thisLogger().info/warn/error()` 记录日志，不用 `println` / `e.printStackTrace()`
 
-### 2.4 静态全局状态(HARD RULE)
+### 3.6 静态全局状态
 
 - **MUST NOT** 在 `object` 里挂 `var` 或非常量的 `MutableMap`
-- 例外:`SSEEventParser.companion object` 的 `dedupCache`(SSE 事件级去重,与 Project 无关,跨实例共享)
-- 任何新例外 MUST 标注 KDoc 说明**为什么**违反 HARD RULE
+- 当前实现**无任何** `object` 单例
 
-### 2.5 HTTP/JSON 解析(HARD RULE)
+### 3.7 依赖最小化
 
-- **MUST NOT** 用 Regex 解析 HTTP 响应体或 JSON
-- **MUST** 所有 HTTP 响应体走 Gson(或同等 JSON 解析器)
-- 例外:`BashCommandHandler.BASH_SPLIT_REGEX` / `WHITESPACE_REGEX`(切分 bash 命令,非 HTTP/JSON 解析)— 这两类**不**是 HTTP/JSON 解析
+- **MUST NOT** 引入第三方运行时依赖
+- 新增依赖 MUST 在 §4.2 登记并说明不可替代的理由
 
-### 2.6 CORS / 鉴权
+### 3.8 隐私
 
-本插件作为 OpenCode CLI 的**客户端**运行,鉴权在 OpenCode 端处理。本插件不直接对外暴露 HTTP 端点。
+插件**完全不联网**、不写用户文件。唯一的外部系统交互面是系统剪贴板。写入剪贴板的内容可能包含用户源码，**MUST NOT** 把剪贴板内容写入日志。
 
 ---
 
-## 3. 数据一致性
+## 4. 部署与环境约束
 
-### 3.1 SSE 状态机不变量
+### 4.1 分发
 
-#### 3.1.1 `SSEEventParser.dedupCache` 不变量(v2.0.0+ in-IDE 通知拆除后仅剩此一个)
+- 插件 MUST 通过 JetBrains Marketplace 分发
+- 产物: `./gradlew buildPlugin` → `build/distributions/copy-as-prompt-<版本>.zip`
+- **首次发布 MUST 网页手动上传**（Marketplace 对未创建过的插件 id 不接受 Gradle 上传）
+- 调试运行: `./gradlew runIde`
 
-- `dedupCache: Caffeine-backed Cache<String, Boolean>`(companion object,跨实例共享) MUST 仅做 eventID 去重,防止 SSE 重发导致同一事件被双重文件刷新
-- 容量 MUST 限制为 `LRU_MAX_ENTRIES`(默认 1000)
-- MUST 在 `OpenCodeSSEConsumer.stop()` 时清空(SSE 主动关闭) `SSEEventParser.clearCache()`
-- **不**在 SSE 重连时清空(`onClosed()`);`dedupCache` 仅由 `stop()` 清,与重连不耦合
+### 4.2 依赖
 
-### 3.2 进程状态不变量(`OpenCodeServerManager`)
+| 依赖                             | 版本              | 说明                                                  |
+| -------------------------------- | ----------------- | ----------------------------------------------------- |
+| Kotlin                           | 2.3.20            | —                                                     |
+| Gradle                           | 9.3.1             | —                                                     |
+| JDK                              | 21                | 编译/运行（`jvmToolchain(21)`）                       |
+| IntelliJ Platform                | 2026.1            | `pluginSinceBuild=261`，`pluginUntilBuild` 留空       |
+| JUnit                            | 4.13.2            | 测试                                                  |
+| opentest4j                       | 1.3.0             | 测试断言                                              |
+| IntelliJ Platform TestFramework  | 2026.1            | 平台集成测试                                          |
+| `com.intellij.java`（bundled）   | —                 | **仅测试**（诊断测试需要语言支持）；不进 `plugin.xml` |
+| Qodana（linter / Gradle plugin） | 2024.3 / 2025.3.1 | 静态分析                                              |
+| Kover                            | 0.9.5             | 覆盖率                                                |
 
-- `serverProcess` MUST 通过 `AtomicReference<Process?>` 持有,线程安全
-- `sseConsumer` MUST 在 `synchronized(this)` 块内访问,避免与 `ensureSSEConsumer` / `disposeForProject` 竞态
-- `shutdownInProgress` MUST 防止 `stopServer` / `shutdownServer` 重入(用户连续点 Shutdown 时第二次起短路返回)
+### 4.3 平台与系统约束
 
-### 3.3 健康检查语义(`isServerHealthySync`)
-
-- 端口不可达(`Socket.connect` 抛异常)→ MUST 返回 `false`(确定不健康)
-- HTTP HEAD 异常(`sharedHttpClient.send` 抛 `IOException` 或 `InterruptedIOException` 或 `HttpTimeoutException` 等)→ MUST 返回 `true`(端口可达但 server 在启动中或 HTTP 栈暂时不可用,降级为"健康")
-- HTTP 状态码 200 → MUST 返回 `true`
-- HTTP 状态码 ≠ 200 → MUST 返回 `false`
-- 这是**故意的反模式**(AGENTS.md 已标注"按用户决策保留"),**不**修复异常→true 的语义
-- 完整调用方:`OpenCodeApi.isServerHealthySync()` 被 1 处调用 —— `OpenCodeApi.waitForServerHealthy()` 启动期 2s 轮询。`HealthMonitor` 已在 Part D 整删(改由 `OpenCodeSSEConsumer.onConnectionEstablished` 1.5s debounce 替代)
-
-### 3.4 IDE 通知路由一致性(多项目隔离)
-
-- 每个 Project 持有**独立** `OpenCodeSSEConsumer` 实例(`SSEConsumerFactory.create(project)`),无需 directory → Project 注册表
-- SSE 事件的 `directory` 字段用于 `OpenCodeSSEConsumer` 内单 Project 内的 session 归属判断
-- 多 IDE 窗口打开同一 opencode server 时,每个窗口独立 `OpenCodeSSEConsumer` 通过独立 SSE 连接消费(通过 `OpenCodeApi.createEventSource(directory)` 按 directory 路径区分);路径规范化用 `File.canonicalPath`(处理符号链接)
-- 找不到匹配 Project 时 MUST 静默丢弃(不抛异常)
-
----
-
-## 4. 跨子系统契约
-
-### 4.1 IDE ↔ OpenCode CLI(SSE 事件流)
-
-#### 4.1.1 端点
-
-- URL: `http://127.0.0.1:12396/event?directory=<canonical-path>`
-- 协议: SSE(`text/event-stream`)
-- 客户端: `okhttp-eventsource` 4.3.0
-
-#### 4.1.2 事件类型映射
-
-```
-SSE event 名称: message
-payload.id           → dedupCache key(去重)
-payload.type         → eventType(直接路由)
-payload.properties   → properties(包含 sessionID / info.title / parentID / status.type)
-```
-
-新 wire 格式(`/event?directory=...` 端点)直出 `{id, type, properties}` 三键,无外层包装。
-
-#### 4.1.3 关键事件(Spec 应满足)
-
-| 事件                                   | 触发条件             | 处理                                                  |
-| -------------------------------------- | -------------------- | ----------------------------------------------------- |
-| `message.part.updated`                 | bash 工具完成        | `BashCommandHandler` 触发 VFS 刷新                    |
-| `session.diff`                         | server ack diff 接受 | `FullRefreshCoordinator` 触发 VFS 刷新(绕过 debounce) |
-| `file.edited` / `file.watcher.updated` | 文件变更             | `FullRefreshCoordinator` 触发 VFS 刷新                |
-| `server.heartbeat`                     | 健康信号             | 更新 `lastHeartbeatAt`(`isHealthy()` 诊断用)          |
-
-> v2.0.0+ 白名单仅 5 事件,见 [SSEEventParser.ALLOW_PARSE_EVENT_TYPES](../src/main/kotlin/com/shenyuanlaolarou/opencodewebui/listeners/SSEEventParser.kt) KDoc。
-> `session.created` / `session.updated` / `session.status` / `session.idle` / `permission.asked` / `question.asked` / `message.updated` 等通知事件不消费,parser 早退。
-
-### 4.2 IDE ↔ OpenCode CLI(HTTP API)
-
-| 端点              | 方法 | 用途                    | 鉴权 |
-| ----------------- | ---- | ----------------------- | ---- |
-| `/global/health`  | HEAD | 健康检查                | 无   |
-| `/global/dispose` | POST | 优雅关闭(2s 客户端超时) | 无   |
-| `/session/:id`    | GET  | 查询 session 详情       | 无   |
-
-鉴权在 OpenCode 端(本插件信任 localhost 127.0.0.1)。
-
-### 4.3 IDE ↔ 系统 Microsoft Edge(浏览器)
-
-- 点击 Dashboard session 列表行调 `OpenCodeBrowserLauncher.launch(url)`(M1-T2)启动外部 Edge 进程(v2.0.2 起改为只支持 Edge;v2.0.0-v2.0.1 期间为 Chrome,实测 Edge 对 `--load-extension=` 兼容性更好,故全量迁移)
-- 启动后系统 Edge 加载 OpenCode Web UI,后续所有用户交互(权限弹窗 / 工具调用 / 通知)均在 Edge 窗口内完成
-- **不**复用 JCEF(`BrowserPanel` 等 6 个 JCEF 文件已在 v2.0.0 整删,`sharedJBCefClient` 字段已移除)
-- **传** `--user-data-dir=~/.config/opencode-web-ui/edge-profiles/$projectHash/user-data/` — 按项目隔离 Edge profile(非日常 profile,localStorage/cookies 存于项目专属路径,跨 IDE 升级不丢)。v2.0.x 阶段原设计用 `CleanBrowserLauncher` + `--user-data-dir=/tmp/...` 隔离但因 `/tmp` 不持久被废弃(AGENTS.md 反模式),现改为 `~/.config/` 持久化路径 + SHA-256 项目 hash
-- **传** `--disable-sync` — Edge Sync 服务会把"日常 Edge 已登录的微软账号"广播到新 `--user-data-dir` profile(实测触发的 dialog:"我们正在你的所有设备上同步你的浏览数据"),隔离被绕过。`--user-data-dir` 文件层阻止不了这一层 sync 同步。这是身份层隔离**唯一可动点**;实测若账号又被同步进来,这是唯一可减的 flag
-- 主路径 `open -na "Microsoft Edge" --args --app=<url>`;回退路径 `ProcessBuilder` 直接 fork Edge binary + `--app=<url>`
-- 关闭策略:Edge 进程独立于 IDE,关闭 IDE **不**自动 kill Edge 窗口(用户决定)
-- **Edge 未安装处理**:`OpenCodeBrowserLauncher.checkEdgeInstalled()` 在点击时检查,未安装弹 `Messages.showErrorDialog` 提示下载 https://www.microsoft.com/edge,不 throw 不 crash
-
-### 4.4 IDE ↔ IDE 内部(in-IDE 通知 — 完全拆除)
-
-- v2.0.0+ 起 IDE 端**完全无通知 UI 代码**:
-  - `utils/OpenCodeNotificationService.kt` + `utils/OpenCodeNotificationRouter.kt` **已删除**
-  - SSE 白名单从 12 事件缩到 5 事件(`message.part.updated` / `session.diff` / `file.edited` / `file.watcher.updated` / `server.heartbeat`),`permission.asked` / `question.asked` / `session.idle` / `session.status` 等通知事件 parser 早退
-  - `OpenCodeSSEConsumer` 的 `dispatchNotification` / `handleSessionIdle` / `sessionTitles` / `idleNotifiedSessions` / `subagentSessionIds` 等通知抑制状态**全部删除**
-- 通知由 OpenCode server / OpenCode Web UI 自己处理(浏览器原生 Notifications API / 系统通知)
-- **Edge extension notification 预置 allow(v2.0.2+)**:`background.js`(MV3 service worker)在 Edge 启动时调 `chrome.contentSettings.notifications.set({primaryPattern: 'http://localhost:12396/*', scope: 'regular', setting: 'allow'})`,绕开 Chromium 的 QuietNotificationPrompts 永久 block(连续 3 次忽略后该 origin 的弹框被永久抑制,`requestPermission()` 直接返回 `denied`)。该机制是 `EdgeBootstrapExtension` 写盘 manifest.json + content.js + **background.js** 三件套的一部分(见 §4.3)
+| 项       | 约束                                                                           |
+| -------- | ------------------------------------------------------------------------------ |
+| 操作系统 | 无平台限制（纯平台 API + AWT）                                                 |
+| 目标 IDE | 所有带 `com.intellij.modules.platform` 的 IDE（IDEA / PyCharm / WebStorm / …） |
+| 外部命令 | 无                                                                             |
+| 用户配置 | 无（不读写任何配置文件）                                                       |
 
 ---
 
-## 5. 端点契约
+## 5. 日志约定
 
-### 5.1 OpenCode CLI 端点(本插件消费)
-
-| 端点                | 方法      | 用途                              | 错误处理                               |
-| ------------------- | --------- | --------------------------------- | -------------------------------------- |
-| `/global/health`    | HEAD      | 健康检查                          | 异常 → 降级返回 true(AGENTS.md 反模式) |
-| `/global/dispose`   | POST      | 优雅关闭                          | 2s 超时不影响主流程                    |
-| `/session/:id`      | GET       | SessionInfo 查询                  | 失败 → 缓存 null,占位符模板降级        |
-| `/event?directory=` | GET (SSE) | SSE 事件流(按 directory 路径分流) | 断线 → 自动重连(30s watchdog)          |
-
-### 5.2 兼容性
-
-- 端口 `12396` MUST 不与其他常见服务冲突(从 `4096` 修改而来)
-- 协议变更(如果 opencode server 端点协议变更)→ 通过 `SSEEventParser` 的字段路径 fallback 兼容,不改 IDE 端 API
+- **MUST** 用 `thisLogger().info/warn/error()`；前缀格式 `[<类名>] <消息>`
+- **MUST NOT** 输出凭证、剪贴板内容、源码内容
+- 当前实现的成功路径无日志（复制本身即反馈）
 
 ---
 
-## 6. 部署与环境约束
+## 版本与变更
 
-### 6.1 强制部署位置
-
-- 插件 MUST 通过 JetBrains Marketplace 分发(`./gradlew publishPlugin`)
-- 编译产物: `./gradlew buildPlugin` → `build/distributions/*.zip`
-- 调试运行: `./gradlew runIde` / `./gradlew runIdeForUiTests`
-
-### 6.2 端口与协议
-
-| 服务                 | 端口/位置                          | 协议                                                                 |
-| -------------------- | ---------------------------------- | -------------------------------------------------------------------- |
-| OpenCode CLI(server) | **12396**(端口固定,冲突时直接报错) | HTTP + SSE                                                           |
-| Edge 浏览器          | 系统 Microsoft Edge 进程(独立)     | `open -na "Microsoft Edge" --args --app=<url>` 或 `--app=<url>` 回退 |
-
-### 6.3 关闭策略(详见 `DESIGN.md §3.3`)
-
-`stopServer` 与 `shutdownServer` **共享** `gracefulShutdown(acquireHandle, killFallback, errorTag)` 实现,流程:
-
-1. `shutdownInProgress.compareAndSet(false, true)` 防重入(用户连续点 Shutdown 第二次起短路返回)
-2. 在 `synchronized(this)` 内停 SSE consumer(共享锁,与 `ensureSSEConsumer` / `disposeForProject` 一致)
-3. `startDisposeThread()` 异步 `POST /global/dispose`(2s 客户端超时,fire-and-forget,主线程不等 HTTP 响应)
-4. `acquireHandle()` 拿 `ProcessHandle`:
-   - `stopServer` 路径:`acquireServerProcessHandle()`(从 `serverProcess` 引用拿)
-   - `shutdownServer` 路径:`acquirePortProcessHandle()`(用 `lsof` 找 PID)
-5. `handle.onExit().get(5s)` 等真实退出 → 成功即返回
-6. 超时则 `handle.destroy()`(SIGTERM)+ `handle.onExit().get(2s)` 等 → 成功即返回
-7. 超时则 `killFallback()`(SIGKILL 进程树):
-   - `stopServer` 路径:`killProcessTreeByPort()`
-   - `shutdownServer` 路径:`killProcessTreeByPort()`
-
-**额外场景**:`startServer` 启动 30s 超时时调 `killProcessTreeByHandle(process)` 单独清理(不走 `gracefulShutdown`)。
-
-**`killProcessTreeByHandle`** vs **`killProcessTreeByPort`**:
-
-- `killProcessTreeByHandle(process)`:用 `ProcessHandle.descendants()` API 递归杀(只杀目标进程后代,不误杀同 PGID 的无关进程),SIGKILL 后等 `onExit(3s)` 确认终止
-- `killProcessTreeByPort()`:通过 `lsof` 找 PID 后用 shell 脚本(`pgrep -P` 递归)杀,后备方案(进程引用丢失时)
-
-### 6.4 运行时依赖
-
-| 依赖                            | 版本     | 说明                                                             |
-| ------------------------------- | -------- | ---------------------------------------------------------------- |
-| Kotlin                          | 2.3.20   | —                                                                |
-| Gradle                          | 9.3.1    | —                                                                |
-| JDK                             | 21       | 编译/运行(`jvmToolchain(21)`)                                    |
-| IntelliJ Platform               | 2026.1   | `pluginSinceBuild=261`,`pluginUntilBuild` 留空                   |
-| Gson                            | 2.10.1   | JSON 解析(`libs.gson`)                                           |
-| okhttp-eventsource              | 4.3.0    | SSE 客户端(`libs.okhttpEventsource`)                             |
-| JUnit                           | 4.13.2   | 测试(`libs.junit`)                                               |
-| opentest4j                      | 1.3.0    | 测试断言(`libs.opentest4j`)                                      |
-| mockito                         | 5.19.0   | 测试 mock(`libs.mockito`)                                        |
-| mockito-kotlin                  | 6.3.0    | Kotlin DSL for mockito(`libs.mockitoKotlin`)                     |
-| IntelliJ Platform TestFramework | 2026.1   | 平台测试(`TestFrameworkType.Platform`)                           |
-| Gradle Plugins                  | —        | `kotlin` / `intelliJPlatform` / `changelog` / `qodana` / `kover` |
-| Qodana linter (Docker image)    | 2024.3   | `jetbrains/qodana-jvm-community:2024.3`                          |
-| Qodana Gradle plugin            | 2025.3.1 | `org.jetbrains.qodana`                                           |
-| Kover                           | 0.9.5    | 覆盖率(`onCheck` 时输出 XML)                                     |
-
-### 6.5 关键环境变量 / 用户配置
-
-| 变量 / 配置        | 默认       | 说明                                                                                                                                                                                                                       |
-| ------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 环境变量           | 无         | 不读取系统环境变量,运行时配置全部走代码常量(`OpenCodeConstants.kt`)                                                                                                                                                        |
-| 用户配置 `cliPath` | 空(未配置) | 存于 `~/.config/opencode-web-ui/config.json`(应用级全局,经 Dashboard `CLI` 按钮写入)。非空 → 启动 opencode server 使用该绝对路径(仍经 zsh login shell 加载环境,仅查找 opencode 不依赖 PATH);为空/空字符串 → 默认 PATH 查找 |
-
-### 6.6 远程访问规范(不适用)
-
-本插件**不**操作远程服务器,无需 `remote-shell`。
-
-### 6.7 历史归档(只读)
-
-`research/archive/` 是已归档的规划文档,**不要**当作当前代码参考。
-
----
-
-## 7. 系统级横切场景
-
-### 7.1 ~~通知降噪决策~~(v2.0.0+ 已拆除,本节不适用)
-
-v2.0.0+ IDE 端无通知代码,通知由 OpenCode server / Web UI 接管,无任何降噪决策。
-
-### 7.2 SSE 重连处理
-
-- **WHEN** SSE 连接断开(`onClosed()`)
-- **THEN** v2.0.0+ onClosed 不再清理 per-consumer 状态集合(已无 sessionTitles / idleNotifiedSessions);`SSEEventParser.dedupCache` **不**清空(只由 `stop()` 清)
-- **WHEN** watchdog 检测到 30s 内无事件(`SSE_IDLE_TIMEOUT_MS`)
-- **THEN** 系统 MUST 强制重连
-
-### 7.3 进程生命周期
-
-- 启动:`OpenCodeServerManager.startServer()` 异步启 opencode → 等健康 → 创建 SSE consumer
-- 运行:每 Project 一个 SSE consumer 实例(`SSEConsumerFactory.create(project)`),独立状态
-- 关闭:IDE 退出 → `stopServer()` → 4 阶段关闭策略(§6.3)
-
-### 7.4 多项目路由
-
-- 多 IntelliJ 窗口打开同一 opencode server → 每 Project 独立 `OpenCodeSSEConsumer`,各自通过 `OpenCodeApi.createEventSource(directory)` 按 directory 路径消费
-- 项目关闭 → `disposeForProject` 停止该项目的 SSE consumer
-
-### 7.5 健康检查机制(Part D 改造后)
-
-**`HealthMonitor` 已在 shutdown-server-fast-path change 中整删**,原 5s 轮询 + 3 次翻转 debounce 语义由两个 SSE 回调替代:
-
-- **`OpenCodeSSEConsumer.onConnectionLost`(快速通道)**:server 主动 shutdown 时 SSE 关闭→`stop()` 主动触发→`showServerNotRunning()` 立即显示 Start 按钮
-- **`OpenCodeSSEConsumer.onConnectionEstablished`(恢复通道)**:SSE 重建后 `onOpen()` 末尾 1.5s debounce 触发→`loadProjectPage(force = true)` 自动恢复 UI
-
-**`OpenCodeApi.isServerHealthySync()`**:端口检查 + HTTP HEAD 双段,见 §3.3。**仅在启动期 `waitForServerHealthy` 内部使用**,无运行时轮询。
-
-### 7.6 日志约定
-
-- **MUST** 用 `thisLogger().info/warn/error()`(IntelliJ Platform Logger)
-- **MUST** 日志前缀格式: `[<类名>] <消息>`(例:`[OpenCodeSSEConsumer] Subagent session tracked: $sid`)
-- **MUST NOT** 输出凭证(PUBLISH_TOKEN、私钥)
-
-### 7.7 资源清理
-
-- `Process` MUST 在退出时 `waitFor` 或 `destroyForcibly`(避免僵尸进程)
-- `BufferedReader` / `InputStream` MUST 用 `.use {}` 包裹
-- `Thread`(daemon) MUST `isDaemon = true` 避免阻止 JVM 关闭
-- `Alarm` / `ScheduledExecutorService` MUST 在 `stop()` 中关闭
-
----
-
-## 8. SPEC.md 引用关系
-
-| 引用         | 出处        | 何时使用         |
-| ------------ | ----------- | ---------------- |
-| 架构实现细节 | `DESIGN.md` | 想了解"怎么做"时 |
-| 开发流程规则 | `AGENTS.md` | 日常开发时       |
-
----
-
-## 附录 A:当前未满足项(Known Gaps)
-
-| ID    | 描述                                                                                                                                                | 严重性 | 建议                                                     |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------- |
-| GAP-1 | `OpenCodeConfigurable` Settings UI 缺失(commit `a5eafc4` 1.0.20 整删);v2.0.0+ 通知完全拆除后 `OpenCodeConfig` 也已删除,无遗留 settings              | ℹ️ 低  | 不再适用(通知功能已永久由 OpenCode server / Web UI 接管) |
-| GAP-4 | in-IDE 通知 UI 完全拆除(v2.0.0+),`permission.asked` / `question.asked` / `session.idle` 等事件无 IDE 端消费者(由 OpenCode server / Web UI 自身接管) | ℹ️ 低  | 确认 OpenCode server / Web UI 通知覆盖完整               |
-
----
-
-## 附录 B:版本与变更
-
-| 版本   | 日期       | 变更说明                                                                                                                                                               |
-| ------ | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.0.2  | 2026-07-15 | 浏览器切换:`OpenCodeBrowserLauncher` 只支持 Microsoft Edge(移除 Chrome/Brave fallback);`checkEdgeInstalled()` 检测 Edge 未安装时弹 `Messages.showErrorDialog` 提示下载 |
-| 2.0.0  | 2026-07-14 | 架构大改:丢 JCEF,Chrome --app 模式 + Dashboard;自启 server + health gate;通知 UI 砍掉                                                                                  |
-| 1.0.22 | 2026-06-09 | 文档审计:订正 SSE 端点路径、移除不存在的 settings/ProjectActivity 引用、修正集合名与版本号                                                                             |
+| 版本  | 日期   | 变更说明                                                                                                                         |
+| ----- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| 0.1.0 | 未发布 | 首个版本：`Copy as Prompt`（选区 → prompt，含语言标识与相对路径）+ `Copy Diagnostics as Prompt`（文件级 ERROR/WARNING → prompt） |

@@ -1,29 +1,30 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.shenyuanlaolarou.opencodewebui</id>
-    <name>opencode-web-ui</name>
-    <vendor email="shenyuanlaolarou@users.noreply.github.com" url="https://github.com/syllr/intellij-opencode-web">shenyuanlaolarou</vendor>
+    <id>com.shenyuanlaolarou.copyasprompt</id>
+    <name>Copy as Prompt</name>
+    <vendor email="shenyuanlaolarou@users.noreply.github.com" url="https://github.com/syllr/copy-as-prompt">shenyuanlaolarou</vendor>
 
     <depends>com.intellij.modules.platform</depends>
 
-    <resource-bundle>messages.MyBundle</resource-bundle>
-
     <actions>
 
-        <!-- Copy as Prompt - 在编辑器右键菜单添加选项 -->
-        <action id="com.shenyuanlaolarou.opencodewebui.CopyAsPrompt"
-                class="com.shenyuanlaolarou.opencodewebui.actions.CopyAsPromptAction"
+        <!-- 选区 → prompt -->
+        <action id="com.shenyuanlaolarou.copyasprompt.CopyAsPrompt"
+                class="com.shenyuanlaolarou.copyasprompt.actions.CopyAsPromptAction"
                 text="Copy as Prompt"
-                description="Copy selected text as prompt to clipboard">
+                description="Copy selected code as a prompt (file path, line range and code block)">
             <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="$Paste"/>
             <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="$Copy"/>
         </action>
 
-    </actions>
+        <!-- 当前文件的诊断 → prompt -->
+        <action id="com.shenyuanlaolarou.copyasprompt.CopyDiagnosticsAsPrompt"
+                class="com.shenyuanlaolarou.copyasprompt.actions.CopyDiagnosticsAction"
+                text="Copy Diagnostics as Prompt"
+                description="Copy errors and warnings of the current file as a prompt">
+            <add-to-group group-id="EditorPopupMenu" anchor="after"
+                          relative-to-action="com.shenyuanlaolarou.copyasprompt.CopyAsPrompt"/>
+        </action>
 
-    <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.shenyuanlaolarou.opencodewebui.toolWindow.MyToolWindowFactory" id="OpenCodeWeb" anchor="right" icon="/icons/ocw.svg" displayName="OpenCodeWeb"/>
-        <notificationGroup id="com.shenyuanlaolarou.opencodewebui.OpenCodeWeb"
-                           displayType="BALLOON"/>
-    </extensions>
+    </actions>
 </idea-plugin>
